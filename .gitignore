@@ -1,0 +1,30 @@
+.build/
+.swiftpm/
+.DS_Store
+xcuserdata/
+
+# knowledge-ctx individuation output — per-session, regenerated, never source.
+# Each of these names itself AUTO-GENERATED in its own header. They reached a PR
+# once (#142) because a coder worktree had individuated a profile and a broad
+# `git add` swept 3,000 lines of another product's skills into a doc-comment
+# commit. Ignoring them makes that impossible rather than caught in review.
+#
+# Naming those three files individually left the rest of `.claude/` unignored,
+# and on this machine nothing showed it: the operator's personal global ignore
+# (`~/.config/git/ignore`) carries `**/.claude/settings.local.json`, so
+# `git status` reads clean here while a fresh clone or the self-hosted runner
+# would stage that file on a plain `git add -A`. Check the way the steward did,
+# with the global config out of the picture:
+#
+#     git -c core.excludesFile=/dev/null check-ignore -v .claude/settings.local.json
+#
+# So everything under `.claude/` is ignored. This repo used to track five files
+# there (the three deck-* agents and the handoff-leave/pickup skills), named
+# back in with negations. They were hand-placed copies of KB documents
+# (`projects/deck/agents/`, `projects/platform/skills/`) and had fallen behind
+# them, and once `co -r` individuates the deck/daytime profile into the primary
+# checkout, tracked copies would leave it dirty on every rotation. The KB is
+# the source; the Individuator writes `agents/`, `skills/`, `CLAUDE.md`,
+# `.active-profile`, `.materialized` and `.profile-documents.json` here, and
+# this one rule covers all of them.
+.claude/*

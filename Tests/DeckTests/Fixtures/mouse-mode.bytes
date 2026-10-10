@@ -1,0 +1,6 @@
+cclear[?2004l
+[H[J[1m[7m%[27m[1m[0m                                                                                [0m[27m[24m[Joperator1@host convivy-deck % [K[?2004hpprintf '\033[?1000h\033[?1006h'[?2004l
+[?1000h[?1006h[1m[7m%[27m[1m[0m                                                                                [0m[27m[24m[Joperator1@host convivy-deck % [K[?2004hpprintf 'mouse tracking on\n'[?2004l
+mouse tracking on
+[1m[7m%[27m[1m[0m                                                                                [0m[27m[24m[Joperator1@host convivy-deck % [K[?2004hpprintf '\033[?1000l\033[?1006l'[?2004l
+[?1000l[?1006l[1m[7m%[27m[1m[0m                                                                                [0m[27m[24m[Joperator1@host convivy-deck % [K[?2004h

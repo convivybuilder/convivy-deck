@@ -1,0 +1,616 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Input pane — a safe right edge, a row that holds still</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 28px 24px 48px;
+    background: #16181c; color: #e8e9ec;
+    font: 13px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; letter-spacing: .1px; }
+  h2 { font-size: 12.5px; font-weight: 600; margin: 34px 0 3px; }
+  .sub { color: #8b9099; font-size: 12px; margin: 0 0 10px; max-width: 78ch; }
+  .note { font-size: 11px; color: #6e7480; margin: 6px 0 0; max-width: 78ch; }
+  .shot { border: 1px solid #2a2e35; border-radius: 6px; max-width: 420px; display: block; margin: 8px 0 4px; }
+
+  .grid { display: grid; grid-template-columns: repeat(2, 470px); gap: 10px 14px; }
+  .cell .tag { font-size: 10.5px; color: #6e7480; margin: 0 0 3px; text-transform: uppercase; letter-spacing: .4px; }
+
+  /* ---- theme variables ---- */
+  .lt { --bg:#f1ebdd; --box:#f6f1e5; --edge:rgba(70,58,34,.24); --ink:#2c2a24; --ink2:#7c7669;
+        --ink3:#a49d8d; --btn:rgba(255,255,255,.6); --btnedge:rgba(0,0,0,.15);
+        --accent:#3a76e8; --accent-ink:#fff; --dis:#d4cdbc; --dis-ink:#9a938278;
+        --dis-ink2:#9a9382; --danger:#b5382a; }
+  .dk { --bg:#1b1e23; --box:#21252b; --edge:rgba(255,255,255,.16); --ink:#e8e9ec; --ink2:#8b9099;
+        --ink3:#5d636d; --btn:rgba(255,255,255,.07); --btnedge:rgba(255,255,255,.16);
+        --accent:#4a9eff; --accent-ink:#0d1b2e; --dis:#31363e; --dis-ink:#6e747e78;
+        --dis-ink2:#6e747e; --danger:#e0604f; }
+
+  .frame { width: 470px; border-radius: 6px; overflow: hidden;
+           background: var(--bg); border: 1px solid #2a2e35; color: var(--ink); }
+  .lt .frame { border-color: #3a3e45; }
+
+  .box { border: 1px solid var(--edge); border-radius: 5px; background: var(--box);
+         height: 52px; font-size: 12px; padding: 5px 8px; color: var(--ink);
+         box-sizing: border-box; overflow: hidden; }
+  .box .ph { color: var(--ink3); }
+  .box.tall { height: 68px; }
+
+  svg { vertical-align: -2px; }
+
+  /* ---- today's geometry: box left, control column right, bottom-aligned ---- */
+  .t-row { display: flex; align-items: flex-end; gap: 8px; padding: 10px; }
+  .t-row .box { flex: 1; }
+  .t-ctl { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: none; }
+  .t-btns { display: flex; align-items: center; gap: 6px; }
+  .t-cap { font-size: 10px; color: var(--ink3); }
+
+  .menu { display: inline-flex; align-items: center; gap: 4px; color: var(--ink);
+          font-size: 12px; white-space: nowrap; }
+  .menu .chev { font-size: 8px; color: var(--ink2); }
+  .bbtn { font-size: 12px; padding: 3px 10px; border-radius: 5px; background: var(--btn);
+          border: 1px solid var(--btnedge); color: var(--ink); white-space: nowrap; }
+  .bbtn.off { color: var(--dis-ink); }
+
+  /* ---- proposed geometry: full-width box, toolbar row beneath ---- */
+  .p-wrap { padding: 10px; }
+  .p-wrap .box { width: 100%; margin-bottom: 7px; }
+  .p-bar { display: flex; align-items: center; gap: 8px; height: 26px; }
+  .p-bar .menu { color: var(--ink2); }
+  .chip { font-size: 10.5px; padding: 2px 8px; border-radius: 9px; white-space: nowrap;
+          border: 1px solid var(--btnedge); color: var(--ink2); background: var(--btn); }
+  .chip.mode { border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+               color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .p-bar .gap { flex: 1; }
+  .hint { font-size: 10.5px; color: var(--ink3); white-space: nowrap; }
+  .slot { width: 106px; height: 24px; border-radius: 6px; font-size: 12px; font-weight: 500;
+          display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+          flex: none; box-sizing: border-box; }
+  .slot .key { opacity: .75; font-weight: 400; font-size: 11px; }
+  .slot.go   { background: var(--accent); color: var(--accent-ink); }
+  .slot.off  { background: var(--dis); color: var(--dis-ink2); }
+  .slot.stop { background: transparent; color: var(--danger);
+               border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent); }
+
+  /* Interrupt as its own control — never in the slot */
+  .ibtn { height: 24px; padding: 0 10px; border-radius: 6px; font-size: 12px; font-weight: 500;
+          display: inline-flex; align-items: center; gap: 5px; flex: none; box-sizing: border-box;
+          background: transparent; color: var(--danger);
+          border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent); }
+
+  /* pointer overlay for the rejected-alternative frames */
+  .curwrap { position: relative; display: inline-flex; }
+  .curwrap svg.cursor { position: absolute; right: 10px; top: 13px; }
+</style>
+
+<h1>Input pane — a safe right edge, a row that holds still</h1>
+<p class="sub">Every state the row has, today beside the proposal, in both appearances.
+The proposal moves the controls to a full-width bar under the box. The fixed slot at the
+right edge always holds the safe action — Send or Replace, never Interrupt — because Send
+stays live while a turn runs: sending mid-turn queues the message (the held-queue
+mechanism), so Send and Interrupt can be actionable at the same time. Interrupt is its own
+bordered control that appears in the bar's empty middle while a turn runs, the way the held
+chip appears on the left, so nothing the hand targets ever moves. Rationale, the premise
+this revises, and the alternatives considered: <code>input-pane-redesign.md</code> beside
+this file.</p>
+
+<h2>What the operator screenshotted</h2>
+<p class="sub">A working session: the one control wearing a "prohibited" glyph is the menu
+that works, the bordered button is the rare destructive action, and the disabled primary
+is the palest thing in the row.</p>
+<img class="shot" src="input-pane-today.png" alt="Screenshot of the current input pane while working">
+
+<!-- ================= state 1 ================= -->
+<h2>Empty box &nbsp;·&nbsp; ↩-sends preference</h2>
+<p class="sub">The common resting state. Today Send is the flattest thing on screen; proposed,
+it is a filled slab even while disabled, so the primary stays visually primary.</p>
+<div class="grid">
+  <div class="cell lt"><p class="tag">today · light</p>
+    <div class="frame"><div class="t-row">
+      <div class="box"><span class="ph">Message…</span></div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn off">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell lt"><p class="tag">proposed · light</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box"><span class="ph">Message…</span></div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot off">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">today · dark</p>
+    <div class="frame"><div class="t-row">
+      <div class="box"><span class="ph">Message…</span></div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn off">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">proposed · dark</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box"><span class="ph">Message…</span></div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot off">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<!-- ================= state 2 ================= -->
+<h2>Typed text</h2>
+<p class="sub">Proposed, the primary lights in the accent the moment there is something to send —
+the strongest thing in the pane is now the action you are about to take.</p>
+<div class="grid">
+  <div class="cell lt"><p class="tag">today · light</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">Ship the toolbar slice next, then the chip.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell lt"><p class="tag">proposed · light</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box">Ship the toolbar slice next, then the chip.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot go">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">today · dark</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">Ship the toolbar slice next, then the chip.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">proposed · dark</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box">Ship the toolbar slice next, then the chip.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot go">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<!-- ================= state 3 ================= -->
+<h2>Working &nbsp;·&nbsp; the state in the operator's screenshot</h2>
+<p class="sub">Today a third button appears and the box narrows to make room. Proposed,
+Interrupt appears as its own bordered button in the bar's flexible middle; the slot keeps
+Send, dimmed because the box is empty, and the right edge is pixel-identical to every other
+state. With nothing typed, Interrupt is the only available action and reads as the strongest
+thing in the bar — that is honest hierarchy, not the inversion the operator screenshotted, because
+here it genuinely is the one thing you can do.</p>
+<div class="grid">
+  <div class="cell lt"><p class="tag">today · light</p>
+    <div class="frame"><div class="t-row">
+      <div class="box"><span class="ph">Message…</span></div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn">Interrupt</span>
+          <span class="bbtn off">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell lt"><p class="tag">proposed · light</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box"><span class="ph">Message…</span></div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="ibtn"><svg width="9" height="9"><rect width="9" height="9" rx="1.5" fill="currentColor"/></svg> Interrupt</span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot off">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">today · dark</p>
+    <div class="frame"><div class="t-row">
+      <div class="box"><span class="ph">Message…</span></div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn">Interrupt</span>
+          <span class="bbtn off">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">proposed · dark</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box"><span class="ph">Message…</span></div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="ibtn"><svg width="9" height="9"><rect width="9" height="9" rx="1.5" fill="currentColor"/></svg> Interrupt</span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot off">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<!-- ================= state 3b — the state the first pass never drew ================= -->
+<h2>Working &nbsp;·&nbsp; text typed — the state the first pass never drew</h2>
+<p class="sub">Sending while a turn runs is not refused — it queues the message. So Send and
+Interrupt are both legitimately actionable here, and the merged slot from the first pass
+showed only Interrupt: no Send button existed, and the position the hand knows as Send held
+a destructive control. Revised, both are buttons. The slot lights accent the moment there is
+text; Interrupt keeps the exact position it has in the empty-box frame above; and the hint
+sits between them as a buffer, so a click drifting left of Send lands on dead text rather
+than on the stop.</p>
+<div class="grid">
+  <div class="cell lt"><p class="tag">today · light</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">One more thing when you finish: run the canary.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn">Interrupt</span>
+          <span class="bbtn">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell lt"><p class="tag">proposed · light</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box">One more thing when you finish: run the canary.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="ibtn"><svg width="9" height="9"><rect width="9" height="9" rx="1.5" fill="currentColor"/></svg> Interrupt</span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot go">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">today · dark</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">One more thing when you finish: run the canary.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn">Interrupt</span>
+          <span class="bbtn">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">proposed · dark</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box">One more thing when you finish: run the canary.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="ibtn"><svg width="9" height="9"><rect width="9" height="9" rx="1.5" fill="currentColor"/></svg> Interrupt</span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot go">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+</div>
+<p class="note">Everything at once — working, two held, new text typed — is the bar's fullest
+state, and the right edge still has not moved. Today the same state squeezes four controls
+beside the box.</p>
+<div class="grid">
+  <div class="cell lt"><p class="tag">today · working, 2 held, text typed</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">One more thing when you finish: run the canary.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn off">⤴ Rewrite</span>
+          <span class="bbtn">Interrupt</span>
+          <span class="bbtn">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell lt"><p class="tag">proposed · same state</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box">One more thing when you finish: run the canary.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="chip">↑ 2 held</span>
+        <span class="gap"></span>
+        <span class="ibtn"><svg width="9" height="9"><rect width="9" height="9" rx="1.5" fill="currentColor"/></svg> Interrupt</span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot go">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<!-- ================= state 4 ================= -->
+<h2>Messages held &nbsp;·&nbsp; two waiting, new text typed</h2>
+<p class="sub">Today a fourth button squeezes in and the box narrows again. Proposed, the held
+queue is a chip on the LEFT, growing into empty space — the right edge is pixel-identical to the
+typed-text state, so the hand's target has not moved. The ↑ names the existing pull-back key.</p>
+<div class="grid">
+  <div class="cell lt"><p class="tag">today · light</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">Also update the changelog entry.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn off">⤴ Rewrite</span>
+          <span class="bbtn">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell lt"><p class="tag">proposed · light</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box">Also update the changelog entry.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="chip">↑ 2 held</span>
+        <span class="gap"></span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot go">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">today · dark</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">Also update the changelog entry.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn off">⤴ Rewrite</span>
+          <span class="bbtn">Send</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">proposed · dark</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box">Also update the changelog entry.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="chip">↑ 2 held</span>
+        <span class="gap"></span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot go">Send <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<!-- ================= state 5 ================= -->
+<h2>Queue pulled back &nbsp;·&nbsp; the box holds the held messages</h2>
+<p class="sub">Today only the button's own label changing says you are in a different mode.
+Proposed, the chip turns accent and announces the mode, and the primary agrees with it —
+the rename reads deliberate rather than like a glitch.</p>
+<div class="grid">
+  <div class="cell lt"><p class="tag">today · light</p>
+    <div class="frame"><div class="t-row">
+      <div class="box tall">Also update the changelog entry.<br>And bump the version.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn off">⤴ Rewrite</span>
+          <span class="bbtn">Replace</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell lt"><p class="tag">proposed · light</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box tall">Also update the changelog entry.<br>And bump the version.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="chip mode">editing 2 held</span>
+        <span class="gap"></span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot go">Replace <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">today · dark</p>
+    <div class="frame"><div class="t-row">
+      <div class="box tall">Also update the changelog entry.<br>And bump the version.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn off">⤴ Rewrite</span>
+          <span class="bbtn">Replace</span>
+        </div>
+        <span class="t-cap">↩ send · ⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">proposed · dark</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box tall">Also update the changelog entry.<br>And bump the version.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="chip mode">editing 2 held</span>
+        <span class="gap"></span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="slot go">Replace <span class="key">↩</span></span>
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<!-- ================= state 6 ================= -->
+<h2>⌘↩-sends preference</h2>
+<p class="sub">The send key rides ON the button at full size instead of hiding in the caption;
+the caption keeps only the newline half. ⌘↩ stays bound under both preferences, unchanged.</p>
+<div class="grid">
+  <div class="cell lt"><p class="tag">today · light</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">Ship the toolbar slice next, then the chip.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn">Send</span>
+        </div>
+        <span class="t-cap">⌘↩ send · ↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell lt"><p class="tag">proposed · light</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box">Ship the toolbar slice next, then the chip.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="hint">↩ new line</span>
+        <span class="slot go">Send <span class="key">⌘↩</span></span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">today · dark</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">Ship the toolbar slice next, then the chip.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu"><svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="4" y1="11" x2="11" y2="4" stroke="currentColor" stroke-width="1.3"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="bbtn">Send</span>
+        </div>
+        <span class="t-cap">⌘↩ send · ↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell dk"><p class="tag">proposed · dark</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box">Ship the toolbar slice next, then the chip.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="hint">↩ new line</span>
+        <span class="slot go">Send <span class="key">⌘↩</span></span>
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<!-- ================= rejected: merged slot while empty ================= -->
+<h2>Rejected — keeping the merged slot while the box is empty</h2>
+<p class="sub">The tempting middle: preserve the first pass's clean single-button working frame
+by letting the slot show Interrupt only while the box is empty, swapping back to Send once
+typing starts. The swap that springs the trap is not typing — it is Send itself. Clicking Send
+mid-turn queues the message and empties the box, so Interrupt materialises in the just-clicked
+position while the pointer is still on it; a double-click, or a second thought half a second
+later, stops the agent. The ~300&nbsp;ms inert guard would have to return to defend the design's
+own primary action. Two frames, light only, one click apart, pointer unmoved.</p>
+<div class="grid">
+  <div class="cell lt"><p class="tag">the click — Send queues the message</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box">One more thing when you finish: run the canary.</div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="gap"></span>
+        <span class="ibtn"><svg width="9" height="9"><rect width="9" height="9" rx="1.5" fill="currentColor"/></svg> Interrupt</span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="curwrap"><span class="slot go">Send <span class="key">↩</span></span><svg class="cursor" width="14" height="18" viewBox="0 0 14 18"><path d="M1 1 L1 14 L4.5 11 L7 17 L9.5 16 L7 10 L11.5 10 Z" fill="#fff" stroke="#000" stroke-width="1"/></svg></span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell lt"><p class="tag">half a second later — Interrupt under the unmoved pointer</p>
+    <div class="frame"><div class="p-wrap">
+      <div class="box"><span class="ph">Message…</span></div>
+      <div class="p-bar">
+        <span class="menu"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+        <span class="chip">↑ 1 held</span>
+        <span class="gap"></span>
+        <span class="hint">⇧↩ new line</span>
+        <span class="curwrap"><span class="slot stop"><svg width="9" height="9"><rect width="9" height="9" rx="1.5" fill="currentColor"/></svg> Interrupt</span><svg class="cursor" width="14" height="18" viewBox="0 0 14 18"><path d="M1 1 L1 14 L4.5 11 L7 17 L9.5 16 L7 10 L11.5 10 Z" fill="#fff" stroke="#000" stroke-width="1"/></svg></span>
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<!-- ================= option B ================= -->
+<h2>The alternative considered in the first pass — restyle in place, controls stay beside the box</h2>
+<p class="sub">Same icon fix, same key-on-the-button and safe-slot treatment, but the
+cluster stays to the right of the box, saving the bar's ~30&nbsp;pt of height. Not recommended:
+the box still narrows when the held chip appears, and the composer never gets the full pane
+width. Two states, light only, to show the residual jump.</p>
+<div class="grid">
+  <div class="cell lt"><p class="tag">option b · typed text</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">Ship the toolbar slice next, then the chip.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu" style="color:var(--ink2)"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="slot go">Send <span class="key">↩</span></span>
+        </div>
+        <span class="t-cap">⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="cell lt"><p class="tag">option b · 2 held — the box narrows again</p>
+    <div class="frame"><div class="t-row">
+      <div class="box">Also update the changelog entry.</div>
+      <div class="t-ctl">
+        <div class="t-btns">
+          <span class="menu" style="color:var(--ink2)"><svg width="15" height="15"><rect x="1" y="2.5" width="13" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="3.6,6 5.8,8 3.6,10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.4" y1="10.4" x2="10.6" y2="10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Commands <span class="chev">▼</span></span>
+          <span class="chip">↑ 2 held</span>
+          <span class="slot go">Send <span class="key">↩</span></span>
+        </div>
+        <span class="t-cap">⇧↩ new line</span>
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<h2>Notes</h2>
+<p class="note">The Commands glyph is SF&nbsp;Symbol <b>terminal</b> — a command prompt (a
+<code>&gt;</code> and a text-cursor underscore in a rounded rectangle), the place commands are
+typed. The current <code>slash.circle</code> is the prohibited mark. The Interrupt glyph is
+<b>stop.fill</b>. Both honour the text-scale preference like any SF Symbol.</p>
+<p class="note">The primary slot is fixed at the width of its widest label and only ever reads
+Send or Replace — both safe, so no morph needs an inert guard, and the first pass's ~300&nbsp;ms
+guard is deleted. Interrupt never enters the slot: it is its own control, appearing and
+disappearing with the working phase in the bar's flexible middle, in one fixed position, with
+the hint between it and the slot as a buffer. While working, bare&nbsp;↩ (or&nbsp;⌘↩) and the
+Send button both queue the message — the chip on the left counts what is held.</p>
+<p class="note">Colours here approximate the shipped light chrome and the house dark palette;
+the implementation draws from the shared design tokens and the system appearance as always.</p>

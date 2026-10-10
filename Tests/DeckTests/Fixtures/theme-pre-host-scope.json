@@ -1,0 +1,231 @@
+{
+  "appearance" : "system",
+  "catalog" : [
+    {
+      "bead" : "placard\/bead\/placard",
+      "command" : "co -r",
+      "name" : "Placard",
+      "project" : "placard",
+      "session" : "placard",
+      "workdir" : "\/srv\/operator\/Convivy\/placard"
+    },
+    {
+      "command" : "co -r",
+      "host" : "macstudio",
+      "name" : "constance-commercial",
+      "session" : "constance-commercial",
+      "workdir" : "\/srv\/operator\/Convivy\/constance-commercial"
+    },
+    {
+      "bead" : "sous-chef\/bead\/sous-chef",
+      "command" : "co -r",
+      "name" : "Sous Chef",
+      "project" : "sous-chef",
+      "repos" : [
+        "convivy\/sous-chef"
+      ],
+      "session" : "sous-chef",
+      "workdir" : "~\/Convivy\/sous-chef"
+    },
+    {
+      "command" : "co -r",
+      "name" : "Hollis",
+      "session" : "hollis",
+      "workdir" : "~\/Convivy\/hollis"
+    },
+    {
+      "command" : "co -r",
+      "name" : "Park Villa",
+      "session" : "nyh-park-villa",
+      "workdir" : "~\/Convivy\/nyh-architecture\/nyh-park-villa"
+    },
+    {
+      "command" : "co -r",
+      "name" : "East Texas Circle",
+      "session" : "nyh-etc",
+      "workdir" : "~\/Convivy\/nyh-architecture\/nyh-etc"
+    },
+    {
+      "command" : "co -r",
+      "name" : "Write Better",
+      "session" : "write-better",
+      "workdir" : "~\/Convivy\/write-better"
+    }
+  ],
+  "columnWidth" : 393.3125,
+  "composer" : {
+    "fontSize" : 13
+  },
+  "crewsRoot" : "~",
+  "defaultHost" : "macstudio",
+  "frame" : {
+    "baseSize" : 11
+  },
+  "hosts" : [
+    {
+      "address" : "203.0.113.10",
+      "crewsRoot" : "~\/Convivy",
+      "name" : "macstudio",
+      "user" : "operator"
+    },
+    {
+      "address" : "203.0.113.11",
+      "crewsRoot" : "~\/Convivy",
+      "name" : "macmini",
+      "user" : "operator"
+    }
+  ],
+  "queueSortOrder" : "arrival",
+  "rail" : [
+    {
+      "bead" : "substrate\/bead\/substrate",
+      "name" : "Steward",
+      "project" : "steward",
+      "repos" : [
+        "convivy\/substrate"
+      ],
+      "session" : "steward",
+      "workdir" : "~\/Convivy\/substrate"
+    },
+    {
+      "bead" : "library\/bead\/library",
+      "name" : "Library",
+      "project" : "library",
+      "repos" : [
+        "convivy\/library"
+      ],
+      "session" : "library",
+      "workdir" : "\/srv\/operator\/Convivy\/library"
+    },
+    {
+      "bead" : "agent-platform\/bead\/agent-platform",
+      "name" : "Bosun",
+      "project" : "bosun",
+      "repos" : [
+        "convivy\/agent-platform"
+      ],
+      "session" : "bosun",
+      "workdir" : "\/srv\/operator\/Convivy\/agent-platform"
+    },
+    {
+      "bead" : "convivy-orient\/bead\/convivy-orient",
+      "name" : "Orient",
+      "project" : "convivy-orient",
+      "repos" : [
+        "convivy\/convivy-orient"
+      ],
+      "session" : "orient",
+      "workdir" : "\/srv\/operator\/Convivy\/convivy-orient"
+    },
+    {
+      "bead" : "deck\/bead\/deck",
+      "command" : "co -r",
+      "name" : "Deck",
+      "project" : "convivy-deck",
+      "repos" : [
+        "convivy\/convivy-deck"
+      ],
+      "session" : "deck",
+      "workdir" : "~\/Convivy\/convivy-deck"
+    },
+    {
+      "host" : "macstudio",
+      "repos" : [
+        "convivy\/shipwright"
+      ],
+      "session" : "shipwright"
+    },
+    {
+      "name" : "Vivy",
+      "project" : "vivy",
+      "repos" : [
+        "convivy\/vivy"
+      ],
+      "session" : "vivy",
+      "workdir" : "~\/Convivy\/vivy"
+    },
+    {
+      "name" : "Vivy Commercial",
+      "session" : "vivy-commercial",
+      "workdir" : "~\/Convivy\/vivy-commercial"
+    },
+    {
+      "bead" : "selector\/bead\/selector",
+      "command" : "co -r",
+      "name" : "Selector",
+      "project" : "selector",
+      "repos" : [
+        "convivy\/selector"
+      ],
+      "session" : "selector",
+      "workdir" : "~\/Convivy\/selector"
+    },
+    {
+      "host" : "macstudio",
+      "session" : "ea",
+      "workdir" : "\/srv\/operator\/Convivy\/EA"
+    },
+    {
+      "name" : "Ask",
+      "session" : "ask",
+      "workdir" : "~\/Convivy\/ask"
+    },
+    {
+      "host" : "macstudio",
+      "session" : "operator",
+      "workdir" : "\/srv\/operator\/Convivy\/operator"
+    },
+    {
+      "name" : "CFO",
+      "session" : "cfo",
+      "workdir" : "~\/Convivy\/CFO"
+    },
+    {
+      "name" : "Convivy Kit",
+      "session" : "svc",
+      "workdir" : "~\/Convivy\/convivy-app-kit"
+    },
+    {
+      "name" : "Convivy Commercial",
+      "session" : "convivy-commercial",
+      "workdir" : "~\/Convivy\/convivy-commercial"
+    },
+    {
+      "name" : "Constance",
+      "project" : "constance",
+      "repos" : [
+        "convivy\/constance"
+      ],
+      "session" : "constance",
+      "workdir" : "~\/Convivy\/constance"
+    }
+  ],
+  "sendKey" : "returnKey",
+  "session" : {
+    "lineHeight" : 1.6499999999999999,
+    "scale" : 0.95652173913043481
+  },
+  "sessions" : {
+    "ask" : "indigo",
+    "constance" : "indigo",
+    "constance-commercial" : "indigo",
+    "convivy-commercial" : "amber",
+    "deck" : "gold",
+    "ea" : "rose",
+    "hollis" : "rose",
+    "nyh-etc" : "teal",
+    "nyh-park-villa" : "ember",
+    "selector" : "sage",
+    "sous-chef" : "amber",
+    "steward" : "ember",
+    "svc" : "cyan",
+    "vivy" : "azure",
+    "vivy-commercial" : "azure",
+    "write-better" : "teal"
+  },
+  "terminal" : {
+    "fontName" : "Monaco",
+    "fontSize" : 11.5,
+    "lineSpacing" : 0.95000000000000007
+  }
+}
