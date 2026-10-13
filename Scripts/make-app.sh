@@ -108,6 +108,19 @@ else
     chmod +x "$APP_DIR/Contents/MacOS/Deck" "$APP_DIR/Contents/MacOS/deck-bin"
 fi
 
+# HARDENED RUNTIME ON THE AD-HOC SIGNATURE. The linker's own ad-hoc signature
+# leaves it off, so any process running as the operator could inject a dylib
+# through DYLD_* variables or attach a debugger to the process holding the
+# Secure Enclave keys. The flag is what turns that away; the signature stays
+# ad-hoc. Deck links only system frameworks, so library validation, which the
+# flag also enables, refuses nothing it loads. The launcher signs every binary
+# it installs the same way, so an update never drops the flag.
+if [ "$FLAVOR" = "shipped" ]; then
+    codesign --force --sign - --options runtime "$APP_DIR/Contents/MacOS/Deck" >&2
+else
+    codesign --force --sign - --options runtime "$APP_DIR/Contents/MacOS/deck-bin" >&2
+fi
+
 # THE LICENCE AND THE NOTICE TRAVEL WITH THE BUNDLE, NOT ONLY WITH THE REPO.
 # Apache-2.0 section 4(d) attaches to distributing the work, and a `.app` is a
 # distribution of its own — this script created `Contents/Resources` and put
@@ -137,7 +150,7 @@ fi
 report "==> Built $APP_DIR"
 report "    flavor: $FLAVOR ($FLAVOR_NOTE)"
 report "    version $VERSION (build $BUILD_NUMBER)"
-report "    unsigned — see knowledge deck/runbooks/releasing-deck before distributing"
+report "    ad-hoc signed with hardened runtime, no Developer ID — see knowledge deck/runbooks/releasing-deck before distributing"
 
 # OUTPUT_DIR may be relative (CI passes one), and the contract promises an
 # absolute path. Resolved in its own assignment so that a failed `cd` stops the

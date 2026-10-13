@@ -189,6 +189,51 @@ final class StewardCrewTests: XCTestCase {
         XCTAssertFalse(created, "an existing steward must not be recreated or overwritten")
     }
 
+    /// A fresh Builder install has already put the steward's charter at the
+    /// role-file path, so Deck creates the crew and leaves the file alone.
+    func testCreateKeepsARoleFileThatAlreadyExists() throws {
+        var steps: [String] = []
+        let created = try StewardCrew.create(
+            target: TestHost.target, directory: "~/Convivy/steward", existingCrews: [],
+            createCrew: { _, _ in steps.append("createCrew") },
+            roleFileExists: { _, _ in steps.append("check"); return true },
+            writeRoleFile: { _, _ in steps.append("write") })
+        XCTAssertTrue(created)
+        XCTAssertEqual(steps, ["createCrew", "check"])
+    }
+
+    func testCreateWritesTheRoleFileWhenNoneExists() throws {
+        var steps: [String] = []
+        let created = try StewardCrew.create(
+            target: TestHost.target, directory: "~/Convivy/steward", existingCrews: [],
+            createCrew: { _, _ in steps.append("createCrew") },
+            roleFileExists: { _, _ in steps.append("check"); return false },
+            writeRoleFile: { _, _ in steps.append("write") })
+        XCTAssertTrue(created)
+        XCTAssertEqual(steps, ["createCrew", "check", "write"])
+    }
+
+    /// A check that fails for any reason but a missing file throws, so an
+    /// unreadable host is never taken as permission to overwrite.
+    func testCreateDoesNotWriteWhenTheExistenceCheckFails() {
+        var wrote = false
+        XCTAssertThrowsError(try StewardCrew.create(
+            target: TestHost.target, directory: "~/Convivy/steward", existingCrews: [],
+            createCrew: { _, _ in },
+            roleFileExists: { _, _ in throw SessionAgent.AgentError.failed("Permission denied") },
+            writeRoleFile: { _, _ in wrote = true }))
+        XCTAssertFalse(wrote)
+    }
+
+    /// The message `session-agent read-file` prints for a missing
+    /// file, and one for a refused path.
+    func testOnlyANoSuchFileRefusalReadsAsMissing() {
+        XCTAssertTrue(StewardCrew.isMissingFileMessage(
+            "session-agent: cannot open '/srv/builder/steward/CLAUDE.md': [Errno 2] No such file or directory: 'CLAUDE.md'"))
+        XCTAssertFalse(StewardCrew.isMissingFileMessage(
+            "session-agent: cannot open '/srv/builder/steward/CLAUDE.md': [Errno 13] Permission denied"))
+    }
+
     /// A genuine failure throws rather than swallowing — "do NOT silently
     /// fall back to creating nothing." A directory that fails validation
     /// never reaches the network; it fails the same way `createCrew`

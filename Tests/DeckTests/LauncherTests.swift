@@ -640,6 +640,58 @@ final class LauncherTests: XCTestCase {
         XCTAssertTrue(bundle.launched, "and the previous binary must still launch")
     }
 
+    // MARK: - Hardened runtime survives an update
+
+    private func codesignDetails(_ binary: URL) throws -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        p.arguments = ["-dv", binary.path]
+        let pipe = Pipe()
+        p.standardError = pipe   // codesign -d writes its details to stderr
+        p.standardOutput = FileHandle.nullDevice
+        try p.run()
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        return out
+    }
+
+    /// make-app.sh gives the bundle's binary hardened runtime, and every update
+    /// replaces that binary with a fresh build product, which the linker signs
+    /// ad-hoc WITHOUT the flag. Unless the launcher signs what it installs, the
+    /// first Dock click after packaging silently turns the flag off.
+    func testTheInstalledBinaryCarriesHardenedRuntime() throws {
+        let bundle = try makeBundle()
+        let repo = try makeThrowawayCheckout(launchMarker: bundle.marker)
+        try writeRepoPath(repo.path, in: bundle)
+
+        _ = try run(bundle, env: ["APP_AUTO_UPDATE_ENABLED": "true"])
+
+        let log = try launcherLog(bundle)
+        XCTAssertTrue(log.contains("installed new binary"), "the fixture must reach the install:\n\(log)")
+        XCTAssertTrue(bundle.launched, "the signed binary must still launch:\n\(log)")
+        let details = try codesignDetails(bundle.binary)
+        XCTAssertTrue(details.contains("runtime"),
+                      "the installed binary must be signed with hardened runtime:\n\(details)")
+    }
+
+    /// Signing must not make every launch look like an update. The launcher
+    /// compares the signed build product with the installed binary, so a
+    /// re-signature that changed the bytes would reinstall and announce
+    /// "Updated" on every Dock click.
+    func testAnUnchangedBuildIsNotReinstalledAfterSigning() throws {
+        let bundle = try makeBundle()
+        let repo = try makeThrowawayCheckout(launchMarker: bundle.marker)
+        try writeRepoPath(repo.path, in: bundle)
+
+        _ = try run(bundle, env: ["APP_AUTO_UPDATE_ENABLED": "true"])
+        XCTAssertTrue(try launcherLog(bundle).contains("installed new binary"))
+
+        _ = try run(bundle, env: ["APP_AUTO_UPDATE_ENABLED": "true"])
+        let log = try launcherLog(bundle)
+        XCTAssertTrue(log.contains("binary already current"),
+                      "a second launch with nothing new must not reinstall:\n\(log)")
+    }
+
     /// The writer itself, against the real checkout — the half the stub above
     /// deliberately does not exercise.
     func testTheWriterWritesEveryFileTheBundleNeeds() throws {

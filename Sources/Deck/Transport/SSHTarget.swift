@@ -192,11 +192,18 @@ func defaultControlPath(homeDirectory: String = NSHomeDirectory()) -> String {
 /// session-name validation above, plus the target's own user/address, since a
 /// config-sourced host reaches this destination token the same way a
 /// config-sourced session name or working directory does.
+///
+/// `ControlPath=none` RATHER THAN THE SHARED MASTER (CQ·165). A `-t` mux
+/// client hands its terminal to the master, and OpenSSH's mux.c leaves that
+/// stdio blocking when it is a TTY — so a pane whose terminal stops draining
+/// blocks the master in `write()` and freezes every one-shot verb, Library
+/// composer and follower riding the same socket. Seen twice on the laptop on
+/// 2026-10-13. A pane opening its own connection means a stalled terminal can
+/// freeze only itself.
 func sshArguments(
     target: SSHTarget,
     tmuxSession: String,
     workingDirectory: String? = nil,
-    controlPath: String = defaultControlPath(),
     home: String = NSHomeDirectory()
 ) throws -> [String] {
     let user = try validateHostUser(target.user)
@@ -218,9 +225,7 @@ func sshArguments(
         // regardless of the local PTY SwiftTerm hands it. Without this tmux
         // attaches to nothing and exits "open terminal failed: not a terminal".
         "-t",
-        "-o", "ControlMaster=auto",
-        "-o", "ControlPersist=10m",
-        "-o", "ControlPath=\(controlPath)",
+        "-o", "ControlPath=none",
         "-o", "ServerAliveInterval=15",
         "-o", "ServerAliveCountMax=3",
         "\(user)@\(host)",

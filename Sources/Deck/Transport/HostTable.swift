@@ -43,6 +43,17 @@ struct HostEntry: Equatable, Hashable {
     /// `theme.json` is the storage, never the interface, per the operator's call on
     /// `crewsRoot` above.
     var runbookLink: String? = nil
+
+    /// Overrides `SSHConnectionGate.defaultCap` for sessions through this
+    /// host's own ControlMaster — a server whose sshd raised `MaxSessions`
+    /// above the default can let Deck use more of it. `nil` (the common
+    /// case) means the default. See CQ·164
+    /// (issue_01M4RZJ13RZG4Z5YR8C68BAEBP).
+    ///
+    /// Hand-edited in `theme.json`, the same way `crewsRoot` and
+    /// `runbookLink` are — no Settings UI control exists for either of
+    /// those, and this follows the same precedent rather than adding one.
+    var maxSessionsPerControlMaster: Int? = nil
 }
 
 /// Resolves a crew's `host` field, and a bare session name, to the

@@ -79,12 +79,19 @@ enum SSHControlSocket {
     /// already the failure `SSHControlSocketCheck.unresponsive` names.
     static let checkTimeout: TimeInterval = 5
 
-    static func check(target: SSHTarget, controlPath: String) -> SSHControlSocketCheck {
+    static func check(
+        target: SSHTarget, controlPath: String, transportLog: TransportLog = .shared
+    ) -> SSHControlSocketCheck {
         guard let argv = try? sshControlSocketCheckArguments(target: target, controlPath: controlPath),
               let outcome = try? SSHProcessRunner.run(argv, timeout: checkTimeout)
-        else { return .unresponsive }
-        return SSHControlSocketCheck.classify(
+        else {
+            transportLog.append(host: TransportLog.hostLabel(target: target), event: "control-check result=unresponsive")
+            return .unresponsive
+        }
+        let result = SSHControlSocketCheck.classify(
             exitCode: outcome.terminationStatus, stderr: outcome.stderr, timedOut: outcome.timedOut)
+        transportLog.append(host: TransportLog.hostLabel(target: target), event: "control-check result=\(result)")
+        return result
     }
 
     /// Deletes the concrete socket file `controlPath` (a template that may
@@ -101,13 +108,14 @@ enum SSHControlSocket {
     /// nothing is always a safe outcome here, since a caller only reaches
     /// this after `check` has already said the socket is not a live
     /// master's.
-    static func clear(target: SSHTarget, controlPath: String) {
+    static func clear(target: SSHTarget, controlPath: String, transportLog: TransportLog = .shared) {
         guard let argv = try? sshResolvedConfigArguments(target: target, controlPath: controlPath),
               let outcome = try? SSHProcessRunner.run(argv, timeout: checkTimeout),
               outcome.terminationStatus == 0,
               let resolved = resolvedControlPath(fromConfigOutput: outcome.stdout)
         else { return }
         try? FileManager.default.removeItem(atPath: resolved)
+        transportLog.append(host: TransportLog.hostLabel(target: target), event: "socket-cleared path=\(resolved)")
     }
 
     /// Pulls `controlpath`'s resolved value back out of `ssh -G`'s output —

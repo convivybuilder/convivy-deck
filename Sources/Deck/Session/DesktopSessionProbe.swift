@@ -88,13 +88,16 @@ enum DesktopSessionProbe {
     /// `RailStateModel.refresh()` use this exactly like its other
     /// non-throwing fetch seams.
     ///
-    /// Goes straight to `SSHProcessRunner` rather than `SessionAgent.run` —
+    /// Goes to `SSHProcessRunner.runQueued` rather than `SessionAgent.run` —
     /// `classify` needs the remote exit status alongside stderr, and
     /// `SessionAgent.run` discards it into an `AgentError.failed(String)`.
+    /// Queued rather than plain `run`, because the rail polls this beside
+    /// `fetchStates` on the same ControlMaster, so it must count against
+    /// `SSHConnectionGate`'s cap.
     static func probe(target: SSHTarget) -> DesktopSessionReading {
         do {
             let argv = try arguments(target: target)
-            let outcome = try SSHProcessRunner.run(argv, timeout: SessionAgent.defaultTimeout)
+            let outcome = try SSHProcessRunner.runQueued(argv, timeout: SessionAgent.defaultTimeout)
             if outcome.timedOut {
                 return .unknown
             }

@@ -39,6 +39,10 @@ final class ThemeStore: ObservableObject {
         self.fileURL = fileURL
         self.railDefaults = railDefaults
         self.configuration = ThemeConfiguration.load(from: fileURL)
+        // So a `maxSessionsPerControlMaster` hand-edited into `theme.json`
+        // takes effect from the first ssh call this launch makes, not only
+        // after some later `commit` — see `SSHConnectionGate.applyHostCaps`.
+        SSHConnectionGate.shared.applyHostCaps(configuration.hosts)
     }
 
     func setTheme(_ themeName: String?, forSession session: SessionRef) {
@@ -477,6 +481,7 @@ final class ThemeStore: ObservableObject {
     /// a preference, never the use of it in this session.
     private func commit(_ updated: ThemeConfiguration) {
         configuration = updated
+        SSHConnectionGate.shared.applyHostCaps(updated.hosts)
         do {
             try updated.save(to: fileURL)
         } catch {

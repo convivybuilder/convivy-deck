@@ -36,6 +36,19 @@ final class MakeAppTests: XCTestCase {
         return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
     }
 
+    // MARK: - Hardened runtime
+
+    /// Both flavors' executables get hardened runtime. Running make-app.sh
+    /// needs a full release build, so this pins the two signing lines; the
+    /// launcher's own tests show a signed install still launches.
+    func testBothFlavorsSignTheirExecutableWithHardenedRuntime() throws {
+        let makeApp = try source("Scripts/make-app.sh")
+        for executable in ["Contents/MacOS/Deck", "Contents/MacOS/deck-bin"] {
+            XCTAssertTrue(makeApp.contains(#"codesign --force --sign - --options runtime "$APP_DIR/\#(executable)" >&2"#),
+                          "\(executable) must be signed ad-hoc with hardened runtime")
+        }
+    }
+
     // MARK: - The mechanism: a failing progress write must not be fatal
 
     /// `report` is exactly `echo "$@" >&2 || true` — pinned here so a future
@@ -111,7 +124,7 @@ final class MakeAppTests: XCTestCase {
             #"report "==> Built $APP_DIR""#,
             #"report "    flavor: $FLAVOR ($FLAVOR_NOTE)""#,
             #"report "    version $VERSION (build $BUILD_NUMBER)""#,
-            #"report "    unsigned — see knowledge deck/runbooks/releasing-deck before distributing""#,
+            #"report "    ad-hoc signed with hardened runtime, no Developer ID — see knowledge deck/runbooks/releasing-deck before distributing""#,
         ] {
             XCTAssertTrue(makeApp.contains(call), "expected report call not found: \(call)")
         }

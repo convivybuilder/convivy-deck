@@ -84,16 +84,22 @@ final class KeelForward {
     private let target: SSHTarget
     private let remoteSocketPath: String
     private let controlPath: String
+    /// This forward's own slot in `SSHConnectionGate` for as long as it
+    /// holds its `-N` process open — one of CQ·164's LONG-LIVED HOLDERS,
+    /// released exactly once by `stop()`.
+    private let gateKey: SSHConnectionGate.Key
+    private var stopped = false
 
     private init(
         localPort: UInt16, process: Process, target: SSHTarget,
-        remoteSocketPath: String, controlPath: String
+        remoteSocketPath: String, controlPath: String, gateKey: SSHConnectionGate.Key
     ) {
         self.localPort = localPort
         self.process = process
         self.target = target
         self.remoteSocketPath = remoteSocketPath
         self.controlPath = controlPath
+        self.gateKey = gateKey
     }
 
     /// Reserves a local port, launches the forward, and waits for it to
@@ -118,15 +124,21 @@ final class KeelForward {
     static func start(
         target: SSHTarget, remoteSocketPath: String,
         controlPath: String = defaultControlPath(),
-        readinessTimeout: TimeInterval = 5
+        readinessTimeout: TimeInterval = 5,
+        transportLog: TransportLog = .shared
     ) throws -> KeelForward {
         do {
             return try attempt(target: target, remoteSocketPath: remoteSocketPath,
                                controlPath: controlPath, readinessTimeout: readinessTimeout)
         } catch {
-            let check = SSHControlSocket.check(target: target, controlPath: controlPath)
+            // THE SAME CHECK-AND-CLEAR DECISION `SessionAgent.run`'s
+            // `staleSocketRecovery` makes, reused rather than duplicated —
+            // see its own doc. `check`/`clear` log themselves, so this
+            // forward's attempt is covered the same way every other caller
+            // of either is.
+            let check = SSHControlSocket.check(target: target, controlPath: controlPath, transportLog: transportLog)
             guard check.warrantsClearing else { throw error }
-            SSHControlSocket.clear(target: target, controlPath: controlPath)
+            SSHControlSocket.clear(target: target, controlPath: controlPath, transportLog: transportLog)
             return try attempt(target: target, remoteSocketPath: remoteSocketPath,
                                controlPath: controlPath, readinessTimeout: readinessTimeout)
         }
@@ -138,6 +150,13 @@ final class KeelForward {
         let port = try reserveEphemeralLocalPort()
         let argv = try keelForwardArguments(
             target: target, remoteSocketPath: remoteSocketPath, localPort: port, controlPath: controlPath)
+        // Held for this forward's whole life as one of CQ·164's long-lived
+        // holders — see `gateKey`'s own doc.
+        let gateKey = SSHConnectionGate.Key(
+            destination: "\(target.user)@\(target.host)", controlPath: controlPath)
+        try SSHConnectionGate.shared.acquire(
+            gateKey, cap: SSHConnectionGate.shared.cap(forDestination: gateKey.destination),
+            queueTimeout: SSHConnectionGate.defaultQueueTimeout)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         process.arguments = argv
@@ -146,12 +165,18 @@ final class KeelForward {
         do {
             try process.run()
         } catch {
+            SSHConnectionGate.shared.release(gateKey)
             throw KeelForwardError.forwardNeverBecameReady("could not launch ssh: \(error)")
         }
-        try waitUntilReady(port: port, process: process, timeout: readinessTimeout)
+        do {
+            try waitUntilReady(port: port, process: process, timeout: readinessTimeout)
+        } catch {
+            SSHConnectionGate.shared.release(gateKey)
+            throw error
+        }
         return KeelForward(
             localPort: port, process: process, target: target,
-            remoteSocketPath: remoteSocketPath, controlPath: controlPath)
+            remoteSocketPath: remoteSocketPath, controlPath: controlPath, gateKey: gateKey)
     }
 
     /// Polls `connect()` against the just-launched forward's local port
@@ -262,6 +287,9 @@ final class KeelForward {
     /// acceptable for what this type is used for today (see this type's own
     /// file header: nothing wires it into a live call site yet).
     func stop() {
+        guard !stopped else { return }
+        stopped = true
+        defer { SSHConnectionGate.shared.release(gateKey) }
         guard let argv = try? sshCancelForwardArguments(
             target: target, remoteSocketPath: remoteSocketPath,
             localPort: localPort, controlPath: controlPath)

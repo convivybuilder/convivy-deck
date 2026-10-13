@@ -225,6 +225,11 @@ final class SessionPaneModel: ObservableObject {
     /// crews or config, only of the one session it drives.
     private let target: SSHTarget
 
+    /// Where the follower's liveness checks and restarts get logged — see
+    /// `TransportLog`. Injectable so `SessionPaneModelTests` can point it at
+    /// a temp directory rather than the real Application Support one.
+    private let transportLog: TransportLog
+
     /// Where `draft` actually lives — see `draft`'s doc and
     /// `SessionDraftStore`. Owned by `ContentView`, above the `.id()` this
     /// model is torn down and rebuilt behind on every session switch.
@@ -244,12 +249,14 @@ final class SessionPaneModel: ObservableObject {
     /// caller) always passes both explicitly.
     init(session: String, target: SSHTarget,
          draftStore: SessionDraftStore = SessionDraftStore(),
-         draftKey: SessionRef = SessionRef(host: nil, name: "")) {
+         draftKey: SessionRef = SessionRef(host: nil, name: ""),
+         transportLog: TransportLog = .shared) {
         self.session = session
         self.target = target
         self.draftStore = draftStore
         self.draftKey = draftKey
         self.draft = draftStore.draft(for: draftKey)
+        self.transportLog = transportLog
     }
 
     deinit {
@@ -404,12 +411,19 @@ final class SessionPaneModel: ObservableObject {
         SessionPaneModel.retireFollower(follower)
         follower = nil
         followerConsecutiveFailures += 1
+        let host = TransportLog.hostLabel(target: target)
         if SessionPaneModel.shouldFallBackToPolling(consecutiveFailures: followerConsecutiveFailures) {
+            transportLog.append(
+                host: host,
+                event: "follow-fallback-to-polling consecutive_failures=\(followerConsecutiveFailures)")
             fallBackToPolling()
             return
         }
         let phase = followReconnect.connectionLost()
-        guard case .reconnecting(_, let delay) = phase else { return }
+        guard case .reconnecting(let attempt, let delay) = phase else { return }
+        transportLog.append(
+            host: host,
+            event: "follow-restart attempt=\(attempt) delay=\(String(format: "%.3f", delay))s")
         followRetryTask?.cancel()
         followRetryTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
@@ -452,13 +466,17 @@ final class SessionPaneModel: ObservableObject {
         }
         let target = self.target
         let controlPath = defaultControlPath()
+        let transportLog = self.transportLog
+        // `check`/`clear` log their own result and path removal — see
+        // `TransportLog`'s callers in `SSHControlSocket` — so this tick
+        // needs no event of its own beyond those.
         let check: SSHControlSocketCheck = await Task.detached {
-            SSHControlSocket.check(target: target, controlPath: controlPath)
+            SSHControlSocket.check(target: target, controlPath: controlPath, transportLog: transportLog)
         }.value
         guard check.warrantsClearing else { return }
         guard follower != nil else { return }
         await Task.detached {
-            SSHControlSocket.clear(target: target, controlPath: controlPath)
+            SSHControlSocket.clear(target: target, controlPath: controlPath, transportLog: transportLog)
         }.value
         guard follower != nil else { return }
         followerDied()

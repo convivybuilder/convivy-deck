@@ -356,8 +356,17 @@ struct ThemeConfiguration: Equatable {
             // runbook, the same "field costs itself" rule `crewsRoot`
             // follows above — see `RunbookLink.parse`.
             let runbookLink = (row["runbookLink"] as? String).flatMap { RunbookLink.parse($0)?.stored }
+            // A bad `maxSessionsPerControlMaster` costs the host entry only
+            // its own override and falls back to `SSHConnectionGate
+            // .defaultCap`, the same "field costs itself" pattern
+            // `crewsRoot`/`runbookLink` follow above. Zero or negative is
+            // rejected rather than accepted as "no sessions" — a cap that
+            // small would mean every call on that host queues forever,
+            // which is never what a hand-edited value meant to say.
+            let maxSessions = (row["maxSessionsPerControlMaster"] as? Int).flatMap { $0 > 0 ? $0 : nil }
             return HostEntry(
-                name: name, user: user, address: address, crewsRoot: crewsRoot, runbookLink: runbookLink)
+                name: name, user: user, address: address, crewsRoot: crewsRoot, runbookLink: runbookLink,
+                maxSessionsPerControlMaster: maxSessions)
         }
     }
 
@@ -731,6 +740,9 @@ struct ThemeConfiguration: Equatable {
             // grow a key nobody wrote.
             if let crewsRoot = host.crewsRoot { row["crewsRoot"] = crewsRoot }
             if let runbookLink = host.runbookLink { row["runbookLink"] = runbookLink }
+            if let maxSessions = host.maxSessionsPerControlMaster {
+                row["maxSessionsPerControlMaster"] = maxSessions
+            }
             return row
         }
     }

@@ -502,6 +502,48 @@ enum PRLadder {
         return (merged, true)
     }
 
+    // MARK: - Review records, per qualifying PR
+
+    /// Whether anything `fetchLadder` computes for `row` reads its review
+    /// records: the union of `derivePosition`'s gate and
+    /// `staleReviewCount`'s. Both need `headSha`, and neither reads records
+    /// for a CLOSED or MERGED row. A draft row is admitted although
+    /// `derivePosition` returns `.draft` before consulting records, because
+    /// `staleReviewCount` still counts a draft's stale reviews; the same
+    /// holds for a row whose state is missing or unrecognized.
+    static func needsReviewRecords(_ row: StateRow) -> Bool {
+        guard row.headSha != nil else { return false }
+        switch row.state?.uppercased() {
+        case "CLOSED", "MERGED": return false
+        default: return true
+        }
+    }
+
+    /// Review records for exactly the rows `needsReviewRecords` admits, one
+    /// paged read per PR via `fetchPage`'s own `pr` argument — `fetchLadder`
+    /// used to read every review record in the repository once and group
+    /// them by `pr` client-side; this reads only the PRs whose position
+    /// depends on them, keyed by the PR number asked for rather than the
+    /// record's own `pr` field, so a record that fails to decode its `pr`
+    /// still lands under the right key. A PR absent from the returned
+    /// dictionary needs no records; `fetchLadder` reads that as `[]`.
+    static func fetchReviewRecordsByPR(
+        stateRows: [StateRow],
+        fetchPage: (_ pr: Int, _ offset: Int) throws -> Data
+    ) throws -> (recordsByPR: [Int: [ReviewRecordEntry]], truncated: Bool) {
+        var recordsByPR: [Int: [ReviewRecordEntry]] = [:]
+        var truncated = false
+        for row in stateRows {
+            guard needsReviewRecords(row), let number = row.number else { continue }
+            let (records, isTruncated) = try pagedRows(
+                fetchPage: { offset in try fetchPage(number, offset) },
+                decodePage: decodeReviewRecordsPage)
+            recordsByPR[number] = records
+            truncated = truncated || isTruncated
+        }
+        return (recordsByPR, truncated)
+    }
+
     // MARK: - Fetch
 
     /// One pull request's row set, resolved — the shape `fetchLadder`
@@ -569,56 +611,54 @@ enum PRLadder {
     /// calls. Synchronous and blocking, like every `LibraryClient` fetch
     /// verb; callers run this off the main actor.
     ///
-    /// Two independent paged reads: `GET /signals/pr-state` (one row per PR
-    /// already, so nothing to collapse here; repo-consistency checked per
-    /// page — see `repoConsistency`'s doc — and stopped early on the first
-    /// bad page), and review records for the whole repository
-    /// (server-filtered by `repo_identity`, so no client-side check is needed
-    /// there) grouped by `pr`. `derivePosition` runs once per PR with
-    /// `ciStatus(row:)`'s read of that same row's `ciConclusion`/
-    /// `ciCaptured` — see that function's doc for the mapping.
+    /// Two paged reads, the second scoped by the first. `GET
+    /// /signals/pr-state` reads every row for the repository (one row per
+    /// PR already, so nothing to collapse here; repo-consistency checked
+    /// per page — see `repoConsistency`'s doc — and stopped early on the
+    /// first bad page). Review records are then read once per PR that
+    /// `needsReviewRecords` admits — neither `derivePosition` nor
+    /// `staleReviewCount` reads records for a CLOSED, MERGED or
+    /// headSha-less row, so those rows are never asked for — via
+    /// `fetchReviewRecordsByPR`, server-filtered by both `repo_identity`
+    /// and `pr`. A row `needsReviewRecords` excludes gets `[]`.
+    /// `derivePosition` runs once per PR with `ciStatus(row:)`'s read of
+    /// that same row's `ciConclusion`/`ciCaptured` — see that function's
+    /// doc for the mapping.
     ///
-    /// **Both reads page in a fixed, newest-relevant-first order, and a page
-    /// cut off by `maxPages` sheds the far end.** `GET /review-records` is
-    /// "newest first" by its own handler doc, so it sheds the OLDEST records.
-    /// `GET /signals/pr-state` orders by repo, then PR number descending, so
-    /// it sheds the lowest-numbered PRs.
+    /// **Measured 2026-10-10 against the running Library, over the ssh
+    /// ControlMaster `fetchLadder` already uses:** the whole-repository
+    /// review-records read this replaced paged `agent-platform`'s 3,133
+    /// records 200 at a time, 16 pages and roughly 17MB (about 1.1MB per
+    /// page) for about 86 seconds; one run of that same fetch failed
+    /// outright with `AgentError.failed("")` after 140 seconds. Reading
+    /// review records per qualifying PR instead removes both the size and
+    /// the per-refresh cost of that read for the common case: most PRs this
+    /// panel draws are either closed or hold far fewer records than
+    /// the repository total.
     ///
-    /// **That bound is clean for the latest-state half.** The Library ranks a
-    /// PR's rows over every row it has before it pages, so a PR that is
-    /// present at all is present as its true latest state; a truncated read
-    /// can only drop a PR entirely or undercount `staleReviewCount`, never
-    /// make a shown PR draw a wrong position.
+    /// **The latest-state read's own truncation is clean.** The Library
+    /// ranks a PR's rows over every row it has before it pages, so a PR
+    /// that is present at all is present as its true latest state; a
+    /// truncated read can only drop a PR entirely, never make a shown PR
+    /// draw a wrong position.
     ///
-    /// **It does NOT hold for `derivePosition`'s review-records half.**
-    /// `headReviews` is an existence filter over whatever `reviewRecords`
-    /// survived the review-records read's own, independent truncation,
-    /// not a newest-pick — and `rolesEverSeen` is built only from those
-    /// surviving records. If review-records truncation drops a role's
-    /// blocking `REQUEST_CHANGES` for a PR whose `pr_state` row is still
-    /// inside its own window (the state hasn't changed since, so no new
-    /// `pr_state` row was ever produced), that role vanishes from
-    /// `rolesEverSeen`, and another role's approval at head makes
-    /// `rolesApprovedAtHead.isSuperset(of: rolesEverSeen)` true vacuously
-    /// — the PR then draws `.readyToMerge` or `.stateUnknown(.noCISource)`
-    /// while still carrying an unresolved blocking verdict. The two
-    /// routes are independent paged streams with no shared event rate, so
-    /// nothing couples their cutoffs.
+    /// **A per-PR review-records truncation is not.** `GET /review-records`
+    /// is "newest first" by its own handler doc, so a PR whose own read hits
+    /// `maxPages` sheds its oldest records, which can drop a role's blocking
+    /// `REQUEST_CHANGES` out of what `derivePosition` sees. `rolesEverSeen`
+    /// is built only from the records that survived that PR's own read, so
+    /// losing one role's only record there makes `rolesApprovedAtHead
+    /// .isSuperset(of: rolesEverSeen)` true vacuously — the PR then draws
+    /// `.readyToMerge` or `.stateUnknown(.noCISource)` while still carrying
+    /// an unresolved blocking verdict `fetchLadder` never saw. Each PR's
+    /// read is bounded by the same `pageLimit * maxPages` budget the
+    /// whole-repository read used to share across every PR at once, so this
+    /// risk is strictly smaller than before: it now takes one PR holding
+    /// 5,000 of its own records, not the repository as a whole.
     ///
-    /// **Measured 2026-09-16 against the running Library** (`GET
-    /// /review-records?repo_identity=…&limit=1`'s `total` field): the busiest repo
-    /// `fetchLadder` is asked about across the fleet, `agent-platform`,
-    /// held 2,326 review records against the 5,000-row budget (`pageLimit
-    /// * maxPages`) — under half, so this cannot fire today.
-    /// `convivy-deck` itself held 737. Re-run that query once a repo's
-    /// count is tracking toward 5,000; that is the point this stops being
-    /// theoretical and `derivePosition` needs a truncation-aware guard.
-    ///
-    /// `truncated` on `FetchResult.ladder` exists to say the read may be
-    /// short, not to gate which rows this function keeps: there is no
-    /// reliable way to tell, from a truncated page alone, which specific
-    /// PR fell off the end, or whose position the missing records would
-    /// have changed.
+    /// `truncated` on `FetchResult.ladder` is `true` when the latest-state
+    /// read truncated, or when ANY per-PR review-records read did — it says
+    /// the read may be short, not which rows it is short for.
     static func fetchLadder(target: SSHTarget, owner: String, repoName: String) throws -> FetchResult {
         guard let safeOwner = LibraryClient.validateRepoSegment(owner),
               let safeRepoName = LibraryClient.validateRepoSegment(repoName) else {
@@ -647,20 +687,12 @@ enum PRLadder {
             return .degraded(reason: degradeReason)
         }
 
-        let (reviewRecords, reviewRecordsTruncated) = try pagedRows(
-            fetchPage: { offset in
-                try SessionAgent.run(
-                    LibraryClient.reviewRecordsArguments(
-                        target: target, owner: safeOwner, repoName: safeRepoName,
-                        limit: pageLimit, offset: offset),
-                    classifyMissingCommand: false)
-            },
-            decodePage: decodeReviewRecordsPage)
-
-        var recordsByPR: [Int: [ReviewRecordEntry]] = [:]
-        for record in reviewRecords {
-            guard let pr = record.pr else { continue }
-            recordsByPR[pr, default: []].append(record)
+        let (recordsByPR, reviewRecordsTruncated) = try fetchReviewRecordsByPR(stateRows: stateRows) { pr, offset in
+            try SessionAgent.run(
+                LibraryClient.reviewRecordsArguments(
+                    target: target, owner: safeOwner, repoName: safeRepoName,
+                    pr: pr, limit: pageLimit, offset: offset),
+                classifyMissingCommand: false)
         }
 
         // An entry with no repo or number cannot be keyed, so it costs itself

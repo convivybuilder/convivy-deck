@@ -170,6 +170,31 @@ enum StewardCrew {
             classifyMissingCommand: false)
     }
 
+    /// Whether `<directory>/CLAUDE.md` already exists on `target`, read
+    /// through `session-agent read-file`, the same contained verb the
+    /// write uses. A read that fails because the file is missing answers
+    /// `false`; any other failure throws, so an unreadable host never reads
+    /// as "safe to write".
+    static func roleFileExists(target: SSHTarget, directory: String) throws -> Bool {
+        _ = try validateHostUser(target.user)
+        _ = try validateHostAddress(target.host)
+        let dir = try validateWorkingDirectory(directory)
+        do {
+            _ = try SessionAgent.run(
+                WorkingCopyStore.readFileArguments(target: target, path: "\(dir)/\(roleFilename)"),
+                classifyMissingCommand: false)
+            return true
+        } catch SessionAgent.AgentError.failed(let message) where isMissingFileMessage(message) {
+            return false
+        }
+    }
+
+    /// `read-file`'s refusal for a path that does not exist carries the
+    /// OS's own "No such file or directory" (`session_files.read_file`).
+    static func isMissingFileMessage(_ message: String) -> Bool {
+        message.contains("No such file or directory")
+    }
+
     /// Creates the steward crew end to end: the tmux session via
     /// `SessionAgent.createCrew` — the only call allowed to pass
     /// `--create-dir` — then the role file. Directory before file: `write-file`
@@ -181,11 +206,30 @@ enum StewardCrew {
     /// itself may have since edited. A genuine failure THROWS rather than
     /// returning `false`, so a caller cannot mistake "the mini refused" for
     /// "there was already one here."
+    ///
+    /// **The role file is written only when none exists.** A fresh Builder
+    /// install puts the steward's full charter at `<directory>/CLAUDE.md`
+    /// before any steward session runs, so the crew guard above passes on
+    /// that host, and `write-file` renames over its target. Deck's short
+    /// framing is for a host with no role file at all.
     @discardableResult
-    static func create(target: SSHTarget, directory: String, existingCrews: [Crew]) throws -> Bool {
+    static func create(
+        target: SSHTarget, directory: String, existingCrews: [Crew],
+        createCrew: (SSHTarget, String) throws -> Void = { target, directory in
+            try SessionAgent.createCrew(target: target, session: StewardCrew.id, directory: directory)
+        },
+        roleFileExists: (SSHTarget, String) throws -> Bool = { target, directory in
+            try StewardCrew.roleFileExists(target: target, directory: directory)
+        },
+        writeRoleFile: (SSHTarget, String) throws -> Void = { target, directory in
+            _ = try StewardCrew.writeRoleFile(target: target, directory: directory)
+        }
+    ) throws -> Bool {
         guard !existingCrews.contains(where: { $0.id == id }) else { return false }
-        try SessionAgent.createCrew(target: target, session: id, directory: directory)
-        try writeRoleFile(target: target, directory: directory)
+        try createCrew(target, directory)
+        if try !roleFileExists(target, directory) {
+            try writeRoleFile(target, directory)
+        }
         return true
     }
 

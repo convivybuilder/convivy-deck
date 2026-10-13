@@ -17,6 +17,24 @@ final class SSHStderrClassifierTests: XCTestCase {
         XCTAssertEqual(SSHStderrClassifier.classify(line), .transientMuxRefusal)
     }
 
+    /// CQ·164's own incident: `ControlMaster=auto`'s fallback announcement,
+    /// which follows the refusal in real stderr and is what let the slow
+    /// direct connection (26.4s, measured) run to completion unnoticed
+    /// before this classification existed.
+    func testRecognisesTheMultiplexingDisabledFallback() {
+        let line = "mux_client_request_session: session request failed: Session open refused by peer\r\n"
+            + "ControlSocket /Users/example/.ssh/deck-cm-abc123 already exists, disabling multiplexing\r\n"
+        XCTAssertEqual(SSHStderrClassifier.classify(line), .transientMuxRefusal)
+    }
+
+    /// The fallback wording alone, with no `mux_client_request_session` on
+    /// the same line — still the same condition, so it must classify the
+    /// same way rather than only being recognised in combination.
+    func testRecognisesTheMultiplexingDisabledFallbackAlone() {
+        let line = "ControlSocket /Users/example/.ssh/deck-cm-abc123 already exists, disabling multiplexing"
+        XCTAssertEqual(SSHStderrClassifier.classify(line), .transientMuxRefusal)
+    }
+
     func testHostUnreachableIsNotAbsorbed() {
         let line = "ssh: connect to host mini.local port 22: Operation timed out"
         XCTAssertEqual(SSHStderrClassifier.classify(line), .other)

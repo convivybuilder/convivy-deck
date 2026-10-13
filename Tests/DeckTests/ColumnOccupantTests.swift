@@ -41,6 +41,30 @@ final class ColumnOccupantTests: XCTestCase {
         XCTAssertEqual(ColumnOccupant.togglingRemoteShell(from: .localTerminal), .remoteShell)
     }
 
+    // MARK: - Closing a document opened from a run's pane
+
+    private let docTarget = SSHTarget(user: "operator", host: "10.0.0.5")
+
+    private func document(_ id: String) -> ColumnOccupant {
+        .viewer(ref: .kb(id: id), target: docTarget)
+    }
+
+    func testClosingADocumentOpenedFromARunReturnsToThatRun() {
+        // The reported bug: closing returned to the cockpit's top level.
+        let opened = document("deck/agents/deck-coder")
+        let back = ColumnBack(opened: opened, previous: .run(runId: "run-2f2b88b2"))
+        XCTAssertEqual(ColumnOccupant.revealedOnClose(opened, back: back), .run(runId: "run-2f2b88b2"))
+    }
+
+    func testClosingAnotherDocumentThanTheOneOpenedFromTheRunRevealsTheCockpit() {
+        let back = ColumnBack(opened: document("deck/agents/deck-coder"), previous: .run(runId: "run-1"))
+        XCTAssertEqual(ColumnOccupant.revealedOnClose(document("deck/runbooks/post-merge"), back: back), .cockpit)
+    }
+
+    func testClosingADocumentWithNoRememberedPaneRevealsTheCockpit() {
+        XCTAssertEqual(ColumnOccupant.revealedOnClose(document("deck/agents/deck-coder"), back: nil), .cockpit)
+    }
+
     // MARK: - Slate follows the rail selection
 
     private let mini = SSHTarget(user: "operator", host: "10.0.0.5")

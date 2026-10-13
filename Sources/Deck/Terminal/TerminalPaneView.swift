@@ -105,6 +105,13 @@ struct TerminalPaneView: NSViewRepresentable {
         /// see `processTerminated`. Unbounded absorption would make a
         /// genuinely wedged ControlMaster look like a hang instead of a
         /// reported failure.
+        ///
+        /// DORMANT SINCE CQ·165: a pane's own ssh process connects with
+        /// `ControlPath=none`, so it never runs the mux client this classifies
+        /// — `classification()` reads `.other` unconditionally, and this never
+        /// absorbs. Left in place rather than torn out, since an idle policy
+        /// costs nothing and `processTerminated` still needs a classification
+        /// to decide whether to clear the screen before the reconnect veil.
         private var absorptionPolicy = MuxRefusalAbsorptionPolicy()
         private weak var view: SSHStderrWatchingTerminalView?
         private var retryWorkItem: DispatchWorkItem?
@@ -168,25 +175,39 @@ struct TerminalPaneView: NSViewRepresentable {
             // never be read as this new one's — see `processTerminated`.
             view.beginWatchingNewAttempt()
 
+            let executable: String
+            let args: [String]
             do {
-                let (executable, args) = try TerminalLaunch.executableAndArguments(for: target)
-                // `currentDirectory` matters only for the local shell — an ssh
-                // target's directory is decided on the far side. Passing nil for
-                // those leaves SwiftTerm's inherited behaviour untouched.
-                //
-                // Resolved fresh on every connect, including the restart after
-                // a clean `exit`, rather than once and reused. Nothing here
-                // polls or holds a snapshot: the directory is asked for at the
-                // moment a process is about to spawn, and at no other time.
-                view.startProcess(
-                    executable: executable, args: args,
-                    execName: (executable as NSString).lastPathComponent,
-                    currentDirectory: target == .localShell
-                        ? localStartingDirectory() : nil)
+                (executable, args) = try TerminalLaunch.executableAndArguments(for: target)
             } catch {
                 scheduleRetry(after: stateMachine.connectionLost())
                 return
             }
+
+            // NO GATE WAIT HERE (CQ·165). A pane's ssh process opens its own
+            // connection (`ControlPath=none` in `sshArguments`/
+            // `BuilderServerInstall.arguments`) rather than riding the shared
+            // ControlMaster `SSHConnectionGate` bounds, so it is no longer one
+            // of the sessions sshd's `MaxSessions` caps on that socket, and has
+            // nothing to queue for.
+            startProcess(executable: executable, args: args, view: view)
+        }
+
+        /// Actually launches the pane's process.
+        private func startProcess(executable: String, args: [String], view: SSHStderrWatchingTerminalView) {
+            // `currentDirectory` matters only for the local shell — an ssh
+            // target's directory is decided on the far side. Passing nil for
+            // those leaves SwiftTerm's inherited behaviour untouched.
+            //
+            // Resolved fresh on every connect, including the restart after
+            // a clean `exit`, rather than once and reused. Nothing here
+            // polls or holds a snapshot: the directory is asked for at the
+            // moment a process is about to spawn, and at no other time.
+            view.startProcess(
+                executable: executable, args: args,
+                execName: (executable as NSString).lastPathComponent,
+                currentDirectory: target == .localShell
+                    ? localStartingDirectory() : nil)
 
             let assumeConnected = DispatchWorkItem { [weak self] in
                 guard let self else { return }

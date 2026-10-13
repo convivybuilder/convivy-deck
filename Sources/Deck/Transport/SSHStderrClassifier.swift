@@ -2,16 +2,28 @@ import Foundation
 
 /// What kind of thing an ssh child process just said on stderr.
 ///
-/// NARROW ON PURPOSE. The only condition that classifies as
-/// `.transientMuxRefusal` is OpenSSH's multiplexing-client refusal — every
-/// pane, and every `session-agent` call, rides one ControlMaster
-/// (`SSHTarget.defaultControlPath`), and the mini's sshd caps how many
-/// session channels it will open on that one connection (`MaxSessions`).
-/// When the cap is momentarily full, the client refuses a new channel with a
-/// message carrying `mux_client_request_session` — the socket is alive and
-/// reachable, the host and the credentials are fine, and the failure clears
-/// itself the moment another pane's channel frees up. That is what makes it
-/// retryable by construction rather than a real failure.
+/// NARROW ON PURPOSE. `.transientMuxRefusal` covers OpenSSH's own two-part
+/// wording for ONE condition — the ControlMaster's channel count is
+/// momentarily full — not two different ones: every `session-agent` call
+/// rides one ControlMaster (`defaultControlPath`), and the host's sshd caps
+/// how many session channels it will open on that one connection
+/// (`MaxSessions`). When the cap is momentarily full, the client refuses a
+/// new channel with a message carrying `mux_client_request_session`, and
+/// `ControlMaster=auto` then logs "disabling multiplexing" as it falls back
+/// to a full direct connection — the slow path CQ·164 closes (that fallback
+/// alone measured 26.4s). Either phrase means the same thing: the socket is
+/// alive and reachable, the host and the credentials are fine, and the
+/// failure clears itself the moment another caller's channel frees up. That
+/// is what makes it retryable by construction rather than a real failure.
+///
+/// A TERMINAL PANE'S OWN ssh PROCESS CANNOT PRODUCE EITHER PHRASE (CQ·165).
+/// A pane connects with `ControlPath=none` precisely so a stalled pane
+/// terminal cannot block the shared master's `write()` and freeze every
+/// other caller riding it — which also means a pane's ssh never runs the
+/// mux client this classification exists to read, since there is no shared
+/// socket for it to request a channel on. `TerminalPaneView.Coordinator`
+/// still classifies its child's stderr through `SSHStderrClassifier`, but
+/// `.transientMuxRefusal` now reads `.other` there unconditionally.
 ///
 /// Everything else — host unreachable, a rejected key, a tmux session that no
 /// longer exists — is `.other`, and every caller of `classify` shows it to the
@@ -48,7 +60,17 @@ enum SSHStderrClassifier {
     /// stderr wholesale.
     private static let muxRefusalToken = "mux_client_request_session"
 
+    /// `ControlMaster=auto`'s own wording the instant it abandons the
+    /// multiplexing attempt and starts a full direct connection in its
+    /// place — CQ·164's own incident log shows it immediately following
+    /// `muxRefusalToken` in the same stderr, and it is the one piece of
+    /// stderr that marks the exact moment a caller must stop waiting on
+    /// this attempt: everything after it is the slow fallback connection,
+    /// not the mux refusal that caused it.
+    private static let multiplexingFallbackToken = "disabling multiplexing"
+
     static func classify(_ text: String) -> SSHStderrClassification {
-        text.contains(muxRefusalToken) ? .transientMuxRefusal : .other
+        text.contains(muxRefusalToken) || text.contains(multiplexingFallbackToken)
+            ? .transientMuxRefusal : .other
     }
 }

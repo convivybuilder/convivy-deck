@@ -1300,8 +1300,17 @@ enum SessionAgent {
                     classifyMissingCommand: Bool = true,
                     throwOnNonZeroExit: Bool = true,
                     timeout: TimeInterval = defaultTimeout,
-                    staleSocketRecovery: (target: SSHTarget, controlPath: String)? = nil) throws -> Data {
-        let outcome = try SSHProcessRunner.run(argv, stdin: stdin, timeout: timeout)
+                    staleSocketRecovery: (target: SSHTarget, controlPath: String)? = nil,
+                    transportLog: TransportLog = .shared) throws -> Data {
+        let started = Date()
+        // `runQueued` holds this call to `SSHConnectionGate`'s own cap on
+        // sessions through one ControlMaster, queueing it FIFO behind
+        // whatever else is already using that master and requeuing it
+        // in-place on a master-full refusal — see its own doc. By the time
+        // an outcome reaches here, ssh's own refusal wording has already
+        // been retried past, which is also why the transport-failure check
+        // below excludes it explicitly rather than relying on that alone.
+        let outcome = try SSHProcessRunner.runQueued(argv, stdin: stdin, timeout: timeout)
         // ssh's own documented convention: 255 is the client's own transport
         // failure, distinct from a remote command's forwarded exit status.
         // Only that shape, or our own watchdog firing, is worth spending a
@@ -1309,16 +1318,43 @@ enum SessionAgent {
         // mini genuinely has no record of already reached the remote side,
         // and `-O check` would only cost time confirming what the exit code
         // already answered.
-        let isTransportFailure = outcome.timedOut || outcome.terminationStatus == 255
-        if isTransportFailure, let staleSocketRecovery {
-            let check = SSHControlSocket.check(
-                target: staleSocketRecovery.target, controlPath: staleSocketRecovery.controlPath)
-            if check.warrantsClearing {
-                SSHControlSocket.clear(
-                    target: staleSocketRecovery.target, controlPath: staleSocketRecovery.controlPath)
-                let retried = try SSHProcessRunner.run(argv, stdin: stdin, timeout: timeout)
-                return try decoded(retried, classifyMissingCommand: classifyMissingCommand,
-                                   throwOnNonZeroExit: throwOnNonZeroExit, timeout: timeout)
+        //
+        // A MASTER-FULL REFUSAL IS EXCLUDED HERE EVEN THOUGH `runQueued`
+        // ALREADY HANDLES IT, deliberately: `-O check`-and-clear must never
+        // run against a refusal this call never actually diagnosed as dead
+        // — a live master that is merely full looks nothing like the
+        // wedged-socket case this recovery exists for, and clearing its
+        // file out from under every other pane sharing it would be exactly
+        // the hazard `SSHControlSocket`'s own doc warns against.
+        let isTransportFailure = SSHStderrClassifier.classify(outcome.stderr) != .transientMuxRefusal
+            && (outcome.timedOut || outcome.terminationStatus == 255)
+        if isTransportFailure {
+            // THE HOST LABEL COMES FROM `argv` ITSELF, NOT FROM
+            // `staleSocketRecovery`, which most callers leave `nil` — see
+            // `TransportLog.hostLabel(fromArgv:)`. A transport failure is
+            // worth a log line on every verb, not only the three that opt
+            // into recovery.
+            let host = TransportLog.hostLabel(fromArgv: argv)
+            transportLog.append(
+                host: host,
+                event: "transport-failure timed_out=\(outcome.timedOut) exit=\(outcome.terminationStatus) "
+                    + "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(started)))s "
+                    + "stderr=\(TransportLog.quoted(outcome.stderr))")
+            if let staleSocketRecovery {
+                let check = SSHControlSocket.check(
+                    target: staleSocketRecovery.target, controlPath: staleSocketRecovery.controlPath,
+                    transportLog: transportLog)
+                if check.warrantsClearing {
+                    SSHControlSocket.clear(
+                        target: staleSocketRecovery.target, controlPath: staleSocketRecovery.controlPath,
+                        transportLog: transportLog)
+                    let retried = try SSHProcessRunner.runQueued(argv, stdin: stdin, timeout: timeout)
+                    transportLog.append(
+                        host: host,
+                        event: "retry timed_out=\(retried.timedOut) exit=\(retried.terminationStatus)")
+                    return try decoded(retried, classifyMissingCommand: classifyMissingCommand,
+                                       throwOnNonZeroExit: throwOnNonZeroExit, timeout: timeout)
+                }
             }
         }
         return try decoded(outcome, classifyMissingCommand: classifyMissingCommand,

@@ -95,4 +95,14 @@ final class DesktopSessionProbeTests: XCTestCase {
         XCTAssertThrowsError(
             try DesktopSessionProbe.arguments(target: SSHTarget(user: "-oProxyCommand=x", host: "macstudio")))
     }
+
+    /// The probe rides the shared ControlMaster, so it must count against
+    /// `SSHConnectionGate`'s cap: `runQueued` gates exactly the argv that
+    /// `Key.from` recognises, and passes anything else straight through.
+    func testProbeArgvIsGatedOnTheSharedConnection() throws {
+        let argv = try DesktopSessionProbe.arguments(
+            target: SSHTarget(user: "operator", host: "macstudio"), controlPath: "/tmp/cm-%C")
+        let key = try XCTUnwrap(SSHConnectionGate.Key.from(argv: argv))
+        XCTAssertEqual(key.destination, "operator@macstudio")
+    }
 }

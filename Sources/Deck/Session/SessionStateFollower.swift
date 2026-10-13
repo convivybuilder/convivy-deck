@@ -58,6 +58,16 @@ final class SessionStateFollower: @unchecked Sendable {
     private let queue = DispatchQueue(label: "deck.session-state-follower")
     private var process: Process?
     private var buffer = Data()
+    /// This follower's own slot in `SSHConnectionGate` — one of the
+    /// LONG-LIVED HOLDERS CQ·164 counts against the per-master cap, held
+    /// for as long as the follow process runs and released by whichever of
+    /// `stop()`, `finishWithExit`, or the `killedAlready` race in `start()`
+    /// ends it first (`releaseGateSlotIfHeld` is safe to call from all
+    /// three: the first to find a non-nil key releases it, the rest find
+    /// nil). Guarded by its own lock rather than `queue`, so a release can
+    /// never be left waiting behind whatever else is already queued on it.
+    private let gateLock = NSLock()
+    private var gateKey: SSHConnectionGate.Key?
     /// Set by `stop()`, and checked before yielding `.exited` so a pane that
     /// closes its own follower does not also see that closure reported as an
     /// unexpected exit — the two are different events for the caller: one is
@@ -96,6 +106,21 @@ final class SessionStateFollower: @unchecked Sendable {
             finishWithExit(nil)
             return
         }
+
+        // Held for this follower's whole life as one of CQ·164's
+        // long-lived holders, not released again until the ssh process
+        // this launches ends — see `releaseGateSlotIfHeld`.
+        let key = SSHConnectionGate.Key(
+            destination: "\(target.user)@\(target.host)", controlPath: defaultControlPath())
+        do {
+            try SSHConnectionGate.shared.acquire(
+                key, cap: SSHConnectionGate.shared.cap(forDestination: key.destination),
+                queueTimeout: SSHConnectionGate.defaultQueueTimeout)
+        } catch {
+            finishWithExit(nil)
+            return
+        }
+        setGateKey(key)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -149,6 +174,10 @@ final class SessionStateFollower: @unchecked Sendable {
             process.terminationHandler = nil
             out.fileHandleForReading.readabilityHandler = nil
             if process.isRunning { process.terminate() }
+            // `stop()` landed in the gap before `self.process` was ever
+            // assigned, so `stop()`'s own release never ran against this
+            // slot — only this branch knows it was acquired at all.
+            releaseGateSlotIfHeld()
         }
     }
 
@@ -179,12 +208,35 @@ final class SessionStateFollower: @unchecked Sendable {
     }
 
     private func finishWithExit(_ status: Int32?) {
+        releaseGateSlotIfHeld()
         queue.async { [self] in
             guard !finished else { return }
             finished = true
             continuation.yield(.exited(status: status))
             continuation.finish()
         }
+    }
+
+    /// Records the slot this follower just acquired, so whichever of
+    /// `stop()`/`finishWithExit`/the `killedAlready` race above ends it
+    /// first can find and release it. Not `queue`-synchronised, deliberately
+    /// — see `gateLock`'s own doc.
+    private func setGateKey(_ key: SSHConnectionGate.Key) {
+        gateLock.lock()
+        gateKey = key
+        gateLock.unlock()
+    }
+
+    /// Releases this follower's gate slot exactly once, however many of
+    /// `stop()`/`finishWithExit`/the `killedAlready` race above try: the
+    /// first to find a non-nil `gateKey` clears it and performs the real
+    /// release, and every later caller finds nil and does nothing.
+    private func releaseGateSlotIfHeld() {
+        gateLock.lock()
+        let key = gateKey
+        gateKey = nil
+        gateLock.unlock()
+        if let key { SSHConnectionGate.shared.release(key) }
     }
 
     /// Terminates the process. Idempotent — safe to call from the pane
@@ -211,6 +263,7 @@ final class SessionStateFollower: @unchecked Sendable {
                 continuation.finish()
             }
         }
+        releaseGateSlotIfHeld()
     }
 
     /// Splits a byte buffer into complete, newline-terminated lines and the

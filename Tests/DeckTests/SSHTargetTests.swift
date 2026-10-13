@@ -7,23 +7,37 @@ final class SSHTargetTests: XCTestCase {
     /// reads the real `~/.ssh`.
     private let noDeckKeyHome = "/nonexistent/deck-test-home"
 
-    func testArgumentsCarryControlMasterAndTmuxAttach() throws {
+    /// CQ·165: a pane opens its own ssh connection rather than joining the
+    /// shared ControlMaster, so a stalled pane terminal can only freeze
+    /// itself — never every one-shot verb, Library composer and follower
+    /// riding the shared master.
+    func testArgumentsCarryNoSharedMasterAndTmuxAttach() throws {
         let args = try sshArguments(
             target: TestHost.target,
             tmuxSession: "steward",
-            controlPath: "/tmp/deck-cm-%C",
             home: noDeckKeyHome
         )
         XCTAssertEqual(args, [
             "-t",
-            "-o", "ControlMaster=auto",
-            "-o", "ControlPersist=10m",
-            "-o", "ControlPath=/tmp/deck-cm-%C",
+            "-o", "ControlPath=none",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
             "\(TestHost.user)@\(TestHost.address)",
             "tmux", "new-session", "-A", "-D", "-s", "steward",
         ])
+    }
+
+    /// Regression for the incident this closes: a pane's argv must never
+    /// carry the options that would let it join or recreate the shared
+    /// ControlMaster, however the option list above is edited later.
+    func testArgumentsNeverJoinTheSharedMaster() throws {
+        let args = try sshArguments(target: TestHost.target, tmuxSession: "steward", home: noDeckKeyHome)
+        XCTAssertFalse(args.contains { $0.hasPrefix("ControlMaster=") })
+        XCTAssertFalse(args.contains { $0.hasPrefix("ControlPersist=") })
+        XCTAssertTrue(args.contains("ControlPath=none"))
+        XCTAssertTrue(args.contains("-t"))
+        XCTAssertTrue(args.contains("ServerAliveInterval=15"))
+        XCTAssertTrue(args.contains("ServerAliveCountMax=3"))
     }
 
     /// Regression: the argv was `attach-session -t`, which fails outright on a

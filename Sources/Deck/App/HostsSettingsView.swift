@@ -16,6 +16,7 @@ struct HostsSettingsView: View {
     @EnvironmentObject private var store: ThemeStore
     @EnvironmentObject private var navigation: SettingsNavigation
     @EnvironmentObject private var railState: RailStateModel
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var selection: String?
     @State private var isAdding = false
@@ -38,6 +39,22 @@ struct HostsSettingsView: View {
     /// doc for why a modal over the main window on every fresh launch is
     /// worse than the row simply appearing on the rail unannounced.
     @State private var stewardJustCreated: HostEntry?
+
+    /// A host just added that turned out to have no Builder server, waiting
+    /// on the person's answer to the one-time install offer (CQ·158).
+    /// Declining clears it; the host stays, and its row keeps the action.
+    @State private var installOffer: HostEntry?
+
+    /// The host whose install action was taken, presenting the install
+    /// sheet — the single entry point CQ·160 replaces with a terminal pane
+    /// that runs the installer over the host's ssh connection.
+    @State private var installRequest: HostEntry?
+
+    /// Hosts whose pre-install check is running, and the last not-ready
+    /// reading per host (CQ·159). A `.ready` reading is never stored: it
+    /// goes straight to `installRequest`.
+    @State private var preInstallChecking: Set<String> = []
+    @State private var preInstallReadings: [String: PreInstallReading] = [:]
 
     private var configuration: ThemeConfiguration { store.configuration }
     private var hosts: [HostEntry] { configuration.hosts }
@@ -98,6 +115,29 @@ struct HostsSettingsView: View {
         }
         .sheet(isPresented: $isAdding) {
             AddHostSheet(existingHosts: hosts) { entry in addHost(entry) }
+        }
+        .sheet(isPresented: Binding(
+            get: { installRequest != nil },
+            set: { if !$0 { installRequest = nil } })
+        ) {
+            if let entry = installRequest {
+                installSheet(for: entry)
+            }
+        }
+        .alert(
+            "Install Builder\u{2019}s server on \u{201c}\(installOffer?.name ?? "")\u{201d}?",
+            isPresented: Binding(
+                get: { installOffer != nil },
+                set: { if !$0 { installOffer = nil } })
+        ) {
+            Button("Not Now", role: .cancel) { installOffer = nil }
+            Button("Install\u{2026}") {
+                if let entry = installOffer { beginInstall(entry) }
+                installOffer = nil
+            }
+        } message: {
+            Text("\(installOffer?.name ?? "This host") has no Builder server, so it has no crews "
+                 + "or steward yet. You can install it later from the host\u{2019}s row.")
         }
         .sheet(item: $pairing) { request in
             HostPairingSheet(target: request.target) { outcome in
@@ -168,11 +208,17 @@ struct HostsSettingsView: View {
         selection = entry.name
         let target = SSHTarget(user: entry.user, host: entry.address)
         Task {
-            let fetchedRoot = await Task.detached {
-                try? SessionAgent.crewsRoot(target: target)
+            let fetched = await Task.detached {
+                Result { try SessionAgent.crewsRoot(target: target) }
             }.value
+            // A host with no Builder server gets the install offer instead
+            // of a steward create that could only fail (CQ·158).
+            if case .failure(let error) = fetched, BuilderServerTracker.isNotInstalled(error) {
+                installOffer = entry
+                return
+            }
             let landed = HostsSettingsView.applyingFetchedRoot(
-                fetchedRoot, toHostNamed: entry.name, in: store) ?? entry
+                try? fetched.get(), toHostNamed: entry.name, in: store) ?? entry
             createStewardIfNeeded(after: landed)
         }
     }
@@ -221,7 +267,8 @@ struct HostsSettingsView: View {
     /// once — see that property's doc.
     private func createStewardIfNeeded(after entry: HostEntry) {
         guard !store.stewardCreateInFlight,
-              StewardCrew.shouldCreate(hostCount: hosts.count, crews: rail)
+              StewardCrew.shouldCreate(hostCount: hosts.count, crews: rail),
+              !BuilderServerInstall.offersInstall(builderServerState(for: entry))
         else { return }
         createSteward(on: entry)
     }
@@ -254,10 +301,61 @@ struct HostsSettingsView: View {
                 store.addCrew(Crew(id: StewardCrew.id, displayName: StewardCrew.displayName,
                                     workingDirectory: directory, host: entry.name))
                 stewardJustCreated = entry
+            case .failure(let error) where BuilderServerTracker.isNotInstalled(error):
+                installOffer = entry
             case .failure(let error):
                 store.saveError = "Could not create the steward crew: \(error)"
             }
         }
+    }
+
+    /// The install action's gate (CQ·159): checks Claude Code's sign-in and,
+    /// on a Mac, the desktop login before anything is offered to run. Only
+    /// `.ready` opens the install; any other reading stays on the host's
+    /// detail panel until the next attempt.
+    private func beginInstall(_ entry: HostEntry) {
+        guard !preInstallChecking.contains(entry.name) else { return }
+        preInstallChecking.insert(entry.name)
+        preInstallReadings[entry.name] = nil
+        selection = entry.name
+        let target = SSHTarget(user: entry.user, host: entry.address)
+        Task {
+            let reading = await Task.detached { PreInstallCheck.run(target: target) }.value
+            preInstallChecking.remove(entry.name)
+            if reading.allowsInstall {
+                installRequest = entry
+            } else {
+                preInstallReadings[entry.name] = reading
+            }
+        }
+    }
+
+    /// The install sheet for `entry` (CQ·160). The argv is built here from
+    /// the host's validated target and nothing else; a target that fails
+    /// validation gets no terminal at all.
+    @ViewBuilder
+    private func installSheet(for entry: HostEntry) -> some View {
+        let target = SSHTarget(user: entry.user, host: entry.address)
+        if let arguments = try? BuilderServerInstall.arguments(target: target) {
+            BuilderServerInstallSheet(
+                hostName: entry.name,
+                arguments: arguments,
+                theme: configuration.theme(forSession: .localShell),
+                appearance: configuration.appearance(for: .terminal, systemIsDark: colorScheme == .dark),
+                typography: configuration.typography,
+                verify: {
+                    await railState.refresh()
+                    return railState.builderServerState[target] == .installed
+                },
+                onInstalled: { createStewardIfNeeded(after: entry) })
+        } else {
+            Text("\(entry.name)\u{2019}s user or address is not usable for ssh.")
+                .padding(20)
+        }
+    }
+
+    private func builderServerState(for entry: HostEntry) -> BuilderServerState? {
+        railState.builderServerState[SSHTarget(user: entry.user, host: entry.address)]
     }
 
     // MARK: - The list
@@ -307,6 +405,12 @@ struct HostsSettingsView: View {
             }
 
             Spacer(minLength: 8)
+
+            if BuilderServerInstall.offersInstall(builderServerState(for: host)) {
+                Label("No Builder server", systemImage: "shippingbox")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+            }
 
             if let outcome = testOutcomes[host.name] {
                 testBadge(outcome)
@@ -416,6 +520,22 @@ struct HostsSettingsView: View {
             HostDesktopSessionStatusView(
                 hostName: entry.name,
                 knownState: railState.desktopSessionKnownState[SSHTarget(user: entry.user, host: entry.address)])
+
+            if BuilderServerInstall.offersInstall(builderServerState(for: entry)) {
+                HStack(spacing: 8) {
+                    Label("\(entry.name) has no Builder server.", systemImage: "shippingbox")
+                        .font(.caption).foregroundStyle(.orange)
+                    Button(preInstallChecking.contains(entry.name) ? "Checking\u{2026}" : "Install Builder Server\u{2026}") {
+                        beginInstall(entry)
+                    }
+                    .disabled(preInstallChecking.contains(entry.name))
+                }
+                if let reading = preInstallReadings[entry.name] {
+                    Label(reading.explanation(hostName: entry.name), systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             if let fieldError {
                 Label(fieldError, systemImage: "exclamationmark.triangle")

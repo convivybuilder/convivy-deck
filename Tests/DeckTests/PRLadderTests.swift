@@ -746,6 +746,96 @@ final class PRLadderTests: XCTestCase {
         XCTAssertEqual(foreign, ["convivy/library"])
     }
 
+    // MARK: - fetchReviewRecordsByPR
+
+    private func emptyReviewRecordsPage() -> Data {
+        curlResponse(status: 200, body: """
+        {"review_records":[],"truncated":false}
+        """)
+    }
+
+    /// A closed PR and a merged PR both fail `needsReviewRecords`, so
+    /// neither causes a review-records read at all — the gate this whole
+    /// change exists to apply before `fetchLadder` ever shells out.
+    func testFetchReviewRecordsByPRReadsNothingForAClosedOrMergedPR() throws {
+        let rows = [
+            makeRow(state: "CLOSED", draft: false, number: 1),
+            makeRow(state: "MERGED", draft: false, number: 3),
+        ]
+        var prsAsked: [Int] = []
+        let (recordsByPR, truncated) = try PRLadder.fetchReviewRecordsByPR(stateRows: rows) { pr, _ in
+            prsAsked.append(pr)
+            return self.emptyReviewRecordsPage()
+        }
+        XCTAssertTrue(prsAsked.isEmpty)
+        XCTAssertTrue(recordsByPR.isEmpty)
+        XCTAssertFalse(truncated)
+    }
+
+    /// A draft PR draws `.draft` without consulting its reviews, but its
+    /// stale-review count still reads them, so its records are fetched and
+    /// a review at an older head counts as stale.
+    func testFetchReviewRecordsByPRReadsADraftSoItsStaleReviewsStillCount() throws {
+        let draft = makeRow(state: "OPEN", draft: true, number: 2, headSha: "new-head")
+        let stalePage = curlResponse(status: 200, body: """
+        {"review_records":[\(reviewRecordJSON(pr: 2, reviewedRef: "old-head"))],"truncated":false}
+        """)
+        var prsAsked: [Int] = []
+        let (recordsByPR, _) = try PRLadder.fetchReviewRecordsByPR(stateRows: [draft]) { pr, _ in
+            prsAsked.append(pr)
+            return stalePage
+        }
+        XCTAssertEqual(prsAsked, [2])
+        let records = recordsByPR[2] ?? []
+        let position = PRLadder.derivePosition(
+            stateRow: draft, reviewRecords: records, ciStatus: .unavailable(reason: "x"))
+        XCTAssertEqual(position, .draft)
+        XCTAssertEqual(PRLadder.staleReviewCount(headSha: "new-head", records: records, position: position), 1)
+    }
+
+    /// Two open, non-draft PRs each cause exactly one per-PR read, and the
+    /// remote command each read builds carries that PR's own `pr=` —
+    /// `LibraryClient.reviewRecordsRemoteCommand`'s own parameter, wired
+    /// through `fetchReviewRecordsByPR`'s `pr` argument.
+    func testFetchReviewRecordsByPROneReadPerQualifyingPRCarryingItsOwnPRParameter() throws {
+        let rows = [
+            makeRow(state: "OPEN", draft: false, number: 10),
+            makeRow(state: "OPEN", draft: false, number: 20),
+            makeRow(state: "CLOSED", draft: false, number: 30),
+        ]
+        var commands: [String] = []
+        let (recordsByPR, truncated) = try PRLadder.fetchReviewRecordsByPR(stateRows: rows) { pr, offset in
+            commands.append(LibraryClient.reviewRecordsRemoteCommand(
+                owner: "convivy", repoName: "convivy-deck", pr: pr, limit: PRLadder.pageLimit, offset: offset))
+            return self.emptyReviewRecordsPage()
+        }
+        XCTAssertEqual(commands.count, 2)
+        XCTAssertTrue(commands.contains { $0.contains("pr=10") })
+        XCTAssertTrue(commands.contains { $0.contains("pr=20") })
+        XCTAssertEqual(Set(recordsByPR.keys), [10, 20])
+        XCTAssertFalse(truncated)
+    }
+
+    /// One PR's own review-records read hitting `maxPages` still truncated
+    /// sets the whole result `truncated`, even while the other PR's read
+    /// completes cleanly — `fetchLadder` ORs every per-PR truncation into
+    /// one flag rather than losing a truncated PR's signal to a clean one.
+    func testFetchReviewRecordsByPRTruncationOfOnePRSetsTruncatedTrue() throws {
+        let rows = [
+            makeRow(state: "OPEN", draft: false, number: 1),
+            makeRow(state: "OPEN", draft: false, number: 2),
+        ]
+        let truncatedPage = curlResponse(status: 200, body: """
+        {"review_records":[\(reviewRecordJSON(pr: 1))],"truncated":true}
+        """)
+        let (recordsByPR, truncated) = try PRLadder.fetchReviewRecordsByPR(stateRows: rows) { pr, _ in
+            pr == 1 ? truncatedPage : self.emptyReviewRecordsPage()
+        }
+        XCTAssertTrue(truncated)
+        XCTAssertEqual(recordsByPR[1]?.count, PRLadder.maxPages)
+        XCTAssertEqual(recordsByPR[2], [])
+    }
+
     // MARK: - Remote commands (LibraryClient)
 
     func testLatestPRStatesRemoteCommandCarriesRepoWindowAndPaging() {

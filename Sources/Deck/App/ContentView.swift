@@ -86,6 +86,27 @@ extension ColumnOccupant {
         current == .run(runId: runId) ? .cockpit : .run(runId: runId)
     }
 
+    /// What the viewer's close button reveals. A document opened from a
+    /// run's pane returns to that pane, but only while the column still
+    /// shows the document opened from it: once the reader has moved the
+    /// column anywhere else, `back.opened` no longer matches and closing
+    /// reveals the cockpit as it always has.
+    static func revealedOnClose(_ current: ColumnOccupant, back: ColumnBack?) -> ColumnOccupant {
+        guard let back, back.opened == current else { return .cockpit }
+        return back.previous
+    }
+}
+
+/// The pane a document was opened from, paired with the occupant that
+/// opening produced, so `ColumnOccupant.revealedOnClose` can tell whether
+/// the column is still on that document.
+struct ColumnBack: Hashable, Sendable {
+    let opened: ColumnOccupant
+    let previous: ColumnOccupant
+}
+
+extension ColumnOccupant {
+
     /// Where the right column goes when the rail selection moves from one
     /// crew to another. A Slate is the one occupant that follows the
     /// selection: when the column holds a Slate that was opened for the crew
@@ -293,6 +314,7 @@ struct ContentView: View {
     /// where `isColumnSheetPresented` is never consulted.
     private func presentColumnOccupant(_ occupant: ColumnOccupant) {
         columnOccupant = occupant
+        columnBack = nil
         isColumnSheetPresented = true
     }
 
@@ -301,6 +323,7 @@ struct ContentView: View {
     /// `isColumnSheetPresented`'s doc.
     private func closeColumnOccupant() {
         columnOccupant = .cockpit
+        columnBack = nil
         isColumnSheetPresented = false
     }
 
@@ -665,6 +688,10 @@ struct ContentView: View {
                 guard created else { return }
                 store.addCrew(Crew(id: StewardCrew.id, displayName: StewardCrew.displayName,
                                     workingDirectory: directory, host: entry.name))
+            case .failure(let error) where BuilderServerTracker.isNotInstalled(error):
+                // Not an error to raise over the main window: Settings ›
+                // Hosts marks the host and offers the install (CQ·158).
+                break
             case .failure(let error):
                 store.saveError = "Could not create the steward crew: \(error)"
             }
@@ -1332,6 +1359,10 @@ struct ContentView: View {
     /// and local-terminal cases are toggled by their buttons in the pane
     /// chrome.
     @State private var columnOccupant: ColumnOccupant
+
+    /// Set when a run's pane opens a document, so the viewer's close button
+    /// returns to that run (`ColumnOccupant.revealedOnClose`).
+    @State private var columnBack: ColumnBack?
 
     /// Drives the cockpit column's Library reads. One instance for the
     /// window's life — `refresh` is a no-op when the (target, product) pair
@@ -2827,6 +2858,23 @@ struct ContentView: View {
         openViewer(.kb(id: validated), target: target)
     }
 
+    /// Opens a document from a run's pane and remembers that pane, so
+    /// closing the document returns to the run rather than the cockpit.
+    private func openRunDocument(_ id: String, fromRun runId: String) {
+        openCheckoutDocument(id)
+        if case .viewer = columnOccupant {
+            columnBack = ColumnBack(opened: columnOccupant, previous: .run(runId: runId))
+        }
+    }
+
+    /// The viewer's close button: back to the pane the document was opened
+    /// from when there is one, otherwise the cockpit.
+    private func closeViewer() {
+        let next = ColumnOccupant.revealedOnClose(columnOccupant, back: columnBack)
+        columnBack = nil
+        if next == .cockpit { closeColumnOccupant() } else { presentColumnOccupant(next) }
+    }
+
     private func reloadCheckoutDocuments() {
         Task { await checkoutDocumentsModel.reload() }
     }
@@ -3044,13 +3092,14 @@ struct ContentView: View {
             .controlSize(.small)
             .help("Save a copy to your Mac")
             Button {
-                closeColumnOccupant()
+                closeViewer()
             } label: {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .help("Close and return to the cockpit")
+            .help(ColumnOccupant.revealedOnClose(columnOccupant, back: columnBack) == .cockpit
+                  ? "Close and return to the cockpit" : "Close and return to the run")
         }
         .padding(.horizontal, 10).padding(.vertical, 4)
     }
@@ -3555,7 +3604,7 @@ struct ContentView: View {
                                        last: lastListedRunDetails[runId]),
                 given: runGivenDocumentsModel.state,
                 fetched: runFetchedDocumentsModel.state,
-                onOpenDocument: openCheckoutDocument,
+                onOpenDocument: { id in openRunDocument(id, fromRun: runId) },
                 onClose: closeColumnOccupant)
                 // Remember each listed run's detail, so the pane still has
                 // it after the run leaves the list (see `RunDetail.make`).

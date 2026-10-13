@@ -351,4 +351,56 @@ final class HostConfigTests: XCTestCase {
         XCTAssertNil(root["hosts"])
         XCTAssertNil(root["defaultHost"])
     }
+
+    // MARK: - HostEntry.maxSessionsPerControlMaster (CQ·164)
+
+    func testAHostEntryWithNoMaxSessionsKeyDecodesToNil() throws {
+        let file = try write("""
+        {"hosts": [{"name": "mini", "user": "operator", "address": "1.2.3.4"}]}
+        """)
+        XCTAssertNil(ThemeConfiguration.load(from: file).hosts.first?.maxSessionsPerControlMaster)
+    }
+
+    func testAHostEntrysOwnMaxSessionsDecodes() throws {
+        let file = try write("""
+        {"hosts": [{"name": "raised", "user": "guest", "address": "1.2.3.4", \
+        "maxSessionsPerControlMaster": 20}]}
+        """)
+        XCTAssertEqual(ThemeConfiguration.load(from: file).hosts.first?.maxSessionsPerControlMaster, 20)
+    }
+
+    /// A zero or negative override is rejected rather than accepted as "no
+    /// sessions" — the same "field costs itself" pattern `crewsRoot`'s own
+    /// tests pin, not the whole entry.
+    func testAHostEntryWithAZeroOrNegativeMaxSessionsKeepsTheEntryButDropsTheOverride() throws {
+        let file = try write("""
+        {"hosts": [{"name": "guest", "user": "guest", "address": "1.2.3.4", \
+        "maxSessionsPerControlMaster": 0}]}
+        """)
+        let entry = try XCTUnwrap(ThemeConfiguration.load(from: file).hosts.first)
+        XCTAssertEqual(entry.name, "guest")
+        XCTAssertNil(entry.maxSessionsPerControlMaster)
+    }
+
+    func testAHostEntrysMaxSessionsSurvivesSaveAndLoad() throws {
+        let file = try write("{}")
+        var config = ThemeConfiguration.empty
+        config.hosts = [HostEntry(name: "guest", user: "guest", address: "1.2.3.4",
+                                  maxSessionsPerControlMaster: 16)]
+        try config.save(to: file)
+
+        XCTAssertEqual(ThemeConfiguration.load(from: file).hosts.first?.maxSessionsPerControlMaster, 16)
+    }
+
+    func testAHostEntryWithNoMaxSessionsWritesNoMaxSessionsKey() throws {
+        let file = try write("{}")
+        var config = ThemeConfiguration.empty
+        config.hosts = [HostEntry(name: "mini", user: "operator", address: "1.2.3.4")]
+        try config.save(to: file)
+
+        let data = try Data(contentsOf: file)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let hosts = try XCTUnwrap(root["hosts"] as? [[String: Any]])
+        XCTAssertNil(hosts.first?["maxSessionsPerControlMaster"])
+    }
 }

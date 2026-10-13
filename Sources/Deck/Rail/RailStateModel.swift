@@ -255,6 +255,12 @@ final class RailStateModel: ObservableObject {
     /// there even after its alert has been dismissed (CQ·124).
     @Published private(set) var desktopSessionKnownState: [SSHTarget: DesktopSessionKnownState] = [:]
 
+    /// Whether each polled host has Builder's server installed, read from
+    /// the same `session-agent sessions` call `discovered` comes from — see
+    /// `BuilderServerTracker.apply` for which outcomes move it. Read by
+    /// Settings › Hosts to offer the install (CQ·158).
+    @Published private(set) var builderServerState: [SSHTarget: BuilderServerState] = [:]
+
     /// Called the instant a host's desktop-session reading transitions to
     /// logged out — see `DesktopSessionTracker.apply` for exactly which
     /// transitions that is. Set by `track()`'s caller, the same way
@@ -454,7 +460,7 @@ final class RailStateModel: ObservableObject {
         await withTaskGroup(
             of: (SSHTarget, [SessionRef], [SessionRef: SessionState]?,
                  [DiscoveredSession]?, [ServedCrew]?, [String: RunModelChoice]?, Bool, String?,
-                 DesktopSessionReading).self
+                 DesktopSessionReading, Result<Void, Error>).self
         ) { group in
             for (target, groupRefs) in groups {
                 let shouldProbe = targetsToProbe.contains(target)
@@ -489,8 +495,11 @@ final class RailStateModel: ObservableObject {
                             try? statesFetch(target, names)
                         }.value
                     }()
-                    async let discoveredResult: [DiscoveredSession]? = Task.detached {
-                        try? discoveredFetch(target)
+                    // Kept as a `Result` rather than `try?`, so a missing
+                    // `session-agent` can be told apart from an unreachable
+                    // host — see `BuilderServerTracker.apply`.
+                    async let discoveredOutcome: Result<[DiscoveredSession], Error> = Task.detached {
+                        Result { try discoveredFetch(target) }
                     }.value
                     async let servedCrewsResult: [ServedCrew]? = Task.detached {
                         try? servedCrewsFetch(target)
@@ -518,7 +527,8 @@ final class RailStateModel: ObservableObject {
                     }()
 
                     let hostStates = await statesResult
-                    let hostDiscovered = await discoveredResult
+                    let discoveredReading = await discoveredOutcome
+                    let hostDiscovered = try? discoveredReading.get()
                     let hostServedCrews = await servedCrewsResult
                     let hostRunRegister = await runRegisterResult
                     let (attempted, probed) = await probedResult
@@ -532,11 +542,11 @@ final class RailStateModel: ObservableObject {
                         return out
                     }
                     return (target, groupRefs, translated, hostDiscovered, hostServedCrews, hostRunRegister,
-                            attempted, probed, desktopReading)
+                            attempted, probed, desktopReading, discoveredReading.map { _ in () })
                 }
             }
             for await (target, groupRefs, hostStates, hostDiscovered, hostServedCrews, hostRunRegister,
-                       attempted, probed, desktopReading) in group {
+                       attempted, probed, desktopReading, serverReading) in group {
                 // A host that answered advances the reading; a host whose
                 // `states` call failed outright demotes every ref it was
                 // asked about to `.unreadable` instead — see
@@ -599,6 +609,9 @@ final class RailStateModel: ObservableObject {
                     reading: desktopReading, lastKnown: desktopSessionKnownState[target])
                 desktopSessionKnownState[target] = nextDesktopState
                 if notify { onDesktopSessionLoggedOut(target) }
+
+                builderServerState[target] = BuilderServerTracker.apply(
+                    serverReading, lastKnown: builderServerState[target])
 
                 guard attempted else { continue }
                 if let probed {

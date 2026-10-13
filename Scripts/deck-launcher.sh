@@ -340,6 +340,16 @@ if [ ! -x "$BUILT" ]; then
     launch "$@"
 fi
 
+# SIGN THE BUILD PRODUCT IN PLACE, BEFORE THE COMPARISON. make-app.sh gives the
+# bundle's binary hardened runtime; an update must keep it. Signing here rather
+# than after the copy keeps `cmp` meaningful: an ad-hoc signature carries no
+# timestamp, so re-signing an unchanged binary produces the same bytes and an
+# unchanged build still reads as current. An unsigned binary is never installed.
+if ! codesign --force --sign - --options runtime "$BUILT" >>"$LOG" 2>&1; then
+    say "could not sign the new build — launching the previous one"
+    launch "$@"
+fi
+
 # Copy-then-rename so the swap is atomic and a crash mid-copy cannot leave a
 # truncated executable in the bundle. The temp file is a sibling, because
 # `mv` is only atomic within one filesystem and /tmp is not guaranteed to be

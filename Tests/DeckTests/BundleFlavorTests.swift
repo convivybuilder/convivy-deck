@@ -266,7 +266,7 @@ final class BundleFlavorTests: XCTestCase {
         let result = try runMakeApp(repo: repo, binDir: binDir, outputDir: outputDir, flavor: nil)
         XCTAssertEqual(result.status, 0, "make-app.sh failed:\n\(result.stdout)\n\(result.stderr)")
 
-        for line in ["flavor: shipped", "version 9.9.9-test", "unsigned"] {
+        for line in ["flavor: shipped", "version 9.9.9-test", "ad-hoc signed with hardened runtime"] {
             XCTAssertTrue(result.stderr.contains(line),
                           "expected '\(line)' on stderr:\n\(result.stderr)")
             XCTAssertFalse(result.stdout.contains(line),
