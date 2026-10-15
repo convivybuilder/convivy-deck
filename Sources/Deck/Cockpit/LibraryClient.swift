@@ -2033,14 +2033,14 @@ enum LibraryClient {
         guard let safeProduct = validateLibraryProduct(product) else {
             throw FetchError.invalidInput(product)
         }
-        let listRaw = try SessionAgent.run(
-            coursesListArguments(target: target, product: safeProduct), classifyMissingCommand: false)
+        let listRaw = try LibraryTransportDispatch.run(
+            target: target, argv: coursesListArguments(target: target, product: safeProduct))
         guard let courseId = try decodeCoursesList(listRaw).first else { return nil }
         guard let safeCourseId = validateLibraryId(courseId) else {
             throw FetchError.invalidInput(courseId)
         }
-        let courseRaw = try SessionAgent.run(
-            courseArguments(target: target, courseId: safeCourseId), classifyMissingCommand: false)
+        let courseRaw = try LibraryTransportDispatch.run(
+            target: target, argv: courseArguments(target: target, courseId: safeCourseId))
         return try decodeCourse(courseRaw)
     }
 
@@ -2101,17 +2101,17 @@ enum LibraryClient {
         guard let safeProduct = validateLibraryProduct(product) else {
             throw FetchError.invalidInput(product)
         }
-        let queueIds = try decodeCorrectionsQueueIds(SessionAgent.run(
-            correctionsQueuesArguments(target: target, product: safeProduct), classifyMissingCommand: false))
+        let queueIds = try decodeCorrectionsQueueIds(LibraryTransportDispatch.run(
+            target: target, argv: correctionsQueuesArguments(target: target, product: safeProduct)))
         var merged: [QueueItem] = []
         var childParents: [String: String] = [:]
         var queueTruncated = false
         for state in queueStates {
             let (items, parents, truncated) = try pagedQueue(correctionsQueueIds: queueIds) { offset in
-                try SessionAgent.run(
-                    itemsArguments(target: target, product: safeProduct, state: state,
-                                  limit: itemsPageLimit, offset: offset),
-                    classifyMissingCommand: false)
+                try LibraryTransportDispatch.run(
+                    target: target,
+                    argv: itemsArguments(target: target, product: safeProduct, state: state,
+                                         limit: itemsPageLimit, offset: offset))
             }
             merged += items
             childParents.merge(parents) { _, new in new }
@@ -2125,7 +2125,7 @@ enum LibraryClient {
     /// picker. Synchronous and blocking, like `fetchCourse` — see that
     /// function's doc; callers run this off the main actor.
     static func fetchBeadsList(target: SSHTarget) throws -> [BeadDocument] {
-        let raw = try SessionAgent.run(beadsListArguments(target: target), classifyMissingCommand: false)
+        let raw = try LibraryTransportDispatch.run(target: target, argv: beadsListArguments(target: target))
         return try decodeBeadsList(raw)
     }
 
@@ -2152,8 +2152,8 @@ enum LibraryClient {
         guard let safeProduct = validateLibraryProduct(product) else {
             throw FetchError.invalidInput(product)
         }
-        let raw = try SessionAgent.run(
-            epicsArguments(target: target, product: safeProduct), classifyMissingCommand: false)
+        let raw = try LibraryTransportDispatch.run(
+            target: target, argv: epicsArguments(target: target, product: safeProduct))
         return try decodeEpics(raw)
     }
 
@@ -2166,8 +2166,8 @@ enum LibraryClient {
         guard let safeProduct = validateLibraryProduct(product) else {
             throw FetchError.invalidInput(product)
         }
-        let raw = try SessionAgent.run(
-            allItemsArguments(target: target, product: safeProduct), classifyMissingCommand: false)
+        let raw = try LibraryTransportDispatch.run(
+            target: target, argv: allItemsArguments(target: target, product: safeProduct))
         return try decodeWorkItemRecords(raw)
     }
 
@@ -2182,8 +2182,8 @@ enum LibraryClient {
         guard let safeParentId = validateLibraryId(parentId) else {
             throw FetchError.invalidInput(parentId)
         }
-        let raw = try SessionAgent.run(
-            childItemsArguments(target: target, parentId: safeParentId), classifyMissingCommand: false)
+        let raw = try LibraryTransportDispatch.run(
+            target: target, argv: childItemsArguments(target: target, parentId: safeParentId))
         return try decodeChildItems(raw, expectedParentId: safeParentId)
     }
 
@@ -2196,8 +2196,8 @@ enum LibraryClient {
         guard let safeEpicId = validateLibraryId(epicId) else {
             throw FetchError.invalidInput(epicId)
         }
-        let raw = try SessionAgent.run(
-            foundDuringItemsArguments(target: target, epicId: safeEpicId), classifyMissingCommand: false)
+        let raw = try LibraryTransportDispatch.run(
+            target: target, argv: foundDuringItemsArguments(target: target, epicId: safeEpicId))
         return try decodeFoundDuringItems(raw, expectedFoundDuring: safeEpicId)
     }
 
@@ -2210,8 +2210,8 @@ enum LibraryClient {
         guard let safeId = validateLibraryId(id) else {
             throw FetchError.invalidInput(id)
         }
-        let raw = try SessionAgent.run(
-            itemArguments(target: target, itemId: safeId), classifyMissingCommand: false)
+        let raw = try LibraryTransportDispatch.run(
+            target: target, argv: itemArguments(target: target, itemId: safeId))
         return try decodeCorrectionDetail(raw)
     }
 
@@ -2221,10 +2221,10 @@ enum LibraryClient {
     /// above, `body` serialised to JSON and sent over the process's own
     /// stdin (see `remotePOSTCommand`'s doc for why) — and returns the
     /// decoded response object, or throws. Shared by every write verb below.
-    private static func postJSON(argv: [String], body: [String: Any]) throws -> [String: Any] {
+    private static func postJSON(target: SSHTarget, argv: [String], body: [String: Any]) throws -> [String: Any] {
         let payload = try JSONSerialization.data(withJSONObject: body)
         let payloadString = String(data: payload, encoding: .utf8) ?? "{}"
-        let raw = try SessionAgent.run(argv, stdin: payloadString, classifyMissingCommand: false)
+        let raw = try LibraryTransportDispatch.run(target: target, argv: argv, stdin: payloadString)
         let responseBody = try refusedOr200Body(raw)
         guard let object = try? JSONSerialization.jsonObject(with: responseBody) as? [String: Any] else {
             throw FetchError.unexpectedResponse(String(data: responseBody, encoding: .utf8) ?? "(binary)")
@@ -2319,7 +2319,7 @@ enum LibraryClient {
     static func approveEpic(target: SSHTarget, itemId: String, actingHuman: String) throws {
         let argv = try approveEpicArguments(target: target, itemId: itemId)
         let trimmed = try validateActingHuman(actingHuman)
-        _ = try postJSON(argv: argv, body: approveEpicBody(actingHuman: trimmed))
+        _ = try postJSON(target: target, argv: argv, body: approveEpicBody(actingHuman: trimmed))
     }
 
     /// What the Approve button says when the write did not land. The Library's
@@ -2424,7 +2424,7 @@ enum LibraryClient {
         let argv = try itemModelArguments(target: target, itemId: itemId)
         let trimmed = try validateActingHuman(actingHuman, for: "change")
         let body = try itemModelBody(model: model, reason: reason, actingHuman: trimmed)
-        _ = try postJSON(argv: argv, body: body)
+        _ = try postJSON(target: target, argv: argv, body: body)
     }
 
     /// What the model control says when the write did not land: the
@@ -2518,7 +2518,7 @@ enum LibraryClient {
         target: SSHTarget, courseId: String, version: Int, entries: [String]
     ) throws {
         let argv = try reorderCourseArguments(target: target, courseId: courseId)
-        _ = try postJSON(argv: argv, body: courseOrderBody(version: version, entries: entries))
+        _ = try postJSON(target: target, argv: argv, body: courseOrderBody(version: version, entries: entries))
     }
 
     /// Whether a refusal is the Library saying the Course moved since it was

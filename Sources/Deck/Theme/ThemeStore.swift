@@ -347,11 +347,15 @@ final class ThemeStore: ObservableObject {
     /// default.
     func removeHost(_ name: String) {
         var updated = configuration
-        let countBefore = updated.hosts.count
+        let removed = updated.hosts.filter { $0.name == name }
+        guard !removed.isEmpty else { return }
         updated.hosts.removeAll { $0.name == name }
-        guard updated.hosts.count != countBefore else { return }
         if updated.defaultHost == name { updated.defaultHost = nil }
         commit(updated)
+        // A removed host's Library forward goes with it (CQ·162).
+        for entry in removed {
+            LibraryHostConnectionPool.shared.close(SSHTarget(user: entry.user, host: entry.address))
+        }
     }
 
     /// Sets or clears which host a crew with no `host` of its own resolves

@@ -230,8 +230,8 @@ enum WorkingCopyStore {
     /// difference matters on a multi-tenant box where argv is world-readable
     /// through `ps`.
     static func fetch(target: SSHTarget, kbId: String) throws -> URL {
-        let raw = try SessionAgent.run(libraryDocumentArguments(target: target, kbId: kbId),
-                                       classifyMissingCommand: false)
+        let raw = try LibraryTransportDispatch.run(
+            target: target, argv: libraryDocumentArguments(target: target, kbId: kbId))
         let content = try libraryDocumentContent(from: raw, kbId: kbId)
 
         let dir = try directory(forKBId: kbId)
@@ -290,8 +290,8 @@ enum WorkingCopyStore {
     /// keeps the two reads independent rather than inventing a cache to
     /// dodge it.
     static func fetchDocumentMetadata(target: SSHTarget, kbId: String) throws -> LibraryDocumentMetadata {
-        let raw = try SessionAgent.run(libraryDocumentArguments(target: target, kbId: kbId),
-                                       classifyMissingCommand: false)
+        let raw = try LibraryTransportDispatch.run(
+            target: target, argv: libraryDocumentArguments(target: target, kbId: kbId))
         return try libraryDocumentMetadata(from: raw, kbId: kbId)
     }
 

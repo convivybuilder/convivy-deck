@@ -517,6 +517,13 @@ struct HostsSettingsView: View {
                  + "alert offers this host's row here instead.")
                 .font(.caption).foregroundStyle(.secondary)
 
+            LabeledContent("Library transport:") {
+                Text(LibraryTransportDisplay.label(
+                    LibraryTransportSelector.shared.transport(
+                        for: SSHTarget(user: entry.user, host: entry.address))))
+                    .foregroundStyle(.secondary)
+            }
+
             HostDesktopSessionStatusView(
                 hostName: entry.name,
                 knownState: railState.desktopSessionKnownState[SSHTarget(user: entry.user, host: entry.address)])
