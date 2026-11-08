@@ -201,8 +201,8 @@ final class AppearanceSurfaceTests: XCTestCase {
         XCTAssertEqual(ColumnOccupant.reviewRecords(repo: "r", pr: 1, headSha: nil, target: target)
             .appearanceSurface, .document)
         XCTAssertEqual(ColumnOccupant.run(runId: "run_1").appearanceSurface, .run)
-        XCTAssertEqual(ColumnOccupant.slate(session: "vivy", target: target,
-                                            crew: SessionRef(host: "mini", name: "vivy")).appearanceSurface,
+        XCTAssertEqual(ColumnOccupant.slate(session: "orchard", target: target,
+                                            crew: SessionRef(host: "mini", name: "orchard")).appearanceSurface,
                        .slate)
     }
 

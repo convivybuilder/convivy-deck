@@ -693,23 +693,23 @@ def use(sym, cls=""):
 
 CREWS = [
     ("steward", "Steward", 29, "busy", {}),
-    ("vivy", "Vivy", 145, "listening", {}),
-    ("vivy-commercial", "Vivy Commercial", 68, "ready", {}),
-    ("constance", "Constance", 275, "off", {}),
+    ("orchard", "Orchard", 145, "listening", {}),
+    ("orchard-commercial", "Orchard Commercial", 68, "ready", {}),
+    ("meridian", "Meridian", 275, "off", {}),
     ("deck", "Deck", 240, "listening", {"sel": True}),
     ("ask", "Ask", 95, "needs", {"expanded": True, "children": [("ask--audio", "Audio", "listening", {})]}),
     ("bosun", "Bosun", 178, "ready", {}),
     ("library", "Library", 305, "ready", {"count": 1}),
     ("orient", "Orient", 205, "unread", {}),
-    ("selector", "Selector", 350, "ready", {}),
+    ("lantern", "Lantern", 350, "ready", {}),
 ]
 
 # The same crews with every discovered session the mini listed drawn as a
 # child: Deck's own scratch shells group under their crews by path, so the
 # rail at full disclosure is 22 rows. Used for the overflow frame only.
 DISCOVERED_SHELLS = {"ask": ["deck-shell-ask"], "bosun": ["deck-shell-bosun"], "deck": ["deck-shell-deck"],
-                     "library": ["deck-shell-library"], "orient": ["deck-shell-orient"], "selector": ["deck-shell-selector"],
-                     "steward": ["deck-shell-steward"], "vivy": ["deck-shell-vivy"], "vivy-commercial": ["deck-shell-vivy-commercial"]}
+                     "library": ["deck-shell-library"], "orient": ["deck-shell-orient"], "lantern": ["deck-shell-lantern"],
+                     "steward": ["deck-shell-steward"], "orchard": ["deck-shell-orchard"], "orchard-commercial": ["deck-shell-orchard-commercial"]}
 
 MARK_SYMBOL = {"busy": "m-busy", "listening": "m-listening", "ready": "m-ready", "needs": "m-needs",
                "unread": "m-unread", "off": "m-ready", "start": "m-start"}
@@ -758,7 +758,7 @@ def rail(mode="full", show_other=True, overflow=False, new_button=True, hidden_s
         for name in ("Car", "Tennis"):
             out.append(row([], 95, mark("term", 95, would=True), name))
     out.append('<div class="sect sectlabel" aria-label="Start">Start</div>')
-    for name, hue in (("NYH Studio", 350), ("Write Better", 178)):
+    for name, hue in (("Lakeside Studio", 350), ("Write Better", 178)):
         out.append(row(["off"], hue, mark("start", hue), name, aria=f' aria-label="{name}, not running; activate to start"'))
     if hidden_summons:
         out.append(f'<div class="offscreen" role="button" aria-label="1 session below needs an answer; activate to scroll to it"><i></i>{use("chev-d")}<span>1 needs you</span></div>')
@@ -1304,15 +1304,15 @@ def build_index(css):
 <p class="note"><b>Density with clarity.</b> The cockpit's body text moves from <code>frameFont(.label)</code> to <code>frameFont(.body)</code> — 10pt to 11pt at the default base, and regular weight rather than semibold, since <code>.label</code> was drawing every row title bold — rows get a fixed 14pt glyph column and a right-aligned monospace meta column, and the centre column's three chrome rows above the conversation become one.</p>
 
 <h2>The aesthetic risk</h2>
-<p class="note risk"><b>The frame takes the selected crew's hue.</b> Today the conversation canvas is tinted with the crew's theme (<code>canvasTint</code>) and everything around it is system grey. In the mocks the chrome, the rail and the input surfaces carry the same hue at a tenth of the canvas's chroma (0.004–0.006 against 0.018/0.028), so selecting Vivy makes the whole window faintly green and selecting Deck makes it faintly blue. The risk is that ten differently coloured windows read as ten skins rather than one product, and that the tint is either invisible (and so pointless) or visible (and so garish). The cost is concrete: <code>RailRow.markBacking</code>, <code>SessionPaneView.inkSurface</code> and the selection wash all hardcode the surface they solve against, and each must take the tinted surface instead, or the solver and the view disagree exactly the way <code>markBacking</code>'s doc records they once did. The build here solves every ink against the tinted surface for all ten hues, so the numbers below are the numbers the app would get.</p>
+<p class="note risk"><b>The frame takes the selected crew's hue.</b> Today the conversation canvas is tinted with the crew's theme (<code>canvasTint</code>) and everything around it is system grey. In the mocks the chrome, the rail and the input surfaces carry the same hue at a tenth of the canvas's chroma (0.004–0.006 against 0.018/0.028), so selecting Orchard makes the whole window faintly green and selecting Deck makes it faintly blue. The risk is that ten differently coloured windows read as ten skins rather than one product, and that the tint is either invisible (and so pointless) or visible (and so garish). The cost is concrete: <code>RailRow.markBacking</code>, <code>SessionPaneView.inkSurface</code> and the selection wash all hardcode the surface they solve against, and each must take the tinted surface instead, or the solver and the view disagree exactly the way <code>markBacking</code>'s doc records they once did. The build here solves every ink against the tinted surface for all ten hues, so the numbers below are the numbers the app would get.</p>
 <p class="note concede"><b>Conceded from the first draft:</b> the serif transcript was presented as a risk and it already ships. <code>session_view.py</code> sets the body to <code>ui-serif, "New York", Georgia</code> at 1.05rem/1.65 with the same rationale, the operator's own turns are serif behind a 3px rule (dashed at 55% when held), and tool calls are collapsed <code>&lt;details&gt;</code> rows in mono with no result column. The mocks now draw all of that as it ships, at <code>SessionTypography</code>'s 15.75/1.65, and drop the web font and the invented diff stats.</p>
 
 <h2>The palette is solved, and here is the measurement</h2>
-<p class="note">Every ink is an OKLCH start point and a contrast target, walked by a port of <code>ThemeRecipe.solveLightness</code> in <code>build.py</code> against the surface it sits on: text at 4.5, marks at 3.0 (<code>ThemeRecipe.markContrast</code>), a filled control so that white on it clears 4.5, hairlines at 1.6 and 1.3. Two hues are shown, Deck's azure and Vivy Commercial's amber, which is the hue that collides with the summons. The table is generated by the build, so it cannot say something the stylesheet does not.</p>
+<p class="note">Every ink is an OKLCH start point and a contrast target, walked by a port of <code>ThemeRecipe.solveLightness</code> in <code>build.py</code> against the surface it sits on: text at 4.5, marks at 3.0 (<code>ThemeRecipe.markContrast</code>), a filled control so that white on it clears 4.5, hairlines at 1.6 and 1.3. Two hues are shown, Deck's azure and Orchard Commercial's amber, which is the hue that collides with the summons. The table is generated by the build, so it cannot say something the stylesheet does not.</p>
 {"".join(table)}
 <p class="note"><b>Three inks, three jobs.</b> <code>--ink</code> is primary at 7:1 (the foreground recipe). <code>--ink-2</code> is every secondary thing a person reads, at 4.5: meta columns, timestamps, section labels, "18 more". <code>--ink-3</code> is solved to 3.0 and is never text: chevrons, the hollow waypoint's ring, a disabled control. The first draft had a 2.8:1 tertiary carrying half the cockpit's words.</p>
 <p class="note"><b>Two warning hues, as the code has.</b> <code>--attn</code> is <code>ThemeRecipe.attentionInk</code>, hue 65: the summons bar, the triangle, a held mark, a PR verdict that asks for you, the queue badge. <code>--warn</code> is <code>warningInk</code>, hue 95 at lower chroma, 30° off on purpose: a standing caution that is not a failure, which is <code>rc off</code>, a stale working-on age, and the context meter past its soft tier. The first draft collapsed them and was wrong to.</p>
-<p class="note"><b>When the crew's hue is the summons's hue, in-progress marks go neutral.</b> Ember (29), amber (68) and gold (95) sit within 40° of hue 65. For those crews <code>--prog-mark</code> and <code>--prog-text</code> resolve to the primary ink rather than the crew's accent, so the half-filled glyph, the current waypoint and the pull-request glyph cannot be mistaken for a held mark or a summons. The crew keeps its hue where it means identity: the rail dot, the selection wash, the canvas. The cockpit page shows Vivy Commercial selected.</p>
+<p class="note"><b>When the crew's hue is the summons's hue, in-progress marks go neutral.</b> Ember (29), amber (68) and gold (95) sit within 40° of hue 65. For those crews <code>--prog-mark</code> and <code>--prog-text</code> resolve to the primary ink rather than the crew's accent, so the half-filled glyph, the current waypoint and the pull-request glyph cannot be mistaken for a held mark or a summons. The crew keeps its hue where it means identity: the rail dot, the selection wash, the canvas. The cockpit page shows Orchard Commercial selected.</p>
 
 <h2>What is genuinely broken today, as opposed to dated</h2>
 <ul class="note">
@@ -1337,7 +1337,7 @@ def build_index(css):
   <li>Queue count, orange: "Corrections queue, 23 items, 1 high". Severity chip: "severity high". Panel counts: "5 of 11 epics settled", "2 agents in flight".</li>
   <li>Index strip entries: "Course, 5 of 11 epics settled. Activate to scroll to it." A collapsed panel's entry adds "collapsed".</li>
   <li>Ribbon position: "waypoint 4 of 11"; the current waypoint: "Deck-to-Keel typed wire, work in progress".</li>
-  <li>START rows: "NYH Studio, not running; activate to start". A terminal-only row: "a terminal with no agent". A stopped crew: "Constance, stopped".</li>
+  <li>START rows: "Lakeside Studio, not running; activate to start". A terminal-only row: "a terminal with no agent". A stopped crew: "Meridian, stopped".</li>
   <li>The off-screen summons chip: "1 session below needs an answer; activate to scroll to it".</li>
   <li>Toolbar: the occupant control is a radio group named "Right column"; Terminal View is a toggle named "Terminal View"; it swaps the main pane and its way back is "Session View".</li>
 </ul>
@@ -1390,8 +1390,8 @@ def build_cockpit(css):
 {grammar}
 
 <h2>When the crew's hue is the summons's hue</h2>
-<p class="note">Vivy Commercial is amber (68), three degrees from <code>attentionInk</code>'s 65. With it selected, in-progress marks draw in the primary ink and the summons keeps its hue, so the half-filled glyph and the held pause never share a colour. Shown with Dispatched and Proposals collapsed, which is also how a collapsed panel appears in the index: struck, still reachable.</p>
-<div class="frames"><div><div class="frame-label">Vivy Commercial selected · light · dark</div><div class="scroller">{amber}</div></div></div>
+<p class="note">Orchard Commercial is amber (68), three degrees from <code>attentionInk</code>'s 65. With it selected, in-progress marks draw in the primary ink and the summons keeps its hue, so the half-filled glyph and the held pause never share a colour. Shown with Dispatched and Proposals collapsed, which is also how a collapsed panel appears in the index: struck, still reachable.</p>
+<div class="frames"><div><div class="frame-label">Orchard Commercial selected · light · dark</div><div class="scroller">{amber}</div></div></div>
 
 <h2>What changed from today</h2>
 <ul class="note">
@@ -1445,7 +1445,7 @@ def build_rail(css):
 
 <h2>What changed from today</h2>
 <ul class="note">
-  <li><b>216pt, 26pt rows, 13pt names.</b> Up from 200 and 6pt vertical padding. The extra width goes to the trailing column so a count and chevron never crowd a long name (Vivy Commercial is the longest real one).</li>
+  <li><b>216pt, 26pt rows, 13pt names.</b> Up from 200 and 6pt vertical padding. The extra width goes to the trailing column so a count and chevron never crowd a long name (Orchard Commercial is the longest real one).</li>
   <li><b>Children hang on a spine.</b> The 1pt rule the cockpit uses for an expanded epic, drawn from the parent's mark column down to the last child, with a 7pt tick into each child. At 44pt the spine goes and the tick stays, indented 10pt, so a child is still a child when the names are gone.</li>
   <li><b>OTHER SESSIONS and START are the same section label as BEAD</b>: 10pt, tracked, <code>--ink-2</code>. At 44pt they are 1pt rules, and the rows under them are hover-only for a name; the <code>List</code>'s own arrow keys still reach them, and Cmd-1…9 reaches the top-level crews as it does today.</li>
   <li><b>A START row is a hollow square at full ink.</b> Today it is a play glyph in the crew's hue; the first draft dimmed it, which made it the same 30% square as a stopped crew. Hollow says "not yet" where dimmed says "was".</li>

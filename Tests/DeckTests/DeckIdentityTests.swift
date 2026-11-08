@@ -99,7 +99,7 @@ final class DeckIdentityTests: XCTestCase {
                                                  appearance: .dark, home: $0)
             }),
             ("KnowledgeBase.checkoutArguments", {
-                KnowledgeBase.checkoutArguments(target: self.target, id: "deck-spec", home: $0)
+                KnowledgeBase.checkoutArguments(target: self.target, id: "deck-spec", holder: "deck:test@test-host", home: $0)
             }),
             ("WorkingCopyStore.readFileArguments", {
                 WorkingCopyStore.readFileArguments(target: self.target, path: "/tmp/a.md", home: $0)

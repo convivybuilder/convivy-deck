@@ -23,17 +23,40 @@ struct FileViewerPane: View {
     let appearance: Appearance
     /// The host this file was opened from.
     let target: SSHTarget
+    /// Bumped by `ContentView.viewerColumnHeader`'s refresh button
+    /// (CQ·185) to refire the load below without a `ref`/`target` change.
+    let refreshToken: Int
+    /// Reports whether a load — the first one, or a refresh — is in
+    /// flight, so the refresh button can show progress. It lives in
+    /// `ContentView`'s header, outside this pane's own view tree, which is
+    /// why this is a callback rather than a published property.
+    var onLoadingChanged: (Bool) -> Void = { _ in }
 
     @StateObject private var model = FileViewerModel()
 
     var body: some View {
-        FileViewerWebView(html: model.html)
-            .task(id: PaneLoadIdentity(ref: ref, target: target)) {
-                await model.load(ref: ref, appearance: appearance, target: target)
+        VStack(spacing: 0) {
+            if let refreshError = model.refreshError {
+                Text(refreshError)
+                    .frameFont(.label)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                Divider()
             }
-            .onChange(of: appearance) { _, new in
-                Task { await model.reRender(appearance: new) }
-            }
+            FileViewerWebView(html: model.html)
+        }
+        .task(id: PaneLoadIdentity(ref: ref, target: target, refreshToken: refreshToken)) {
+            onLoadingChanged(true)
+            await model.load(ref: ref, appearance: appearance, target: target)
+            onLoadingChanged(false)
+        }
+        .onChange(of: appearance) { _, new in
+            Task { await model.reRender(appearance: new) }
+        }
     }
 }
 
@@ -191,43 +214,81 @@ extension FileViewerPane {
 // MARK: - Model
 
 @MainActor
-private final class FileViewerModel: ObservableObject {
+final class FileViewerModel: ObservableObject {
     @Published var html = FileViewerPane.loadingPage(appearance: .light)
+    /// Set only when a REFRESH (not the first load, not a switch to
+    /// another ref) fails — the red-text banner `FileViewerPane` draws
+    /// above the web view, reused rather than invented for this. `html`
+    /// is left untouched on that path, so the last successful load stays
+    /// on screen; see `load`'s doc.
+    @Published private(set) var refreshError: String?
 
     private var cachedData: Data?
     private var cachedURL: URL?
     private var cachedRef: DeckOpenRef.Origin?
     private var cachedTarget: SSHTarget?
 
+    /// The ssh round trip, as a seam so a test can answer without one —
+    /// the same shape as `ItemDetailModel.fetchDetail`.
+    var fetchFile: @Sendable (DeckOpenRef.Origin, SSHTarget) throws -> (URL, Data) = { ref, target in
+        let u: URL
+        switch ref {
+        case .kb(let id):  u = try WorkingCopyStore.fetch(target: target, kbId: id)
+        case .path(let p): u = try WorkingCopyStore.fetch(target: target, absolutePath: p)
+        case .item(let id):
+            // NOT REACHABLE: `ContentView.openViewer` sends `.item` to the
+            // item detail pane and never constructs a `FileViewerPane`
+            // with one. Thrown rather than force-unwrapped so a future
+            // caller that violates the invariant gets this pane's own
+            // error page instead of a crash.
+            throw WorkingCopyStore.FetchError.unexpectedResponse(
+                "item ref reached the file viewer (id: \(id)) — this should open the item pane instead")
+        }
+        return (u, try Data(contentsOf: u))
+    }
+    /// The render step, as a seam for the same reason — defaults to the
+    /// real remote/local dispatch in `renderHTML(url:data:ref:target:appearance:)`.
+    var renderFile: @Sendable (URL, Data, DeckOpenRef.Origin?, SSHTarget, Appearance) async throws -> String = {
+        url, data, ref, target, appearance in
+        try await FileViewerModel.renderHTML(url: url, data: data, ref: ref, target: target, appearance: appearance)
+    }
+
+    /// Fetches `ref` and renders it. Called both for the first load of a
+    /// ref and for the refresh button (CQ·185) — `.task(id:)`'s identity
+    /// carries a token that changes on a refresh press without `ref` or
+    /// `target` changing, so the two are told apart here by whether a
+    /// successful fetch for this exact `ref`/`target` is already cached.
+    ///
+    /// A REFRESH KEEPS WHAT IS ON SCREEN. The first load of a ref (or a
+    /// switch to a different one) has nothing worth keeping, so it clears
+    /// to the loading page and, on failure, to the error page, as before.
+    /// A refresh of the same ref leaves `html` alone on failure and
+    /// reports the failure through `refreshError` instead — the operator's
+    /// "a lot of times a co will update an item while I'm looking at it"
+    /// is about catching up, not about losing what is already open.
     func load(ref: DeckOpenRef.Origin, appearance: Appearance, target: SSHTarget) async {
-        html = FileViewerPane.loadingPage(appearance: appearance)
-        cachedData = nil
-        cachedURL = nil
+        let isRefresh = cachedData != nil && cachedRef == ref && cachedTarget == target
+        if !isRefresh {
+            html = FileViewerPane.loadingPage(appearance: appearance)
+            cachedData = nil
+            cachedURL = nil
+        }
+        refreshError = nil
         cachedRef = ref
         cachedTarget = target
+        let fetch = fetchFile
+        let render = renderFile
         do {
-            let (url, data): (URL, Data) = try await Task.detached {
-                let u: URL
-                switch ref {
-                case .kb(let id):  u = try WorkingCopyStore.fetch(target: target, kbId: id)
-                case .path(let p): u = try WorkingCopyStore.fetch(target: target, absolutePath: p)
-                case .item(let id):
-                    // NOT REACHABLE: `ContentView.openViewer` sends `.item`
-                    // to the item detail pane and never constructs a
-                    // `FileViewerPane` with one. Thrown rather than
-                    // force-unwrapped so a future caller that violates the
-                    // invariant gets this pane's own error page instead of a
-                    // crash.
-                    throw WorkingCopyStore.FetchError.unexpectedResponse(
-                        "item ref reached the file viewer (id: \(id)) — this should open the item pane instead")
-                }
-                return (u, try Data(contentsOf: u))
-            }.value
+            let (url, data): (URL, Data) = try await Task.detached { try fetch(ref, target) }.value
             cachedData = data
             cachedURL = url
-            html = try await renderHTML(url: url, data: data, ref: ref, target: target, appearance: appearance)
+            html = try await render(url, data, ref, target, appearance)
         } catch {
-            html = FileViewerPane.errorPage("\(error)", appearance: appearance)
+            if isRefresh {
+                refreshError = "Could not refresh this file: \(error)"
+            } else {
+                html = FileViewerPane.errorPage("\(error)", appearance: appearance)
+            }
         }
     }
 
@@ -237,7 +298,7 @@ private final class FileViewerModel: ObservableObject {
             return
         }
         do {
-            html = try await renderHTML(url: url, data: data, ref: cachedRef, target: target, appearance: appearance)
+            html = try await renderFile(url, data, cachedRef, target, appearance)
         } catch {
             html = FileViewerPane.errorPage("\(error)", appearance: appearance)
         }
@@ -247,9 +308,11 @@ private final class FileViewerModel: ObservableObject {
     /// Markdown path refs use `session-view --render-file`; everything else
     /// uses the local page generator. A non-zero exit from either remote
     /// path propagates as a thrown error and the caller converts it to the
-    /// viewer's error state.
-    private func renderHTML(url: URL, data: Data, ref: DeckOpenRef.Origin?, target: SSHTarget,
-                            appearance: Appearance) async throws -> String {
+    /// viewer's error state. `nonisolated static` so it is the default
+    /// value of the `renderFile` seam above, the same shape as
+    /// `ItemDetailModel.render`.
+    nonisolated static func renderHTML(url: URL, data: Data, ref: DeckOpenRef.Origin?, target: SSHTarget,
+                                       appearance: Appearance) async throws -> String {
         if FileViewerPane.usesRemoteRenderer(url: url, ref: ref) {
             switch ref {
             case .path(let remotePath):

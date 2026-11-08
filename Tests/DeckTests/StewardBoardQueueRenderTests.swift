@@ -3,9 +3,10 @@ import SwiftUI
 import XCTest
 @testable import Deck
 
-/// What the steward's board DRAWS with its corrections queue, hosted at the
-/// narrow 320pt column width. `StewardBoardPanelsTests` pins the panel list; a
-/// list that names the queue passes whether or not the view draws it.
+/// What the steward's board DRAWS with its corrections queue, at the two
+/// widths CQ·170 (issue_01M5CRQCRX0JQSBH4918VB4QD0) names and in both
+/// appearances. `StewardBoardPanelsTests` pins the panel list; a list that
+/// names the queue passes whether or not the view draws it.
 @MainActor
 final class StewardBoardQueueRenderTests: XCTestCase {
     private let product = "steward"
@@ -27,17 +28,22 @@ final class StewardBoardQueueRenderTests: XCTestCase {
         return model
     }
 
-    private func render(_ panelIDs: [String], model: CockpitModel) async throws -> NSBitmapImageRep {
+    private func render(
+        _ panelIDs: [String], model: CockpitModel, width: CGFloat = 320, appearance: Appearance = .light
+    ) async throws -> NSBitmapImageRep {
         let view = CockpitView(
-            model: model, unresolvedReason: nil, appearance: .light,
+            model: model, unresolvedReason: nil, appearance: appearance,
             onSelectCorrection: { _ in }, title: "Board", panelIDs: panelIDs,
             documents: .init(paths: ["\(TestHost.homeRoot)/Convivy/crews/steward/CLAUDE.md"], onOpen: { _ in })
         )
         .environmentObject(ThemeStore(fileURL: FileManager.default.temporaryDirectory
             .appendingPathComponent("theme-\(UUID().uuidString).json")))
+        .background(appearance == .dark ? Color(white: 0.145) : Color(white: 0.98))
         let host = NSHostingView(rootView: view)
-        host.frame = NSRect(origin: .zero, size: NSSize(width: 320, height: 640))
+        host.frame = NSRect(origin: .zero, size: NSSize(width: width, height: 640))
+        host.appearance = NSAppearance(named: appearance == .dark ? .darkAqua : .aqua)
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.appearance = host.appearance
         window.contentView = host
         window.orderFront(nil)
         host.layoutSubtreeIfNeeded()
@@ -60,17 +66,61 @@ final class StewardBoardQueueRenderTests: XCTestCase {
         }.count
     }
 
-    /// The board with the queue draws more than the same board without it.
-    /// Setting `DECK_SNAPSHOT_DIR` also writes the PNG for a look.
+    /// The board with the queue draws more than the same board without it,
+    /// at both widths and in both appearances. Setting `DECK_SNAPSHOT_DIR`
+    /// also writes each PNG for a look.
     func testTheBoardDrawsItsQueueRows() async throws {
-        let model = await model()
-        let withQueue = try await render(CockpitView.boardPanelIDs, model: model)
-        let withoutQueue = try await render(
-            CockpitView.boardPanelIDs.filter { $0 != CockpitView.correctionsQueuePanelID }, model: model)
-        XCTAssertGreaterThan(inkedRows(withQueue), inkedRows(withoutQueue) + 20)
-        if let dir = ProcessInfo.processInfo.environment["DECK_SNAPSHOT_DIR"],
-           let png = withQueue.representation(using: .png, properties: [:]) {
-            try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("board-320.png"))
+        for width: CGFloat in [320, 280] {
+            for appearance: Appearance in [.light, .dark] {
+                let model = await model()
+                let withQueue = try await render(CockpitView.boardPanelIDs, model: model, width: width, appearance: appearance)
+                let withoutQueue = try await render(
+                    CockpitView.boardPanelIDs.filter { $0 != CockpitView.correctionsQueuePanelID },
+                    model: model, width: width, appearance: appearance)
+                XCTAssertGreaterThan(inkedRows(withQueue), inkedRows(withoutQueue) + 20,
+                                     "the queue drew no extra rows at \(width)pt, \(appearance)")
+                if let dir = ProcessInfo.processInfo.environment["DECK_SNAPSHOT_DIR"],
+                   let png = withQueue.representation(using: .png, properties: [:]) {
+                    try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("board-\(Int(width))-\(appearance).png"))
+                }
+            }
+        }
+    }
+
+    /// A blocked queue item whose one prerequisite is `{item, missing:
+    /// true}` draws strictly more rows than the same item with neither
+    /// `blocked` nor a prerequisite — the lock mark and the "Needs first:
+    /// \(CockpitView.missingPrerequisiteLabel)" caption `correctionsQueueContent`
+    /// draws for a queue row, at both widths and in both appearances.
+    func testABlockedQueueItemDrawsItsLockMarkAndNeedsFirstCaption() async throws {
+        func model(blocked: Bool, prerequisites: [LibraryClient.PrerequisiteEntry]) async -> CockpitModel {
+            let model = CockpitModel()
+            let queue = LibraryClient.CorrectionsQueue(
+                items: [
+                    LibraryClient.QueueItem(
+                        id: "issue_blocked", title: "Blocked without the prerequisite Deck can show",
+                        type: "task", severity: "high", state: "open", claimedBy: nil, claimExpired: false,
+                        prerequisites: prerequisites, blocked: blocked),
+                ],
+                total: 1, truncated: false, childParents: [:])
+            model.fetchCourse = { _, _ in nil }
+            model.fetchQueue = { _, _ in queue }
+            model.fetchEpics = { _, _ in [] }
+            await model.refresh(target: TestHost.unreachableTarget, product: product)
+            return model
+        }
+        for width: CGFloat in [320, 280] {
+            for appearance: Appearance in [.light, .dark] {
+                let plainRep = try await render(
+                    [CockpitView.correctionsQueuePanelID],
+                    model: await model(blocked: false, prerequisites: []), width: width, appearance: appearance)
+                let blockedRep = try await render(
+                    [CockpitView.correctionsQueuePanelID],
+                    model: await model(blocked: true, prerequisites: [.missingItem(id: "missing_1")]),
+                    width: width, appearance: appearance)
+                XCTAssertGreaterThan(inkedRows(blockedRep), inkedRows(plainRep),
+                                     "the lock mark and \"Needs first:\" caption drew no extra rows at \(width)pt, \(appearance)")
+            }
         }
     }
 }

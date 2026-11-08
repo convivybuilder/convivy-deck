@@ -14,7 +14,7 @@ import XCTest
 /// literal expected argv — proving the shape ssh actually receives without
 /// needing a real `ssh -N` process or a real ControlMaster.
 final class KeelForwardTests: XCTestCase {
-    private let fixtureTarget = SSHTarget(user: "vivy", host: "fleet-mini")
+    private let fixtureTarget = SSHTarget(user: "orchard", host: "fleet-mini")
     /// A home with no Deck key, so no `-i` is added and the argv asserted here is
     /// the same on any machine. Passed to every builder, so none reads the real `~/.ssh`.
     private let noDeckKeyHome = "/nonexistent/deck-test-home"

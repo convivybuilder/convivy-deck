@@ -75,15 +75,15 @@ final class HostResolutionTests: XCTestCase {
     // MARK: - target(forSession:crews:hosts:defaultHost:)
 
     func testACrewWithAHostResolvesThroughItsOwnField() {
-        let crews = [crew("vivy", host: "laptop"), crew("ask")]
+        let crews = [crew("orchard", host: "laptop"), crew("ask")]
         XCTAssertEqual(
-            HostResolution.target(forSession: "vivy", crews: crews,
+            HostResolution.target(forSession: "orchard", crews: crews,
                                   hosts: [mini, laptop], defaultHost: "mini"),
             SSHTarget(user: "operator", host: "10.0.0.5"))
     }
 
     func testACrewWithNoHostResolvesToTheDefault() {
-        let crews = [crew("vivy", host: "laptop"), crew("ask")]
+        let crews = [crew("orchard", host: "laptop"), crew("ask")]
         XCTAssertEqual(
             HostResolution.target(forSession: "ask", crews: crews,
                                   hosts: [mini, laptop], defaultHost: "mini"),
@@ -93,9 +93,9 @@ final class HostResolutionTests: XCTestCase {
     /// A pinned sibling resolves through the same crew its primary session
     /// does, via `SessionGrouping`'s name rule — `<crew-id>--child`.
     func testAPinnedChildResolvesThroughItsCrewsHost() {
-        let crews = [crew("vivy", host: "laptop")]
+        let crews = [crew("orchard", host: "laptop")]
         XCTAssertEqual(
-            HostResolution.target(forSession: "vivy--research", crews: crews,
+            HostResolution.target(forSession: "orchard--research", crews: crews,
                                   hosts: [mini, laptop], defaultHost: "mini"),
             SSHTarget(user: "operator", host: "10.0.0.5"))
     }
@@ -104,9 +104,9 @@ final class HostResolutionTests: XCTestCase {
     /// in, or a hand-made session the path rule alone would claim — resolves
     /// to the default; this function deliberately checks only the name rule.
     func testASessionMatchingNoCrewResolvesToTheDefault() {
-        let crews = [crew("vivy", host: "laptop")]
+        let crews = [crew("orchard", host: "laptop")]
         XCTAssertEqual(
-            HostResolution.target(forSession: "nyh-studio", crews: crews,
+            HostResolution.target(forSession: "lakeside-studio", crews: crews,
                                   hosts: [mini, laptop], defaultHost: "mini"),
             TestHost.target)
     }
@@ -125,17 +125,17 @@ final class HostResolutionTests: XCTestCase {
     /// to resolve only against `crews`, so a catalog row's `host` was
     /// silently ignored.
     func testACatalogRowWithAHostResolvesThroughItsOwnField() {
-        let catalog = [launchable("nyh-studio", host: "laptop")]
+        let catalog = [launchable("lakeside-studio", host: "laptop")]
         XCTAssertEqual(
-            HostResolution.target(forSession: "nyh-studio", crews: [], catalog: catalog,
+            HostResolution.target(forSession: "lakeside-studio", crews: [], catalog: catalog,
                                   hosts: [mini, laptop], defaultHost: "mini"),
             SSHTarget(user: "operator", host: "10.0.0.5"))
     }
 
     func testACatalogRowWithNoHostResolvesToTheDefault() {
-        let catalog = [launchable("nyh-studio")]
+        let catalog = [launchable("lakeside-studio")]
         XCTAssertEqual(
-            HostResolution.target(forSession: "nyh-studio", crews: [], catalog: catalog,
+            HostResolution.target(forSession: "lakeside-studio", crews: [], catalog: catalog,
                                   hosts: [mini, laptop], defaultHost: "laptop"),
             SSHTarget(user: "operator", host: "10.0.0.5"))
     }
@@ -144,9 +144,9 @@ final class HostResolutionTests: XCTestCase {
     /// via `SessionGrouping`'s name rule, exactly as a crew's pinned child
     /// does.
     func testACatalogRowsPinnedChildResolvesThroughItsHost() {
-        let catalog = [launchable("nyh-studio", host: "laptop")]
+        let catalog = [launchable("lakeside-studio", host: "laptop")]
         XCTAssertEqual(
-            HostResolution.target(forSession: "nyh-studio--research", crews: [], catalog: catalog,
+            HostResolution.target(forSession: "lakeside-studio--research", crews: [], catalog: catalog,
                                   hosts: [mini, laptop], defaultHost: "mini"),
             SSHTarget(user: "operator", host: "10.0.0.5"))
     }
@@ -154,10 +154,10 @@ final class HostResolutionTests: XCTestCase {
     /// Crews are checked first — a name is not expected to appear in both
     /// lists, but if it does, the row actually pinned to the rail wins.
     func testACrewsHostWinsOverASameNamedCatalogRow() {
-        let crews = [crew("vivy", host: "mini")]
-        let catalog = [launchable("vivy", host: "laptop")]
+        let crews = [crew("orchard", host: "mini")]
+        let catalog = [launchable("orchard", host: "laptop")]
         XCTAssertEqual(
-            HostResolution.target(forSession: "vivy", crews: crews, catalog: catalog,
+            HostResolution.target(forSession: "orchard", crews: crews, catalog: catalog,
                                   hosts: [mini, laptop], defaultHost: "laptop"),
             TestHost.target)
     }
@@ -166,9 +166,9 @@ final class HostResolutionTests: XCTestCase {
     /// mentions a catalog keeps resolving exactly as it did before this
     /// field was wired.
     func testAnOmittedCatalogParameterBehavesAsEmpty() {
-        let crews = [crew("vivy", host: "laptop")]
+        let crews = [crew("orchard", host: "laptop")]
         XCTAssertEqual(
-            HostResolution.target(forSession: "vivy", crews: crews,
+            HostResolution.target(forSession: "orchard", crews: crews,
                                   hosts: [mini, laptop], defaultHost: "mini"),
             SSHTarget(user: "operator", host: "10.0.0.5"))
     }

@@ -150,12 +150,12 @@ final class QueueSortOrderTests: XCTestCase {
         let file = url()
         try FileManager.default.createDirectory(
             at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try #"{"queueSortOrder": "priority", "sessions": {"vivy": "azure"}}"#
+        try #"{"queueSortOrder": "priority", "sessions": {"orchard": "azure"}}"#
             .write(to: file, atomically: true, encoding: .utf8)
 
         let loaded = ThemeConfiguration.load(from: file)
         XCTAssertEqual(loaded.queueSortOrder, .severity)
-        XCTAssertEqual(loaded.sessions[SessionRef(host: nil, name: "vivy")], "azure")
+        XCTAssertEqual(loaded.sessions[SessionRef(host: nil, name: "orchard")], "azure")
     }
 
     func testTheChoiceSurvivesSaveAndLoad() throws {

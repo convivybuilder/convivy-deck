@@ -47,11 +47,11 @@ final class SiblingSessionNameTests: XCTestCase {
     }
 
     /// The whole reason for `--`: a crew id that already contains a single
-    /// dash (`sous-chef`) must not be confused with a sibling boundary.
+    /// dash (`galley`) must not be confused with a sibling boundary.
     func testDoubleDashSurvivesAHyphenatedCrewId() throws {
         let name = try SiblingSessionName.derive(
-            crewId: "sous-chef", label: "prep", existingNames: [])
-        XCTAssertEqual(name, "sous-chef--prep")
+            crewId: "galley", label: "prep", existingNames: [])
+        XCTAssertEqual(name, "galley--prep")
     }
 
     func testEmptyLabelIsRejected() {
@@ -95,7 +95,7 @@ final class SiblingSessionNameTests: XCTestCase {
     /// rejects — nothing in `slugify`'s alphabet does, but the contract is
     /// worth pinning directly rather than only by construction.
     func testEveryDerivedNameValidatesAsATmuxSessionName() throws {
-        for label in ["research", "Tax 2025", "a b c", "sous-chef helper"] {
+        for label in ["research", "Tax 2025", "a b c", "galley helper"] {
             let name = try SiblingSessionName.derive(
                 crewId: "ask", label: label, existingNames: [])
             XCTAssertNoThrow(try validateTmuxSessionName(name))

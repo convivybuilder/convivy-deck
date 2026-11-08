@@ -41,7 +41,7 @@ final class HostConfigTests: XCTestCase {
 
     func testACatalogRowWithNoHostKeyDecodesToNilHost() throws {
         let file = try write("""
-        {"catalog": [{"session": "nyh"}]}
+        {"catalog": [{"session": "lakeside"}]}
         """)
         let row = try XCTUnwrap(ThemeConfiguration.load(from: file).catalog.first)
         XCTAssertNil(row.host)
@@ -64,7 +64,7 @@ final class HostConfigTests: XCTestCase {
         {
           "hosts": [{"name": "mini", "user": "\(TestHost.user)", "address": "\(TestHost.address)"}],
           "defaultHost": "mini",
-          "rail": [{"session": "vivy", "host": "mini"}]
+          "rail": [{"session": "orchard", "host": "mini"}]
         }
         """)
         let config = ThemeConfiguration.load(from: file)
@@ -135,20 +135,39 @@ final class HostConfigTests: XCTestCase {
     /// `command` already gets.
     func testACrewRowWithAPipeInItsHostFieldKeepsTheRowButDropsTheHost() throws {
         let file = try write("""
-        {"rail": [{"session": "vivy", "host": "a|b"}]}
+        {"rail": [{"session": "orchard", "host": "a|b"}]}
         """)
         let row = try XCTUnwrap(ThemeConfiguration.load(from: file).railSessions?.first)
-        XCTAssertEqual(row.id, "vivy")
+        XCTAssertEqual(row.id, "orchard")
         XCTAssertNil(row.host)
     }
 
     func testACatalogRowWithAPipeInItsHostFieldKeepsTheRowButDropsTheHost() throws {
         let file = try write("""
-        {"catalog": [{"session": "nyh", "host": "a|b"}]}
+        {"catalog": [{"session": "lakeside", "host": "a|b"}]}
         """)
         let row = try XCTUnwrap(ThemeConfiguration.load(from: file).catalog.first)
-        XCTAssertEqual(row.id, "nyh")
+        XCTAssertEqual(row.id, "lakeside")
         XCTAssertNil(row.host)
+    }
+
+    /// The repeated-unpin bug (`CrewMerge.merge` appending a served crew
+    /// back onto the rail even while the catalog already held it) grew a
+    /// `theme.json` several identical `catalog` rows for one crew — the
+    /// operator's own file had three identical rows for one crew. The fix heals that
+    /// file on its very next load rather than needing a hand edit: only the
+    /// first of several rows sharing one `ref` survives.
+    func testThreeIdenticalCatalogEntriesLoadAsOne() throws {
+        let file = try write("""
+        {"catalog": [
+          {"session": "orchard-guest", "host": "alpha", "name": "Orchard Guest"},
+          {"session": "orchard-guest", "host": "alpha", "name": "Orchard Guest"},
+          {"session": "orchard-guest", "host": "alpha", "name": "Orchard Guest"}
+        ]}
+        """)
+        let config = ThemeConfiguration.load(from: file)
+        XCTAssertEqual(config.catalog.count, 1)
+        XCTAssertEqual(config.catalog.first?.ref, SessionRef(host: "alpha", name: "orchard-guest"))
     }
 
     /// `HostResolution` resolves both directions ("OTHER SESSIONS" rows
@@ -314,7 +333,7 @@ final class HostConfigTests: XCTestCase {
             HostEntry(name: "laptop", user: "operator", address: "10.0.0.5"),
         ]
         config.defaultHost = "mini"
-        config.railSessions = [Crew(id: "vivy", displayName: "Vivy", host: "laptop")]
+        config.railSessions = [Crew(id: "orchard", displayName: "Orchard", host: "laptop")]
         try config.save(to: file)
 
         let reloaded = ThemeConfiguration.load(from: file)

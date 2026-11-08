@@ -282,6 +282,57 @@ struct SessionState: Equatable {
     /// recording that failed to parse.
     var workingOn: WorkingOn?
 
+    /// A fallback reading for the same strip, for when `workingOn` is stale
+    /// or absent: the co's last dispatch task, never its last prompt. The
+    /// mini serves both an `agentctl spawn --task` reading and a
+    /// `UserPromptSubmit` one under this key — the operator ruled
+    /// 2026-10-20 that only the former is worth drawing, since the session
+    /// window already shows the operator's own latest message and a strip
+    /// that echoed it back would be redundant rather than informative. `nil`
+    /// for a mini that predates the field or a record that failed to parse.
+    var workingOnDerived: WorkingOnDerived?
+
+    /// Who is attached to this session's terminal — the `clients` field; see
+    /// `platform/contracts/session-agent-api`'s own section of that name.
+    /// `nil` when the key is absent, a mini that predates the field.
+    var clients: Clients?
+
+    /// See `clients`.
+    ///
+    /// `NULL` AND `[]` ARE DIFFERENT ANSWERS, the same split `held` keeps
+    /// between "could not tell" and "positively zero": `.attached([])`
+    /// means tmux answered and nobody is attached by tmux, while `.unknown`
+    /// means `tmux list-clients` failed, or (in `states`) the whole
+    /// session's read failed and the batch built a failure entry for it.
+    ///
+    /// NEITHER CASE SAYS ANYTHING ABOUT REMOTE CONTROL. A session watched
+    /// through Anthropic's bridge rather than through a tmux client never
+    /// appears in `clients` at all, so `.attached([])` reads as "no tmux
+    /// client", never as "no one here" — a consumer must not draw it as an
+    /// empty session.
+    enum Clients: Equatable {
+        case unknown
+        case attached([Client])
+    }
+
+    /// One tmux client attached to a session's terminal.
+    struct Client: Equatable {
+        var pid: Int
+        /// `nil` when the client's process ancestry could not be read.
+        var via: Via?
+        /// `Deck on <device>`, `SSH from <device>` or `a terminal on
+        /// <machine>` — or `nil` when the label lookup failed.
+        ///
+        /// STILL A PRESENT, COUNTED CLIENT even when this is `nil`: a
+        /// consumer counts it as an unnamed attachment rather than dropping
+        /// it, the contract's own rule for this field.
+        var label: String?
+
+        enum Via: String, Equatable {
+            case ssh, local
+        }
+    }
+
     /// How full the session's context window is, as a percentage — the rail's
     /// meter. `nil` when there is no reading yet.
     ///
@@ -427,6 +478,42 @@ struct SessionState: Equatable {
         /// when the recording predates this field. A DURATION, not a clock
         /// time — format it against the reader's own now, never the mini's.
         var since: Double?
+    }
+
+    /// One reading from `working_on_derived` — see `workingOnDerived`.
+    ///
+    /// UNSANITISED ON THE WIRE, unlike `WorkingOn.text`: `co-working-on`
+    /// sanitises what the co authors, but a dispatch task is the raw string
+    /// `agentctl spawn --task` was given, so a consumer draws it through the
+    /// same sanitiser the run panel uses for `AgentRun.task`
+    /// (`CockpitView.sanitizedAgentField`) rather than trusting it bare.
+    struct WorkingOnDerived: Equatable {
+        var text: String
+        /// `"agentctl spawn --task"` or `"UserPromptSubmit"` on the wire
+        /// today, per the mini's `working_on_derived`. Only the former is
+        /// ever drawn — see `workingOnDerived`'s own doc — so this is kept
+        /// as the raw string rather than an enum: a value this reads and
+        /// discards needs no closed set to stay faithful to.
+        var derivedFrom: String
+        /// Seconds since the mini derived this record, or `nil` when the
+        /// record carries none. A DURATION, not a clock time — the same
+        /// shape `WorkingOn.age` is, computed by the mini at the moment it
+        /// answered rather than by Deck against its own clock.
+        var age: Double?
+        /// Seconds the current work identity has been the work, or `nil`
+        /// when the record carries none — the same "no duration without a
+        /// start time" rule `WorkingOn.since` follows, for the same reason:
+        /// deriving one from `age` instead would misreport an old dispatch
+        /// as freshly started.
+        var since: Double?
+
+        /// `derived_from`'s value when the record is the co's last dispatch
+        /// task — the one reading the strip falls back to. The mini's other
+        /// value, `"UserPromptSubmit"`, names the co's last prompt and is
+        /// never drawn: the operator ruled 2026-10-20 that the session
+        /// window already shows the operator's own latest message, so
+        /// echoing it back in the strip would tell the reader nothing new.
+        static let dispatchTaskSource = "agentctl spawn --task"
     }
 
     /// See `held`.
@@ -665,12 +752,34 @@ extension SessionState {
             vitals: decodeVitals(root["vitals"]),
             held: decodeHeld(root),
             workingOn: decodeWorkingOn(root["working_on"]),
+            workingOnDerived: decodeWorkingOnDerived(root["working_on_derived"]),
+            clients: decodeClients(root),
             // Same top-level-first, vitals-as-fallback order as `liveAgents`.
             contextPercent: finiteNumber(root["ctx_pct"])
                 ?? decodeVitals(root["vitals"])?.contextPercent.flatMap { $0.isFinite ? $0 : nil },
             rollover: decodeRollover(root["rollover"]),
             asksOpen: decodeAsksOpen(root)
         )
+    }
+
+    /// Decodes `clients` — nil when the key is absent (a mini that predates
+    /// the field), `.unknown` when it is `null` or any shape other than a
+    /// list (the producer's own "read failed" signal and a shape this build
+    /// cannot read fold into the same answer, since neither lets anything be
+    /// said about who is attached), and `.attached` for a list, `[]`
+    /// included. An entry that is not a JSON object, or carries no readable
+    /// `pid`, is dropped rather than drawn as a blank client — the same rule
+    /// `decodeAgentRuns` follows for its own list.
+    private static func decodeClients(_ root: [String: Any]) -> Clients? {
+        guard let raw = root["clients"] else { return nil }
+        guard let list = raw as? [Any] else { return .unknown }
+        let clients = list.compactMap { entry -> Client? in
+            guard let dict = entry as? [String: Any], let pid = wholeNumber(dict["pid"]) else { return nil }
+            return Client(pid: pid,
+                          via: (dict["via"] as? String).flatMap(Client.Via.init(rawValue:)),
+                          label: dict["label"] as? String)
+        }
+        return .attached(clients)
     }
 
     /// Decodes `asks_open`/`slate_error` to the badge's reading — see
@@ -742,6 +851,23 @@ extension SessionState {
             age: (dict["age"] as? NSNumber)?.doubleValue,
             stale: dict["stale"] as? Bool,
             since: (dict["since"] as? NSNumber)?.doubleValue)
+    }
+
+    /// Decodes `working_on_derived`, or nil when there is nothing to draw a
+    /// fallback for. `text` and `derived_from` are both required — a record
+    /// missing either tells the strip nothing it can act on, so it decodes
+    /// the same as an absent key, the field-not-the-row rule `decodeWorkingOn`
+    /// follows too.
+    private static func decodeWorkingOnDerived(_ raw: Any?) -> WorkingOnDerived? {
+        guard let dict = raw as? [String: Any],
+              let text = dict["text"] as? String, !text.isEmpty,
+              let derivedFrom = dict["derived_from"] as? String, !derivedFrom.isEmpty
+        else { return nil }
+        return WorkingOnDerived(
+            text: text,
+            derivedFrom: derivedFrom,
+            age: finiteNumber(dict["age"]),
+            since: finiteNumber(dict["since"]))
     }
 
     /// Decodes `agent_runs` — nil when the key is absent (a mini that

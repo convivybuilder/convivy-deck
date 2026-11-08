@@ -42,6 +42,12 @@ final class CockpitModel: ObservableObject {
     /// Why the last Approve did not land, kept with the epic it was for so the
     /// view can say it under that row. Cleared at the start of the next attempt.
     @Published private(set) var approvalRefusal: ApprovalRefusal?
+    /// The epic whose Decline is in flight, if any — the same one-write-at-a-time
+    /// guard `approvingEpicID` gives Approve.
+    @Published private(set) var decliningEpicID: String?
+    /// Why the last Decline did not land, kept with the epic it was for so the
+    /// view can say it under that row. Cleared at the start of the next attempt.
+    @Published private(set) var declineRefusal: DeclineRefusal?
 
     /// Whether a Course reorder write is out. Blocks a second drop until the
     /// first has settled, so no move is ever computed from a picture the
@@ -52,6 +58,13 @@ final class CockpitModel: ObservableObject {
     @Published private(set) var courseReorderRefusal: String?
 
     struct ApprovalRefusal: Equatable {
+        let epicID: String
+        let message: String
+    }
+
+    /// Same shape as `ApprovalRefusal`, kept as its own type so the view
+    /// cannot confuse a Decline refusal for an Approve one on the same row.
+    struct DeclineRefusal: Equatable {
         let epicID: String
         let message: String
     }
@@ -89,6 +102,16 @@ final class CockpitModel: ObservableObject {
     /// replaces `pullRequests` underneath the view, and a reader's
     /// expansion must survive that.
     @Published private(set) var isPullRequestsExpanded = false
+
+    /// The panel `CockpitView` last found topmost in its scroll viewport
+    /// (`CockpitView.topmostVisiblePanelID`) — kept on the model rather than
+    /// view `@State`, for the reason `expandedEntries` is: the column
+    /// swaps `CockpitView` out for another occupant and rebuilds it from
+    /// scratch on return (CQ·174), and a reader's scroll position must
+    /// survive that the same way an open epic does. `noteScrollAnchor` is
+    /// called on every layout pass, so this always holds the most recent
+    /// measurement; `CockpitView` reads it once, on appear, to scroll back.
+    @Published private(set) var scrollAnchorPanelID: String?
 
     /// The child item a click on an issue id in the session pane asked the
     /// cockpit to point at, set by `reveal`. `CockpitView.childItemRow` reads
@@ -157,6 +180,10 @@ final class CockpitModel: ObservableObject {
     }
     var approveEpic: @Sendable (SSHTarget, String, String) throws -> Void = { target, itemId, actingHuman in
         try LibraryClient.approveEpic(target: target, itemId: itemId, actingHuman: actingHuman)
+    }
+    /// The write Decline makes. A stored closure for the reason `approveEpic` is.
+    var declineEpic: @Sendable (SSHTarget, String, String, String?) throws -> Void = { target, itemId, actingHuman, reason in
+        try LibraryClient.declineEpic(target: target, itemId: itemId, actingHuman: actingHuman, reason: reason)
     }
 
     /// The write a Course drop makes: `(target, courseId, version, entries)`.
@@ -227,10 +254,12 @@ final class CockpitModel: ObservableObject {
             clearHighlight()
             isQueueExpanded = false
             isPullRequestsExpanded = false
+            scrollAnchorPanelID = nil
             proposedEpics = []
             proposedEpicsError = nil
             allWorkItems = []
             approvalRefusal = nil
+            declineRefusal = nil
             courseReorderRefusal = nil
             return
         }
@@ -242,9 +271,17 @@ final class CockpitModel: ObservableObject {
         clearHighlight()
         isQueueExpanded = false
         isPullRequestsExpanded = false
+        scrollAnchorPanelID = nil
         approvalRefusal = nil
+        declineRefusal = nil
         courseReorderRefusal = nil
         await fetch(target: target, product: product)
+    }
+
+    /// Records the panel `CockpitView` last measured as topmost, so a
+    /// rebuilt `CockpitView` can scroll back to it.
+    func noteScrollAnchor(_ panelID: String) {
+        scrollAnchorPanelID = panelID
     }
 
     /// Shows the whole corrections queue, or falls back to its top few.
@@ -565,34 +602,131 @@ final class CockpitModel: ObservableObject {
     /// route under Deck's own approval credential, which holds the epic for
     /// the one write when nobody else does.
     ///
-    /// `acting_human` is `DeckOperator.label()` — the macOS session Deck is
-    /// running in, the same label `deck/decisions/0001` already treats as
-    /// honest for an `owner` write. It is the one fact Deck can attest
-    /// without verifying it, and `platform/decisions/0087` rules that
-    /// sufficient: any action by a Deck user is treated as the operator's.
-    ///
-    /// When it does not land, `approvalRefusal` says why in the Library's own
-    /// words. The common case is an agent holding the epic, and that message
-    /// names the holder and the expiry; an Approve that did nothing and said
-    /// nothing would be worse than one that says who has it.
-    ///
-    /// The row stays when the write succeeds but the re-fetch fails. A second
-    /// click then repeats a write that changes nothing, which the Library
-    /// answers 200.
+    /// Delegates to `writeApprovalFromItemPane` — the Proposals region's own
+    /// write and the item pane's write go through the one core (the
+    /// `deck-reviewer` finding on PR #399: the two must not become two
+    /// write paths that can disagree). `approve`/`decline` keep their
+    /// existing shape otherwise: still guarded on `lastFetched` (the region
+    /// has nothing to show without a resolved project), still populate
+    /// `approvalRefusal`/`declineRefusal` rather than returning an outcome,
+    /// since the Proposals region reads those published properties, not a
+    /// return value.
     func approve(_ epic: LibraryClient.Epic) async {
-        guard let key = lastFetched, approvingEpicID == nil else { return }
-        approvingEpicID = epic.id
-        approvalRefusal = nil
-        let write = approveEpic
+        guard let key = lastFetched else { return }
+        if case .refused(let message) = await writeApprovalFromItemPane(
+            .approve, epicID: epic.id, host: key.host) {
+            approvalRefusal = ApprovalRefusal(epicID: epic.id, message: message)
+        }
+    }
+
+    /// Ends a proposed epic's consideration and re-fetches, so the row
+    /// leaves the region on the click, exactly as `approve` does.
+    /// `LibraryClient.declineEpic` writes through the Library's `/decline`
+    /// route under Deck's own approval credential, the same one `approve`
+    /// uses — declining is the human-reserved `epic.approve` capability too
+    /// (library/decisions/0005).
+    ///
+    /// Delegates to `writeApprovalFromItemPane`, for the reason `approve`'s
+    /// doc comment gives.
+    func decline(_ epic: LibraryClient.Epic, reason: String? = nil) async {
+        guard let key = lastFetched else { return }
+        if case .refused(let message) = await writeApprovalFromItemPane(
+            .decline, epicID: epic.id, host: key.host, reason: reason) {
+            declineRefusal = DeclineRefusal(epicID: epic.id, message: message)
+        }
+    }
+
+    /// Which write `writeApprovalFromItemPane` makes.
+    enum ApprovalAction: Equatable {
+        case approve
+        case decline
+    }
+
+    /// What `writeApprovalFromItemPane` resolved to: the Library accepted
+    /// the write, refused it in its own words, or the write was never sent.
+    enum ApprovalWriteOutcome: Equatable {
+        case wrote
+        case refused(String)
+        case notAttempted(String)
+    }
+
+    /// The one entry point both the Proposals region (`approve`/`decline`,
+    /// above) and `ItemDetailPane`'s Approve/Decline write through
+    /// (`ContentView.approveEpicFromItemPane`/`declineEpicFromItemPane`) —
+    /// the `deck-reviewer` finding on PR #399.
+    ///
+    /// **TAKES THE HOST TO WRITE TO AS ITS OWN ARGUMENT, NEVER `lastFetched`.**
+    /// `lastFetched` tracks whichever project the RAIL'S selection currently
+    /// resolves to, not the item open in a pane — `ItemDetailPane` exists
+    /// precisely because a `deck-open:` link or a `found_during` button can
+    /// open an epic filed against a DIFFERENT product than whichever crew is
+    /// on screen (its own doc comment). The caller passes the host the epic
+    /// actually lives on — the item pane's own `target` — so this never
+    /// consults `lastFetched` to decide whether or where to write, and never
+    /// requires it to be set.
+    ///
+    /// Writes through the same `approveEpic`/`declineEpic` seams and the
+    /// same `DeckOperator.label()` acting human as before, and shares the
+    /// Proposals region's one-write-at-a-time guard
+    /// (`approvingEpicID`/`decliningEpicID`), so a press from this pane and
+    /// a press from the Proposals region cannot race each other into two
+    /// writes. A press that arrives while the other is already in flight is
+    /// never sent, and that is reported as `.notAttempted` rather than read
+    /// back as success — the false-success gap this method exists to close.
+    ///
+    /// After a successful write, re-fetches the Proposals region only when
+    /// `lastFetched` is set at that point — there may be no selected
+    /// project to refresh — and a failed re-fetch only updates
+    /// `proposedEpicsError`; it never turns `.wrote` into `.refused`, since
+    /// the write itself already landed.
+    func writeApprovalFromItemPane(
+        _ action: ApprovalAction, epicID: String, host: SSHTarget, reason: String? = nil
+    ) async -> ApprovalWriteOutcome {
+        guard approvingEpicID == nil, decliningEpicID == nil else {
+            return .notAttempted("Another approval or decline is already in flight.")
+        }
+        switch action {
+        case .approve: approvingEpicID = epicID
+        case .decline: decliningEpicID = epicID
+        }
+        clearRefusals(for: epicID)
         let actingHuman = DeckOperator.label()
         do {
-            try await Task.detached { try write(key.host, epic.id, actingHuman) }.value
-            await refetchProposedEpics(key: key)
+            switch action {
+            case .approve:
+                let write = approveEpic
+                try await Task.detached { try write(host, epicID, actingHuman) }.value
+            case .decline:
+                let write = declineEpic
+                try await Task.detached { try write(host, epicID, actingHuman, reason) }.value
+            }
         } catch {
-            approvalRefusal = ApprovalRefusal(
-                epicID: epic.id, message: LibraryClient.approvalRefusalMessage(error))
+            let message = action == .approve
+                ? LibraryClient.approvalRefusalMessage(error)
+                : LibraryClient.declineRefusalMessage(error)
+            switch action {
+            case .approve: approvingEpicID = nil
+            case .decline: decliningEpicID = nil
+            }
+            return .refused(message)
         }
-        approvingEpicID = nil
+        switch action {
+        case .approve: approvingEpicID = nil
+        case .decline: decliningEpicID = nil
+        }
+        if let key = lastFetched {
+            await refetchProposedEpics(key: key)
+        }
+        return .wrote
+    }
+
+    /// Clears both refusals, but only the ones on `epicID`'s own row. A row
+    /// shows the answer to its latest press, so a stale Decline refusal must
+    /// not sit beside a fresh Approve one; and a press on one row must not
+    /// wipe another row's refusal (review of CQ·173).
+    private func clearRefusals(for epicID: String) {
+        if approvalRefusal?.epicID == epicID { approvalRefusal = nil }
+        if declineRefusal?.epicID == epicID { declineRefusal = nil }
     }
 
     private func refetchProposedEpics(key: Key) async {

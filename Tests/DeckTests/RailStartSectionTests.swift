@@ -1,39 +1,67 @@
 import XCTest
 @testable import Deck
 
-/// `issue_01M1SV8QKJ7ADH87PCNC0Q0YE8`'s one non-optional correctness fix,
-/// pinned at the layer that used to hide it: `RailView.otherSessions` used
-/// to also drop any discovered session whose name matched a catalog id, so
-/// a launched-but-unpinned catalog entry drew nowhere selectable — filtered
-/// out here, and still drawn as an ordinary "not running" row under
-/// `START`. `SessionGroupingTests` already pins `SessionGrouping.ungrouped`
-/// itself, which never filtered by catalog; this file pins that `RailView`
-/// no longer adds a filter of its own on top of it.
+/// `issue_01M5MME44FPVHRQB4KDBXZA5YR`: a running, unpinned catalog entry —
+/// a crew Deck already knows about — drew under "OTHER SESSIONS" with
+/// "Promote to Crew…", meant for a tmux session Deck knows nothing about.
+/// The fix reinstates the catalog exclusion `otherSessions` once dropped
+/// (`issue_01M1SV8QKJ7ADH87PCNC0Q0YE8`), now host-scoped, paired with
+/// `START` no longer excluding a running entry — see `StartPickerTests`
+/// and `RailStateModelRefreshTests`'s own coverage of the discovery side.
+/// `SessionGroupingTests` already pins `SessionGrouping.ungrouped` itself,
+/// which never filters by catalog; this file pins the filter `RailView`
+/// layers on top of it.
 final class RailStartSectionTests: XCTestCase {
     private func crew(_ id: String, dir: String? = nil) -> Crew {
         Crew(id: id, displayName: id, workingDirectory: dir)
     }
 
-    /// The regression shape directly: a discovered session sharing a name
-    /// with what used to be a catalog id, matching no crew, is included —
-    /// where the deleted filter used to drop it.
-    func testOtherSessionsIncludesADiscoveredSessionSharingANameWithACatalogEntry() {
-        let discovered = DiscoveredSession(name: "hollis", host: TestHost.target, path: "/x")
+    private let hosts = [HostEntry(name: "mini", user: TestHost.user, address: TestHost.address)]
+
+    /// The issue's own shape: a catalog entry naming a running session on
+    /// the same host is excluded, so "Promote to Crew…" never appears for
+    /// a crew Deck already has.
+    func testOtherSessionsExcludesARunningCatalogEntryOnTheSameHost() {
+        let quarry = LaunchableSession(id: "quarry", displayName: "Quarry", host: "mini")
+        let discovered = DiscoveredSession(name: "quarry", host: TestHost.target, path: "/x")
+        let result = RailView.otherSessions(
+            discoveredSessions: [discovered], crews: [], catalog: [quarry],
+            hosts: hosts, defaultHost: "mini")
+        XCTAssertTrue(result.isEmpty)
+    }
+
+    /// Host-scoped, the same way the pin exclusion `SessionGrouping.ungrouped`
+    /// already applies is: a catalog entry on one host must never hide an
+    /// unrelated, same-named session discovered on a DIFFERENT host.
+    func testOtherSessionsIncludesASessionACatalogEntryNamesOnADifferentHost() {
+        let secondaryHosts = hosts + [
+            HostEntry(name: "annex", user: TestHost.secondaryUser, address: TestHost.secondaryAddress),
+        ]
+        let quarry = LaunchableSession(id: "quarry", displayName: "Quarry", host: "mini")
+        let discovered = DiscoveredSession(name: "quarry", host: TestHost.secondaryTarget, path: "/x")
+        let result = RailView.otherSessions(
+            discoveredSessions: [discovered], crews: [], catalog: [quarry],
+            hosts: secondaryHosts, defaultHost: "mini")
+        XCTAssertEqual(result.map(\.name), ["quarry"])
+    }
+
+    /// A tmux session no catalog entry and no crew names is the case the
+    /// section still exists for — unaffected by either exclusion.
+    func testOtherSessionsStillIncludesAnUnknownTmuxSession() {
+        let discovered = DiscoveredSession(name: "steward", host: TestHost.target, path: "/x")
         let result = RailView.otherSessions(
             discoveredSessions: [discovered], crews: [], hosts: [], defaultHost: nil)
-        XCTAssertEqual(result.map(\.name), ["hollis"])
+        XCTAssertEqual(result.map(\.name), ["steward"])
     }
 
     /// A crew still wins the grouping rules it always did — this fix only
-    /// removed the CATALOG exclusion, not the crew one `SessionGrouping`
-    /// already applies.
+    /// adds a CATALOG exclusion, not a replacement for the crew one
+    /// `SessionGrouping` already applies.
     func testOtherSessionsStillExcludesASessionACrewOwns() {
         let ask = crew("ask", dir: "\(TestHost.homeRoot)/Convivy/ask")
         let discovered = DiscoveredSession(name: "ask--research", host: TestHost.target, path: "/x")
         let result = RailView.otherSessions(
-            discoveredSessions: [discovered], crews: [ask],
-            hosts: [HostEntry(name: "mini", user: TestHost.user, address: TestHost.address)],
-            defaultHost: "mini")
+            discoveredSessions: [discovered], crews: [ask], hosts: hosts, defaultHost: "mini")
         XCTAssertTrue(result.isEmpty)
     }
 

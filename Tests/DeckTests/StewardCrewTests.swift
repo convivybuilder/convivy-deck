@@ -255,7 +255,7 @@ final class StewardCrewTests: XCTestCase {
         let forbidden = [
             "convivy",
             // the org chart CrewCatalog.known used to carry
-            "vivy", "constance", "selector", "hollis", "sous-chef", "sous chef",
+            "orchard", "meridian", "lantern", "quarry", "galley",
             // hardware and network names named elsewhere in the epic
             "mini", "tailnet", "fleetd", "keel",
         ]

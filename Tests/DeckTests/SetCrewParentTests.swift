@@ -18,10 +18,10 @@ final class SetCrewParentTests: XCTestCase {
         let store = ThemeStore(fileURL: url())
         store.addCrew(Crew(id: "ask", displayName: "Ask"))
 
-        store.setParent("vivy", forCrew: SessionRef(host: nil, name: "ask"))
+        store.setParent("orchard", forCrew: SessionRef(host: nil, name: "ask"))
 
         let ask = try XCTUnwrap((store.configuration.railSessions ?? []).first { $0.id == "ask" })
-        XCTAssertEqual(ask.parent, "vivy")
+        XCTAssertEqual(ask.parent, "orchard")
     }
 
     /// "Move to Top Level" is the same call with `nil` — it clears the
@@ -29,7 +29,7 @@ final class SetCrewParentTests: XCTestCase {
     @MainActor
     func testMoveToTopLevelClearsAnExistingParent() throws {
         let store = ThemeStore(fileURL: url())
-        store.addCrew(Crew(id: "ask", displayName: "Ask", parent: "vivy"))
+        store.addCrew(Crew(id: "ask", displayName: "Ask", parent: "orchard"))
 
         store.setParent(nil, forCrew: SessionRef(host: nil, name: "ask"))
 
@@ -42,13 +42,13 @@ final class SetCrewParentTests: XCTestCase {
     @MainActor
     func testEveryOtherCrewRowIsUntouched() throws {
         let store = ThemeStore(fileURL: url())
-        let vivy = Crew(id: "vivy", displayName: "Vivy")
-        store.addCrew(vivy)
+        let orchard = Crew(id: "orchard", displayName: "Orchard")
+        store.addCrew(orchard)
         store.addCrew(Crew(id: "ask", displayName: "Ask"))
 
-        store.setParent("vivy", forCrew: SessionRef(host: nil, name: "ask"))
+        store.setParent("orchard", forCrew: SessionRef(host: nil, name: "ask"))
 
-        XCTAssertEqual(store.configuration.railSessions?.first { $0.id == "vivy" }, vivy)
+        XCTAssertEqual(store.configuration.railSessions?.first { $0.id == "orchard" }, orchard)
     }
 
     /// The rail is still unconfigured (no explicit `rail` key ever written)
@@ -61,7 +61,7 @@ final class SetCrewParentTests: XCTestCase {
         let store = ThemeStore(fileURL: url())
         XCTAssertNil(store.configuration.railSessions, "precondition: rail starts unconfigured")
 
-        store.setParent("vivy", forCrew: SessionRef(host: nil, name: "deck"))
+        store.setParent("orchard", forCrew: SessionRef(host: nil, name: "deck"))
 
         XCTAssertNil(store.configuration.railSessions,
                      "an unconfigured, catalog-less rail has no crew row to set a parent on")
@@ -74,7 +74,7 @@ final class SetCrewParentTests: XCTestCase {
     func testAnUnknownCrewIdIsANoOp() {
         let store = ThemeStore(fileURL: url())
         let before = store.configuration
-        store.setParent("vivy", forCrew: SessionRef(host: nil, name: "no-such-crew"))
+        store.setParent("orchard", forCrew: SessionRef(host: nil, name: "no-such-crew"))
         XCTAssertEqual(store.configuration, before)
     }
 }

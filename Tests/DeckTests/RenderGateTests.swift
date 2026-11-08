@@ -133,10 +133,10 @@ final class RenderGateTests: XCTestCase {
 final class WorkingPulseTests: XCTestCase {
     func testTheLivenessFieldsAreDecoded() {
         let json = """
-        {"session":"vivy","state":"working","alive":true,
+        {"session":"orchard","state":"working","alive":true,
          "progressing":true,"last_event_age":42.5}
         """
-        let decoded = SessionState.decode(Data(json.utf8), fallbackSession: "vivy")
+        let decoded = SessionState.decode(Data(json.utf8), fallbackSession: "orchard")
 
         XCTAssertEqual(decoded.progressing, true)
         XCTAssertEqual(decoded.lastEventAge ?? 0, 42.5, accuracy: 0.01)
@@ -144,8 +144,8 @@ final class WorkingPulseTests: XCTestCase {
 
     func testAStateWithoutThemStillDecodes() {
         // An older mini, or a state that could not establish them.
-        let json = #"{"session":"vivy","state":"idle","alive":true}"#
-        let decoded = SessionState.decode(Data(json.utf8), fallbackSession: "vivy")
+        let json = #"{"session":"orchard","state":"idle","alive":true}"#
+        let decoded = SessionState.decode(Data(json.utf8), fallbackSession: "orchard")
 
         XCTAssertNil(decoded.progressing)
         XCTAssertNil(decoded.lastEventAge)
@@ -199,13 +199,13 @@ final class PaneTextScaleTests: XCTestCase {
         // An untouched Deck must send nothing, so the page renders exactly as
         // the mini ships it.
         let argv = try SessionAgent.renderArguments(
-            target: TestHost.target, session: "vivy", appearance: .dark, scale: 1)
+            target: TestHost.target, session: "orchard", appearance: .dark, scale: 1)
         XCTAssertFalse(argv.contains("--scale"))
     }
 
     func testAChangedSizeIsSent() throws {
         let argv = try SessionAgent.renderArguments(
-            target: TestHost.target, session: "vivy", appearance: .dark, scale: 1.4)
+            target: TestHost.target, session: "orchard", appearance: .dark, scale: 1.4)
         XCTAssertEqual(argv[argv.firstIndex(of: "--scale")! + 1], "1.400")
     }
 
@@ -215,7 +215,7 @@ final class PaneTextScaleTests: XCTestCase {
         // hint why.
         for bad in [0.1, 5.0, -1, .nan, .infinity] as [Double] {
             let argv = try SessionAgent.renderArguments(
-                target: TestHost.target, session: "vivy", appearance: .dark, scale: bad)
+                target: TestHost.target, session: "orchard", appearance: .dark, scale: bad)
             XCTAssertFalse(argv.contains("--scale"), "\(bad)")
         }
     }

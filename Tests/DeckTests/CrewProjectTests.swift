@@ -17,7 +17,7 @@ final class CrewProjectTests: XCTestCase {
     }
 
     func testAFileWithNoProjectKeyDecodesToNil() throws {
-        let file = try write(#"{"rail": [{"session": "vivy"}]}"#)
+        let file = try write(#"{"rail": [{"session": "orchard"}]}"#)
         XCTAssertNil(ThemeConfiguration.load(from: file).railSessions?.first?.project)
     }
 
@@ -27,8 +27,8 @@ final class CrewProjectTests: XCTestCase {
     }
 
     func testACatalogRowsProjectDecodes() throws {
-        let file = try write(#"{"catalog": [{"session": "nyh", "project": "selector"}]}"#)
-        XCTAssertEqual(ThemeConfiguration.load(from: file).catalog.first?.project, "selector")
+        let file = try write(#"{"catalog": [{"session": "lakeside", "project": "lantern"}]}"#)
+        XCTAssertEqual(ThemeConfiguration.load(from: file).catalog.first?.project, "lantern")
     }
 
     /// A project name shaped like shell injection costs the row its cockpit,
@@ -36,9 +36,9 @@ final class CrewProjectTests: XCTestCase {
     /// `host` already gets, and load-bearing here specifically because
     /// `project` reaches an unquoted remote URL (`LibraryClient`).
     func testARailRowWithAnInjectionShapedProjectKeepsTheRowButDropsTheProject() throws {
-        let file = try write(#"{"rail": [{"session": "vivy", "project": "$(rm -rf ~)"}]}"#)
+        let file = try write(#"{"rail": [{"session": "orchard", "project": "$(rm -rf ~)"}]}"#)
         let row = try XCTUnwrap(ThemeConfiguration.load(from: file).railSessions?.first)
-        XCTAssertEqual(row.id, "vivy")
+        XCTAssertEqual(row.id, "orchard")
         XCTAssertNil(row.project)
     }
 

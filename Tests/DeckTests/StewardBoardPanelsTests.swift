@@ -22,12 +22,13 @@ final class StewardBoardPanelsTests: XCTestCase {
         XCTAssertEqual(ids[course + 1], CockpitView.correctionsQueuePanelID)
     }
 
-    /// A project crew's cockpit draws its own six panels, ending with the
-    /// checkout's documents, and never the board's working documents.
-    func testTheCockpitDrawsItsOwnSixPanels() {
+    /// A project crew's cockpit draws its own seven panels, the sessions
+    /// beside the dispatched runs, ending with the checkout's documents, and
+    /// never the board's working documents.
+    func testTheCockpitDrawsItsOwnSevenPanels() {
         XCTAssertEqual(CockpitView.panelOrder, [
-            CockpitView.dispatchedPanelID, "proposals", CockpitView.coursePanelID, "correctionsQueue",
-            CockpitView.pullRequestsPanelID, CockpitView.checkoutPanelID,
+            CockpitView.dispatchedPanelID, CockpitView.sessionsPanelID, "proposals", CockpitView.coursePanelID,
+            "correctionsQueue", CockpitView.pullRequestsPanelID, CockpitView.checkoutPanelID,
         ])
         XCTAssertFalse(CockpitView.panelOrder.contains(CockpitView.documentsPanelID))
     }

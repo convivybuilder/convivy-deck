@@ -208,6 +208,22 @@ final class CockpitViewTests: XCTestCase {
             "ahead, Cockpit epic")
     }
 
+    /// The reference key reads as its own clause ahead of the title, so an
+    /// operator told "approve E39" hears the same handle VoiceOver gives
+    /// them. An absent or empty key leaves the title as the whole second
+    /// clause — never a placeholder.
+    func testAccessibilityLabelInsertsTheKeyAheadOfTheTitle() {
+        XCTAssertEqual(CockpitView.accessibilityLabel(
+            title: "Ship the widget", treatment: .ahead, key: "E39"),
+            "ahead, E39, Ship the widget")
+        XCTAssertEqual(CockpitView.accessibilityLabel(
+            title: "Ship the widget", treatment: .ahead, key: nil),
+            "ahead, Ship the widget")
+        XCTAssertEqual(CockpitView.accessibilityLabel(
+            title: "Ship the widget", treatment: .ahead, key: ""),
+            "ahead, Ship the widget")
+    }
+
     // MARK: - needsFirstText / needsFirstPlainText (ADR-0074, comment 2261)
 
     /// An empty prerequisites list draws nothing — the caller's `if let`
@@ -388,6 +404,29 @@ final class CockpitViewTests: XCTestCase {
     func testLibraryTooltipLeavesAShortStringAlone() {
         XCTAssertEqual(CockpitView.libraryTooltip("blocked on another crew"),
                        "blocked on another crew")
+    }
+
+    // MARK: - keyedTitle (every surface that names an epic)
+    //
+    // A concatenated `Text`'s storage does not compare equal across two
+    // separately-built instances even over identical content — confirmed
+    // against the compiler, unlike the single-run case
+    // `testPrerequisiteFragmentShowsTitleAloneWhenStateIsAbsent` relies on —
+    // so the prefixed case is covered by the render tests
+    // (`EpicKeyRenderTests`) instead of an equality assertion here. The two
+    // single-run degrade cases below still compare cleanly.
+
+    /// An absent key draws the title alone — never a placeholder.
+    func testKeyedTitleWithNoKeyDrawsTheTitleAlone() {
+        let title = "Ship the widget"
+        XCTAssertEqual(CockpitView.keyedTitle(nil, title), Text(title))
+    }
+
+    /// An empty key reads the same as an absent one — a response that sent
+    /// `""` rather than omitting the field gets no bare prefix either.
+    func testKeyedTitleWithAnEmptyKeyDrawsTheTitleAlone() {
+        let title = "Ship the widget"
+        XCTAssertEqual(CockpitView.keyedTitle("", title), Text(title))
     }
 
     /// **The gap `deck-reviewer` found on PR #171.** Clamping the child title
@@ -925,8 +964,8 @@ final class CockpitViewTests: XCTestCase {
 
     func testShowsRepoMarkIsTrueOnceACrewFollowsMoreThanOneRepo() {
         let panel = CockpitView.PullRequestsPanel(readings: [
-            multiRepoReading(owner: "convivy", repoName: "selector", result: nil),
-            multiRepoReading(owner: "convivy", repoName: "selector-backend", result: nil),
+            multiRepoReading(owner: "convivy", repoName: "lantern", result: nil),
+            multiRepoReading(owner: "convivy", repoName: "lantern-backend", result: nil),
         ])
         XCTAssertTrue(CockpitView.showsRepoMark(panel))
     }
@@ -940,9 +979,9 @@ final class CockpitViewTests: XCTestCase {
     /// confirms `CockpitView` wires the panel's readings into it correctly.
     func testMergedLadderConcatenatesRowsAcrossRepos() {
         let panel = CockpitView.PullRequestsPanel(readings: [
-            multiRepoReading(owner: "convivy", repoName: "selector",
+            multiRepoReading(owner: "convivy", repoName: "lantern",
                               result: .ladder([ladderRow(1, position: .inReview)], truncated: false)),
-            multiRepoReading(owner: "convivy", repoName: "selector-backend",
+            multiRepoReading(owner: "convivy", repoName: "lantern-backend",
                               result: .ladder([ladderRow(1, position: .readyToMerge)], truncated: false)),
         ])
         let merged = CockpitView.mergedLadder(panel)
@@ -955,9 +994,9 @@ final class CockpitViewTests: XCTestCase {
     /// non-nil count from whichever repos succeeded.
     func testPullRequestsCountIsRealWhenOnlySomeFollowedReposSucceeded() {
         let panel = CockpitView.PullRequestsPanel(readings: [
-            multiRepoReading(owner: "convivy", repoName: "selector",
+            multiRepoReading(owner: "convivy", repoName: "lantern",
                               result: .ladder([ladderRow(1, position: .readyToMerge)], truncated: false)),
-            multiRepoReading(owner: "convivy", repoName: "selector-backend", result: nil, fetchError: "boom"),
+            multiRepoReading(owner: "convivy", repoName: "lantern-backend", result: nil, fetchError: "boom"),
         ])
         XCTAssertEqual(CockpitView.pullRequestsCount(panel), 1)
         XCTAssertEqual(CockpitView.pullRequestsTotalCount(panel), 1)
@@ -968,8 +1007,8 @@ final class CockpitViewTests: XCTestCase {
     /// the single-repo fetch-error case.
     func testPullRequestsCountIsNilWhenEveryFollowedRepoFailed() {
         let panel = CockpitView.PullRequestsPanel(readings: [
-            multiRepoReading(owner: "convivy", repoName: "selector", result: nil, fetchError: "boom"),
-            multiRepoReading(owner: "convivy", repoName: "selector-backend",
+            multiRepoReading(owner: "convivy", repoName: "lantern", result: nil, fetchError: "boom"),
+            multiRepoReading(owner: "convivy", repoName: "lantern-backend",
                               result: .degraded(reason: "unreachable")),
         ])
         XCTAssertNil(CockpitView.pullRequestsCount(panel))
@@ -982,16 +1021,16 @@ final class CockpitViewTests: XCTestCase {
         let older = Date(timeIntervalSince1970: 1_000)
         let newer = Date(timeIntervalSince1970: 2_000)
         let panel = CockpitView.PullRequestsPanel(readings: [
-            multiRepoReading(owner: "convivy", repoName: "selector", result: nil, fetchedAt: newer),
-            multiRepoReading(owner: "convivy", repoName: "selector-backend", result: nil, fetchedAt: older),
+            multiRepoReading(owner: "convivy", repoName: "lantern", result: nil, fetchedAt: newer),
+            multiRepoReading(owner: "convivy", repoName: "lantern-backend", result: nil, fetchedAt: older),
         ])
         XCTAssertEqual(CockpitView.oldestFetchedAt(panel), older)
     }
 
     func testAnyReadingIsLoadingIsTrueWhenAnyOneRepoIsLoading() {
         let panel = CockpitView.PullRequestsPanel(readings: [
-            multiRepoReading(owner: "convivy", repoName: "selector", result: nil, isLoading: false),
-            multiRepoReading(owner: "convivy", repoName: "selector-backend", result: nil, isLoading: true),
+            multiRepoReading(owner: "convivy", repoName: "lantern", result: nil, isLoading: false),
+            multiRepoReading(owner: "convivy", repoName: "lantern-backend", result: nil, isLoading: true),
         ])
         XCTAssertTrue(CockpitView.anyReadingIsLoading(panel))
     }
@@ -1183,5 +1222,38 @@ final class CockpitViewTests: XCTestCase {
         ]
         let chips = CockpitView.pullRequestWorkItemChips(allItems: items, course: nil)
         XCTAssertTrue(chips.isEmpty)
+    }
+
+    // MARK: - sessionsOfProject (CQ-169)
+
+    private func crew(_ id: String, project: String?) -> Crew {
+        Crew(id: id, displayName: id.capitalized, project: project)
+    }
+
+    /// Every crew naming the cockpit's own project belongs, in the rail's
+    /// own order — the Sessions panel's rows, before `railState` pairs each
+    /// with a live reading.
+    func testSessionsOfProjectReturnsEveryCrewNamingTheProject() {
+        let crews = [
+            crew("steward", project: "bosun"),
+            crew("deck", project: "convivy-deck"),
+            crew("deck-coder", project: "convivy-deck"),
+        ]
+        let found = CockpitView.sessionsOfProject(crews, project: "convivy-deck")
+        XCTAssertEqual(found.map(\.id), ["deck", "deck-coder"])
+    }
+
+    /// A crew naming a different project, or none at all, is not a session
+    /// of this one — the filter's own negative, never dropped by mistake
+    /// into the positive case above.
+    func testSessionsOfProjectExcludesOtherProjectsAndNoProject() {
+        let crews = [crew("steward", project: "bosun"), crew("orphan", project: nil)]
+        XCTAssertTrue(CockpitView.sessionsOfProject(crews, project: "convivy-deck").isEmpty)
+    }
+
+    /// No configured crews at all is a real answer — an empty project,
+    /// rather than a crash on an empty list.
+    func testSessionsOfProjectOnNoCrewsIsEmpty() {
+        XCTAssertTrue(CockpitView.sessionsOfProject([], project: "convivy-deck").isEmpty)
     }
 }

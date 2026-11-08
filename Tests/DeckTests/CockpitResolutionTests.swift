@@ -89,28 +89,28 @@ final class CockpitResolutionTests: XCTestCase {
     /// Several repos, in configured order — the case `crew.repo`'s own
     /// single-value setter can't build, so this constructs `Crew` directly.
     func testPrLadderReposReturnsEveryValidEntryInOrder() {
-        var c = Crew(id: "selector", displayName: "Selector")
-        c.repos = ["convivy/selector", "convivy/selector-backend"]
+        var c = Crew(id: "lantern", displayName: "Lantern")
+        c.repos = ["convivy/lantern", "convivy/lantern-backend"]
         let resolved = CockpitResolution.prLadderRepos(for: c)
-        XCTAssertEqual(resolved.repos.map(\.identity), ["convivy/selector", "convivy/selector-backend"])
+        XCTAssertEqual(resolved.repos.map(\.identity), ["convivy/lantern", "convivy/lantern-backend"])
         XCTAssertEqual(resolved.droppedByCap, 0)
     }
 
     /// A malformed entry among valid ones costs only itself — the "field
     /// costs itself" discipline this function's own doc claims.
     func testPrLadderReposDropsOnlyTheMalformedEntry() {
-        var c = Crew(id: "selector", displayName: "Selector")
-        c.repos = ["convivy/selector", "not a repo", "convivy/selector-backend"]
+        var c = Crew(id: "lantern", displayName: "Lantern")
+        c.repos = ["convivy/lantern", "not a repo", "convivy/lantern-backend"]
         let resolved = CockpitResolution.prLadderRepos(for: c)
-        XCTAssertEqual(resolved.repos.map(\.identity), ["convivy/selector", "convivy/selector-backend"])
+        XCTAssertEqual(resolved.repos.map(\.identity), ["convivy/lantern", "convivy/lantern-backend"])
     }
 
     /// Duplicates collapse to their first occurrence, preserving order.
     func testPrLadderReposCollapsesDuplicatesToTheirFirstOccurrence() {
-        var c = Crew(id: "selector", displayName: "Selector")
-        c.repos = ["convivy/selector", "convivy/selector-backend", "convivy/selector"]
+        var c = Crew(id: "lantern", displayName: "Lantern")
+        c.repos = ["convivy/lantern", "convivy/lantern-backend", "convivy/lantern"]
         let resolved = CockpitResolution.prLadderRepos(for: c)
-        XCTAssertEqual(resolved.repos.map(\.identity), ["convivy/selector", "convivy/selector-backend"])
+        XCTAssertEqual(resolved.repos.map(\.identity), ["convivy/lantern", "convivy/lantern-backend"])
     }
 
     /// A crew naming more repos than `maxFollowedRepos` is capped, and the

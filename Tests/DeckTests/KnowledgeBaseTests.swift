@@ -14,7 +14,7 @@ final class KnowledgeBaseTests: XCTestCase {
         id: "deck/specs/session-pane",
         content: "---\nid: deck/specs/session-pane\n---\n\n# T\n",
         contentSha: "3acf9780aa451c2f0d0e",
-        sourceRef: "projects/deck/specs/session-pane.md", target: TestHost.target)
+        sourceRef: "projects/deck/specs/session-pane.md", target: TestHost.target, holder: TestHost.holder)
 
     // MARK: - The sha is kept, even though nothing consumes it yet
 
@@ -43,15 +43,32 @@ final class KnowledgeBaseTests: XCTestCase {
     // MARK: - argv shape
 
     func testCheckoutNamesTheDocumentAndTakesALease() {
-        let argv = KnowledgeBase.checkoutArguments(target: TestHost.target, id: doc.id, controlPath: "/tmp/cm")
-        XCTAssertEqual(argv[argv.count - 4], "checkout")
-        XCTAssertEqual(argv[argv.count - 3], "'deck/specs/session-pane'")
-        XCTAssertEqual(argv[argv.count - 2], "--note")
+        let argv = KnowledgeBase.checkoutArguments(
+            target: TestHost.target, id: doc.id, holder: TestHost.holder, controlPath: "/tmp/cm")
+        XCTAssertEqual(argv[argv.count - 6], "checkout")
+        XCTAssertEqual(argv[argv.count - 5], "'deck/specs/session-pane'")
+        XCTAssertEqual(argv[argv.count - 4], "--note")
     }
 
     func testReleaseNamesTheDocument() {
-        let argv = KnowledgeBase.releaseArguments(target: TestHost.target, id: doc.id, controlPath: "/tmp/cm")
-        XCTAssertEqual(argv.suffix(3), ["kb", "release", "'deck/specs/session-pane'"])
+        let argv = KnowledgeBase.releaseArguments(
+            target: TestHost.target, id: doc.id, holder: TestHost.holder, controlPath: "/tmp/cm")
+        XCTAssertEqual(argv.suffix(5),
+                       ["kb", "release", "'deck/specs/session-pane'", "--holder", "'\(TestHost.holder)'"])
+    }
+
+    // MARK: - The one explicit holder, carried to every verb (CQ·177)
+
+    func testCheckoutSendsTheExplicitHolderRatherThanLeavingAgentctlToDeriveOne() {
+        let argv = KnowledgeBase.checkoutArguments(
+            target: TestHost.target, id: doc.id, holder: TestHost.holder, controlPath: "/tmp/cm")
+        XCTAssertEqual(argv.suffix(2), ["--holder", "'\(TestHost.holder)'"])
+    }
+
+    func testReleaseSendsTheSameExplicitHolderAsCheckout() {
+        let argv = KnowledgeBase.releaseArguments(
+            target: TestHost.target, id: doc.id, holder: TestHost.holder, controlPath: "/tmp/cm")
+        XCTAssertEqual(argv.suffix(2), ["--holder", "'\(TestHost.holder)'"])
     }
 
     // MARK: - content_sha's shape is checked before it becomes baseSha
@@ -70,7 +87,7 @@ final class KnowledgeBaseTests: XCTestCase {
 
     func testParseCheckoutResponseAcceptsA64LowercaseHexSha() throws {
         let document = try KnowledgeBase.parseCheckoutResponse(
-            validCheckoutJSON, id: "deck/specs/session-pane", target: TestHost.target)
+            validCheckoutJSON, id: "deck/specs/session-pane", target: TestHost.target, holder: TestHost.holder)
         XCTAssertEqual(document.contentSha, "3acf9780aa451c2f0d0e3acf9780aa451c2f0d0e3acf9780aa451c2f0d0e1234")
         XCTAssertEqual(document.contentSha.count, 64)
     }
@@ -81,7 +98,8 @@ final class KnowledgeBaseTests: XCTestCase {
          "source_ref":"projects/deck/specs/session-pane.md"}
         """.utf8)
         XCTAssertThrowsError(
-            try KnowledgeBase.parseCheckoutResponse(json, id: "deck/specs/session-pane", target: TestHost.target)
+            try KnowledgeBase.parseCheckoutResponse(json, id: "deck/specs/session-pane", target: TestHost.target,
+                                                    holder: TestHost.holder)
         ) { error in
             guard case KnowledgeBase.KBError.unexpectedResponse = error else {
                 return XCTFail("expected .unexpectedResponse, got \(error)")
@@ -98,7 +116,8 @@ final class KnowledgeBaseTests: XCTestCase {
          "source_ref":"projects/deck/specs/session-pane.md"}
         """.utf8)
         XCTAssertThrowsError(
-            try KnowledgeBase.parseCheckoutResponse(json, id: "deck/specs/session-pane", target: TestHost.target))
+            try KnowledgeBase.parseCheckoutResponse(json, id: "deck/specs/session-pane", target: TestHost.target,
+                                                    holder: TestHost.holder))
     }
 
     func testParseCheckoutResponseRefusesUppercaseHex() {
@@ -107,7 +126,8 @@ final class KnowledgeBaseTests: XCTestCase {
          "source_ref":"projects/deck/specs/session-pane.md"}
         """.utf8)
         XCTAssertThrowsError(
-            try KnowledgeBase.parseCheckoutResponse(json, id: "deck/specs/session-pane", target: TestHost.target))
+            try KnowledgeBase.parseCheckoutResponse(json, id: "deck/specs/session-pane", target: TestHost.target,
+                                                    holder: TestHost.holder))
     }
 
     func testIsValidContentShaAcceptsExactly64LowercaseHexCharacters() {
@@ -226,7 +246,8 @@ final class KBLeaseTrackingTests: XCTestCase {
         // throwing call.
         let doc = KnowledgeBase.CheckedOutDocument(
             id: "deck/specs/session-pane", content: "# T\n", contentSha: "abc123",
-            sourceRef: "projects/deck/specs/session-pane.md", target: TestHost.target)
+            sourceRef: "projects/deck/specs/session-pane.md", target: TestHost.target,
+            holder: TestHost.holder)
         XCTAssertEqual(doc.id, "deck/specs/session-pane")
         XCTAssertFalse(doc.content.isEmpty)
         XCTAssertFalse(doc.contentSha.isEmpty)
@@ -236,8 +257,9 @@ final class KBLeaseTrackingTests: XCTestCase {
         // Releasing needs only what checkout already returned, so the editor can
         // drop a lease it took even if everything after the checkout failed.
         let argv = KnowledgeBase.releaseArguments(target: TestHost.target, id: "deck/specs/session-pane",
-                                                  controlPath: "/tmp/cm")
-        XCTAssertEqual(argv.suffix(3), ["kb", "release", "'deck/specs/session-pane'"])
+                                                  holder: TestHost.holder, controlPath: "/tmp/cm")
+        XCTAssertEqual(argv.suffix(5),
+                       ["kb", "release", "'deck/specs/session-pane'", "--holder", "'\(TestHost.holder)'"])
     }
 }
 
@@ -263,7 +285,7 @@ final class WorkingCopyTruthfulnessTests: XCTestCase {
 
         let doc = KnowledgeBase.CheckedOutDocument(
             id: id, content: "CANONICAL", contentSha: "s",
-            sourceRef: "projects/\(id).md", target: TestHost.target)
+            sourceRef: "projects/\(id).md", target: TestHost.target, holder: TestHost.holder)
         let draft = try KnowledgeBase.saveLocally(document: doc, content: "MY EDIT")
 
         XCTAssertNotEqual(draft, fetched)

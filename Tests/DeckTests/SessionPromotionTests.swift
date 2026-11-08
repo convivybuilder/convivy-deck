@@ -55,7 +55,7 @@ final class SessionPromotionTests: XCTestCase {
         XCTAssertNoThrow(
             try SessionPromotion.derive(
                 DiscoveredSession(name: "ask", host: TestHost.target),
-                existingRefs: [SessionRef(host: nil, name: "vivy"), SessionRef(host: nil, name: "deck")],
+                existingRefs: [SessionRef(host: nil, name: "orchard"), SessionRef(host: nil, name: "deck")],
                 hosts: []))
     }
 

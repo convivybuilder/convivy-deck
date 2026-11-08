@@ -4,7 +4,7 @@ import XCTest
 /// "Remove from Deck" for a catalog (`START`) row — the second gap
 /// `deck/specs/multiple-sessions-per-project` §"The rail" names: a way IN
 /// (the "+ New" sheet, or a hand-edited config) with no way out.
-/// `LauncherRow` had no context menu at all before this, so `nyh`,
+/// `LauncherRow` had no context menu at all before this, so `lakeside`,
 /// `write-better` and `ask` could only be removed from Settings › Sessions.
 /// Mirrors `RemovePinnedSessionTests`/`RemoveCrewTests` one section over.
 final class RemoveCatalogEntryTests: XCTestCase {
@@ -49,7 +49,7 @@ final class RemoveCatalogEntryTests: XCTestCase {
         let store = ThemeStore(fileURL: url())
         var updated = store.configuration
         updated.catalog = [
-            LaunchableSession(id: "nyh", displayName: "NYH Studio"),
+            LaunchableSession(id: "lakeside", displayName: "Lakeside Studio"),
             LaunchableSession(id: "write-better", displayName: "Write Better"),
             LaunchableSession(id: "ask", displayName: "Ask"),
         ]
@@ -59,7 +59,7 @@ final class RemoveCatalogEntryTests: XCTestCase {
         roster.remove("write-better")
         store.setRoster(roster)
 
-        XCTAssertEqual(store.configuration.catalog.map(\.id).sorted(), ["ask", "nyh"])
+        XCTAssertEqual(store.configuration.catalog.map(\.id).sorted(), ["ask", "lakeside"])
     }
 
     /// The rail — `railSessions` — is untouched by a catalog-only removal.
@@ -71,12 +71,12 @@ final class RemoveCatalogEntryTests: XCTestCase {
         let store = ThemeStore(fileURL: url())
         store.addCrew(Crew(id: "ask", displayName: "Ask"))
         var updated = store.configuration
-        updated.catalog = [LaunchableSession(id: "nyh", displayName: "NYH Studio")]
+        updated.catalog = [LaunchableSession(id: "lakeside", displayName: "Lakeside Studio")]
         store.setRoster(SessionRoster(configuration: updated))
         let railBefore = store.configuration.railSessions
 
         var roster = SessionRoster(configuration: store.configuration)
-        roster.remove("nyh")
+        roster.remove("lakeside")
         store.setRoster(roster)
 
         XCTAssertEqual(store.configuration.railSessions, railBefore)

@@ -26,14 +26,14 @@ final class SessionVitalsTests: XCTestCase {
              "ctx_tokens":41965,"ctx_window":1000000,"fleet_wide":false,
              "model":"Opus 4.8 (1M context)",
              "remote_control":{"name":"convivy-deck-e2","on":true},
-             "stale":false,"sub":"nyh (example-account)","tier":"ok"}}
+             "stale":false,"sub":"lakeside (example-account)","tier":"ok"}}
             """)
         let vitals = state.vitals
         XCTAssertEqual(vitals?.model, "Opus 4.8 (1M context)")
         XCTAssertEqual(vitals?.contextTokens, 41965)
         XCTAssertEqual(vitals?.contextWindow, 1_000_000)
         XCTAssertEqual(vitals?.tier, .ok)
-        XCTAssertEqual(vitals?.sub, "nyh (example-account)")
+        XCTAssertEqual(vitals?.sub, "lakeside (example-account)")
         XCTAssertEqual(vitals?.remoteControlOn, true)
         XCTAssertEqual(vitals?.remoteName, "convivy-deck-e2")
         XCTAssertEqual(vitals?.stale, false)

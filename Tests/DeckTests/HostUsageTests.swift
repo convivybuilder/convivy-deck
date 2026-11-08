@@ -10,7 +10,7 @@ final class HostUsageTests: XCTestCase {
     func testCountsRailRowsNamingTheHost() {
         let rail = [
             Crew(id: "ask", displayName: "Ask", host: "guest"),
-            Crew(id: "vivy", displayName: "Vivy", host: "guest"),
+            Crew(id: "orchard", displayName: "Orchard", host: "guest"),
             Crew(id: "deck", displayName: "Deck"),
         ]
         XCTAssertEqual(HostUsage.crewsNaming("guest", rail: rail, catalog: []), 2)
@@ -18,7 +18,7 @@ final class HostUsageTests: XCTestCase {
 
     func testCountsCatalogRowsNamingTheHostToo() {
         let rail = [Crew(id: "ask", displayName: "Ask", host: "guest")]
-        let catalog = [LaunchableSession(id: "nyh", displayName: "NYH Studio", host: "guest")]
+        let catalog = [LaunchableSession(id: "lakeside", displayName: "Lakeside Studio", host: "guest")]
         XCTAssertEqual(HostUsage.crewsNaming("guest", rail: rail, catalog: catalog), 2)
     }
 }

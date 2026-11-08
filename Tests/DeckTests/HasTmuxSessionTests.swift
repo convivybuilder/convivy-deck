@@ -55,7 +55,7 @@ final class HasTmuxSessionTests: XCTestCase {
     /// it".
     func testAnUnrelatedDiscoveredSessionDoesNotMakeThisOneCount() {
         let ref = SessionRef(host: nil, name: "ask")
-        let set = discovered([DiscoveredSession(name: "vivy", host: TestHost.target)])
+        let set = discovered([DiscoveredSession(name: "orchard", host: TestHost.target)])
         XCTAssertFalse(RailStateModel.hasTmuxSession(ref, discovered: set, hosts: [mini], defaultHost: "mini"))
     }
 

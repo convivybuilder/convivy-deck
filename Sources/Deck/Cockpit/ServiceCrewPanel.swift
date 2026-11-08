@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The minimal rest-state panel for a `.service`-shaped crew
-/// (`RestStateResolution.Shape.service`) — ask, cfo, ea today.
+/// (`RestStateResolution.Shape.service`) — ask, ledger, aide today.
 ///
 /// **SERVICE CREWS ARE BLACK BOXES.** No element here may read their
 /// content; this draws only what the platform already knows about a

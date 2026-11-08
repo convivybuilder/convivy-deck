@@ -24,33 +24,33 @@ final class RailPollTests: XCTestCase {
     /// With one host defined, every tracked ref lands in the same bucket —
     /// this is how the refactor collapses to "exactly today's two calls".
     func testRefsAcrossOneHostGroupIntoOneBucket() {
-        let refs = [ref("ask"), ref("vivy"), ref("deck")]
+        let refs = [ref("ask"), ref("orchard"), ref("deck")]
         let groups = RailPoll.grouped(refs, resolveHost: { _ in self.mini })
         XCTAssertEqual(groups, [mini: refs])
     }
 
     func testRefsAcrossTwoHostsGroupSeparately() {
         let askRef = ref("ask")
-        let vivyChildRef = ref("vivy--research", host: "laptop")
-        let groups = RailPoll.grouped([askRef, vivyChildRef], resolveHost: {
+        let orchardChildRef = ref("orchard--research", host: "laptop")
+        let groups = RailPoll.grouped([askRef, orchardChildRef], resolveHost: {
             $0.host == "laptop" ? self.laptop : self.mini
         })
         XCTAssertEqual(groups[mini], [askRef])
-        XCTAssertEqual(groups[laptop], [vivyChildRef])
+        XCTAssertEqual(groups[laptop], [orchardChildRef])
     }
 
-    /// The proof case: two hosts each running a session named `vivy` group
+    /// The proof case: two hosts each running a session named `orchard` group
     /// into two entirely separate buckets, keyed by the resolved target
     /// rather than colliding on the shared name.
     func testTwoHostsWithTheSameSessionNameGroupSeparately() {
-        let miniVivy = ref("vivy", host: "mini")
-        let guestVivy = ref("vivy", host: "guest")
+        let miniOrchard = ref("orchard", host: "mini")
+        let guestOrchard = ref("orchard", host: "guest")
         let guest = TestHost.secondaryTarget
-        let groups = RailPoll.grouped([miniVivy, guestVivy], resolveHost: {
+        let groups = RailPoll.grouped([miniOrchard, guestOrchard], resolveHost: {
             $0.host == "guest" ? guest : self.mini
         })
-        XCTAssertEqual(groups[mini], [miniVivy])
-        XCTAssertEqual(groups[guest], [guestVivy])
+        XCTAssertEqual(groups[mini], [miniOrchard])
+        XCTAssertEqual(groups[guest], [guestOrchard])
     }
 
     func testAnEmptyRefListGroupsToNothing() {
@@ -64,10 +64,10 @@ final class RailPollTests: XCTestCase {
     /// reading — while a host that DID answer overlays its own entries.
     func testAnUnreachableHostLeavesTheOthersReadingsIntact() {
         let askRef = ref("ask")
-        let vivyChildRef = ref("vivy--research", host: "laptop")
+        let orchardChildRef = ref("orchard--research", host: "laptop")
         let previous: [SessionRef: SessionState] = [
             askRef: state(alive: true),
-            vivyChildRef: state(alive: true),
+            orchardChildRef: state(alive: true),
         ]
         let freshAskReading = state(alive: false)
         let merged = RailPoll.mergedStates(previous: previous, outcomes: [
@@ -75,20 +75,20 @@ final class RailPollTests: XCTestCase {
             laptop: nil,
         ])
         XCTAssertEqual(merged[askRef]?.alive, false, "the reachable host's fresh reading applies")
-        XCTAssertEqual(merged[vivyChildRef]?.alive, true,
+        XCTAssertEqual(merged[orchardChildRef]?.alive, true,
                        "the unreachable host's session keeps its last good reading, not blanked")
     }
 
     func testBothHostsSucceedingOverlaysBoth() {
         let askRef = ref("ask")
-        let vivyChildRef = ref("vivy--research", host: "laptop")
+        let orchardChildRef = ref("orchard--research", host: "laptop")
         let previous: [SessionRef: SessionState] = [:]
         let merged = RailPoll.mergedStates(previous: previous, outcomes: [
             mini: [askRef: state(alive: true)],
-            laptop: [vivyChildRef: state(alive: false)],
+            laptop: [orchardChildRef: state(alive: false)],
         ])
         XCTAssertEqual(merged[askRef]?.alive, true)
-        XCTAssertEqual(merged[vivyChildRef]?.alive, false)
+        XCTAssertEqual(merged[orchardChildRef]?.alive, false)
     }
 
     func testEveryHostFailingLeavesThePreviousReadingWhollyUnchanged() {
@@ -99,18 +99,18 @@ final class RailPollTests: XCTestCase {
     }
 
     /// The same-name-two-hosts collision the tuple exists to resolve: each
-    /// host's own reading for `vivy` lands under its own `SessionRef`
+    /// host's own reading for `orchard` lands under its own `SessionRef`
     /// rather than one overwriting the other.
     func testTwoHostsBothReportingTheSameSessionNameStayDistinct() {
-        let miniVivy = ref("vivy", host: "mini")
-        let guestVivy = ref("vivy", host: "guest")
+        let miniOrchard = ref("orchard", host: "mini")
+        let guestOrchard = ref("orchard", host: "guest")
         let guest = TestHost.secondaryTarget
         let merged = RailPoll.mergedStates(previous: [:], outcomes: [
-            mini: [miniVivy: state(alive: true)],
-            guest: [guestVivy: state(alive: false)],
+            mini: [miniOrchard: state(alive: true)],
+            guest: [guestOrchard: state(alive: false)],
         ])
-        XCTAssertEqual(merged[miniVivy]?.alive, true)
-        XCTAssertEqual(merged[guestVivy]?.alive, false)
+        XCTAssertEqual(merged[miniOrchard]?.alive, true)
+        XCTAssertEqual(merged[guestOrchard]?.alive, false)
     }
 
     // MARK: - the two-host fixture: a declared-but-unreachable second host
@@ -129,7 +129,7 @@ final class RailPollTests: XCTestCase {
     /// against this fixture's own two hosts.
     func testTheReachableHostsCrewsAdvanceWhileTheDeclaredHostNeverAnswers() {
         let miniAsk = ref("ask", host: "mini")
-        let ghostVivy = ref("vivy", host: "ghost")
+        let ghostOrchard = ref("orchard", host: "ghost")
         let ghostTarget = SSHTarget(user: declaredButUnreachable.user, host: declaredButUnreachable.address)
         let previous: [SessionRef: SessionState] = [:]
 
@@ -142,7 +142,7 @@ final class RailPollTests: XCTestCase {
         // and reported stopped — this ref is simply absent, which is what
         // the rail reads as "unpolled" rather than "state unknown but
         // definitely tried."
-        XCTAssertNil(firstTick[ghostVivy])
+        XCTAssertNil(firstTick[ghostOrchard])
 
         // A later tick where mini has moved on and ghost still hasn't
         // answered: mini's crews keep advancing, ghost's entry (there isn't
@@ -152,7 +152,7 @@ final class RailPollTests: XCTestCase {
             ghostTarget: nil,
         ])
         XCTAssertEqual(secondTick[miniAsk]?.alive, false, "the reachable host's poll must not stall")
-        XCTAssertNil(secondTick[ghostVivy])
+        XCTAssertNil(secondTick[ghostOrchard])
     }
 
     /// The display half of the same fixture: with the probe never landing,
@@ -174,10 +174,10 @@ final class RailPollTests: XCTestCase {
     /// filled mark surviving on stale data.
     func testDemotedStatesResolveToTheUnreadableMark() {
         let askRef = ref("ask")
-        let vivyRef = ref("vivy")
-        let demoted = RailPoll.demotedStates(for: [askRef, vivyRef])
+        let orchardRef = ref("orchard")
+        let demoted = RailPoll.demotedStates(for: [askRef, orchardRef])
         XCTAssertEqual(demoted[askRef]?.mark, .unreadable)
-        XCTAssertEqual(demoted[vivyRef]?.mark, .unreadable)
+        XCTAssertEqual(demoted[orchardRef]?.mark, .unreadable)
     }
 
     /// The case that must still work: merging a host's demoted placeholders
@@ -203,8 +203,8 @@ final class RailPollTests: XCTestCase {
             DiscoveredSession.ID(host: mini, name: "ask"):
                 DiscoveredSession(name: "ask", host: mini, path: "\(TestHost.homeRoot)/Convivy/ask",
                                  windows: 1, attached: true),
-            DiscoveredSession.ID(host: laptop, name: "vivy--research"):
-                DiscoveredSession(name: "vivy--research", host: laptop, path: "\(TestHost.secondaryHomeRoot)/vivy",
+            DiscoveredSession.ID(host: laptop, name: "orchard--research"):
+                DiscoveredSession(name: "orchard--research", host: laptop, path: "\(TestHost.secondaryHomeRoot)/orchard",
                                   windows: 1, attached: false),
         ]
         let freshAsk = DiscoveredSession(name: "ask", host: mini, path: "\(TestHost.homeRoot)/Convivy/ask",
@@ -214,7 +214,7 @@ final class RailPollTests: XCTestCase {
             laptop: nil,
         ])
         XCTAssertEqual(merged[freshAsk.id]?.windows, 2, "the reachable host's fresh reading applies")
-        XCTAssertEqual(merged[DiscoveredSession.ID(host: laptop, name: "vivy--research")]?.attached, false,
+        XCTAssertEqual(merged[DiscoveredSession.ID(host: laptop, name: "orchard--research")]?.attached, false,
                        "the unreachable host's row keeps its last good reading, not dropped")
     }
 
@@ -281,11 +281,11 @@ final class RailPollTests: XCTestCase {
     func testOneHostsRemovalDoesNotTouchAnUnreachableHostsEntries() {
         let staleAsk = DiscoveredSession(name: "ask", host: mini,
                                          path: "\(TestHost.homeRoot)/Convivy/ask", windows: 1, attached: true)
-        let vivyChild = DiscoveredSession(name: "vivy--research", host: laptop,
-                                          path: "\(TestHost.secondaryHomeRoot)/vivy", windows: 1, attached: false)
+        let orchardChild = DiscoveredSession(name: "orchard--research", host: laptop,
+                                          path: "\(TestHost.secondaryHomeRoot)/orchard", windows: 1, attached: false)
         let previous: [DiscoveredSession.ID: DiscoveredSession] = [
             staleAsk.id: staleAsk,
-            vivyChild.id: vivyChild,
+            orchardChild.id: orchardChild,
         ]
         // mini answers with no sessions at all — its stale `ask` row is
         // dropped — while laptop never answers this tick.
@@ -294,7 +294,7 @@ final class RailPollTests: XCTestCase {
             laptop: nil,
         ])
         XCTAssertNil(merged[staleAsk.id], "mini's own answer drops its stale entry")
-        XCTAssertEqual(merged[vivyChild.id], vivyChild, "laptop's entry is untouched by mini's answer")
+        XCTAssertEqual(merged[orchardChild.id], orchardChild, "laptop's entry is untouched by mini's answer")
     }
 
     // MARK: - mergedServedCrews
@@ -305,7 +305,7 @@ final class RailPollTests: XCTestCase {
 
     func testAnUnreachableHostLeavesTheOthersServedCrewsIntact() {
         let previous: [ServedCrew.ID: ServedCrew] = [
-            served("placard", host: mini).id: served("placard", host: mini),
+            served("signpost", host: mini).id: served("signpost", host: mini),
         ]
         let merged = RailPoll.mergedServedCrews(previous: previous, outcomes: [
             mini: nil,
@@ -318,7 +318,7 @@ final class RailPollTests: XCTestCase {
     /// longer reports is gone, not merely unmentioned.
     func testAHostsAnswerDropsAServedCrewItNoLongerReports() {
         let removed = served("old-crew", host: mini)
-        let kept = served("placard", host: mini)
+        let kept = served("signpost", host: mini)
         let previous: [ServedCrew.ID: ServedCrew] = [removed.id: removed, kept.id: kept]
         let merged = RailPoll.mergedServedCrews(previous: previous, outcomes: [mini: [kept]])
         XCTAssertNil(merged[removed.id])
@@ -327,8 +327,8 @@ final class RailPollTests: XCTestCase {
 
     func testTwoHostsServingTheSameCrewIdStayDistinct() {
         let guest = TestHost.secondaryTarget
-        let miniRow = served("placard", host: mini)
-        let guestRow = served("placard", host: guest)
+        let miniRow = served("signpost", host: mini)
+        let guestRow = served("signpost", host: guest)
         let merged = RailPoll.mergedServedCrews(previous: [:], outcomes: [
             mini: [miniRow],
             guest: [guestRow],
@@ -336,5 +336,34 @@ final class RailPollTests: XCTestCase {
         XCTAssertEqual(merged.count, 2)
         XCTAssertEqual(merged[miniRow.id], miniRow)
         XCTAssertEqual(merged[guestRow.id], guestRow)
+    }
+
+    // MARK: - orderedServedCrews
+
+    /// The rail shuffled because each poll rebuilds the dictionary and its
+    /// `.values` came back in a different order. Rebuild it the way the poll
+    /// does, many times, and the ordered array must never move.
+    func testServedCrewOrderHoldsAcrossPollRebuilds() {
+        let ids = (0..<12).map { "crew-\($0)" }
+        var current: [ServedCrew.ID: ServedCrew] = [:]
+        var orders = Set<[String]>()
+        for tick in 0..<50 {
+            let answer = (tick.isMultiple(of: 2) ? ids : ids.reversed()).map { served($0, host: mini) }
+            current = RailPoll.mergedServedCrews(previous: current, outcomes: [mini: answer])
+            orders.insert(RailPoll.orderedServedCrews(current).map(\.crewId))
+        }
+        XCTAssertEqual(orders, [ids.sorted()])
+    }
+
+    func testServedCrewsWithOneIdOrderByHost() {
+        let guest = TestHost.secondaryTarget
+        let byHost = [mini, guest].sorted { ($0.host, $0.user) < ($1.host, $1.user) }
+        let crews = [served("signpost", host: byHost[1]), served("atlas", host: mini),
+                     served("signpost", host: byHost[0])]
+        let ordered = RailPoll.orderedServedCrews(Dictionary(uniqueKeysWithValues: crews.map { ($0.id, $0) }))
+        XCTAssertEqual(ordered.map(\.id), [
+            served("atlas", host: mini).id, served("signpost", host: byHost[0]).id,
+            served("signpost", host: byHost[1]).id,
+        ])
     }
 }

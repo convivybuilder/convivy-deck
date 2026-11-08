@@ -12,13 +12,13 @@ final class SessionRefTests: XCTestCase {
     /// The whole point of the tuple: two sessions sharing a name are the
     /// SAME ref only when their host also agrees.
     func testTwoRefsWithTheSameNameButDifferentHostsAreNotEqual() {
-        let mini = SessionRef(host: "mini", name: "vivy")
-        let guest = SessionRef(host: "guest", name: "vivy")
+        let mini = SessionRef(host: "mini", name: "orchard")
+        let guest = SessionRef(host: "guest", name: "orchard")
         XCTAssertNotEqual(mini, guest)
     }
 
     func testTwoRefsWithTheSameHostAndNameAreEqual() {
-        XCTAssertEqual(SessionRef(host: "mini", name: "vivy"), SessionRef(host: "mini", name: "vivy"))
+        XCTAssertEqual(SessionRef(host: "mini", name: "orchard"), SessionRef(host: "mini", name: "orchard"))
     }
 
     /// `nil` (the implied default host) is its own distinct value — not
@@ -26,7 +26,7 @@ final class SessionRefTests: XCTestCase {
     /// the default happens to be, since a `SessionRef` never re-resolves
     /// its host against `hosts`/`defaultHost`.
     func testNilHostIsDistinctFromAnyNamedHost() {
-        XCTAssertNotEqual(SessionRef(host: nil, name: "vivy"), SessionRef(host: "mini", name: "vivy"))
+        XCTAssertNotEqual(SessionRef(host: nil, name: "orchard"), SessionRef(host: "mini", name: "orchard"))
     }
 
     func testTwoNilHostRefsWithTheSameNameAreEqual() {
@@ -37,28 +37,28 @@ final class SessionRefTests: XCTestCase {
     /// and `.discovered` both key on it.
     func testARefIsHashableAndUsableAsADictionaryKey() {
         var dict: [SessionRef: Int] = [:]
-        dict[SessionRef(host: "mini", name: "vivy")] = 1
-        dict[SessionRef(host: "guest", name: "vivy")] = 2
-        XCTAssertEqual(dict[SessionRef(host: "mini", name: "vivy")], 1)
-        XCTAssertEqual(dict[SessionRef(host: "guest", name: "vivy")], 2)
+        dict[SessionRef(host: "mini", name: "orchard")] = 1
+        dict[SessionRef(host: "guest", name: "orchard")] = 2
+        XCTAssertEqual(dict[SessionRef(host: "mini", name: "orchard")], 1)
+        XCTAssertEqual(dict[SessionRef(host: "guest", name: "orchard")], 2)
     }
 
     // MARK: - stringForm
 
     func testStringFormCombinesHostAndName() {
-        XCTAssertEqual(SessionRef(host: "mini", name: "vivy").stringForm, "mini|vivy")
+        XCTAssertEqual(SessionRef(host: "mini", name: "orchard").stringForm, "mini|orchard")
     }
 
     func testStringFormOfANilHostOmitsIt() {
-        XCTAssertEqual(SessionRef(host: nil, name: "vivy").stringForm, "|vivy")
+        XCTAssertEqual(SessionRef(host: nil, name: "orchard").stringForm, "|orchard")
     }
 
     /// Two refs that are NOT equal must not collapse to the same string
     /// form — the property SwiftUI `.id()` keying depends on.
     func testStringFormDistinguishesDifferentHosts() {
         XCTAssertNotEqual(
-            SessionRef(host: "mini", name: "vivy").stringForm,
-            SessionRef(host: "guest", name: "vivy").stringForm)
+            SessionRef(host: "mini", name: "orchard").stringForm,
+            SessionRef(host: "guest", name: "orchard").stringForm)
     }
 
     /// The exact pair `stringForm`'s `|`-join would collide on if `host`
@@ -117,7 +117,7 @@ final class SessionRefTests: XCTestCase {
     // MARK: - localShell
 
     func testLocalShellIsReservedAndNeverEqualsAnOrdinaryRef() {
-        XCTAssertNotEqual(SessionRef.localShell, SessionRef(host: nil, name: "vivy"))
+        XCTAssertNotEqual(SessionRef.localShell, SessionRef(host: nil, name: "orchard"))
         XCTAssertEqual(SessionRef.localShell, SessionRef(host: nil, name: "local:shell"))
     }
 

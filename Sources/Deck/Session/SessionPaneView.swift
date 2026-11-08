@@ -79,6 +79,8 @@ struct SessionPaneView: View {
     /// and age unless something more urgent pre-empts the slot — see that
     /// type's doc.
     var workingOn: SessionState.WorkingOn?
+    /// The fallback reading for the same strip — see `SessionState.workingOnDerived`.
+    var workingOnDerived: SessionState.WorkingOnDerived?
     /// The find bar's shared presentation state — one instance, owned by
     /// `ContentView`, that also drives the main pane's `TerminalFindBar` when
     /// the surface switches. Passed in rather than created here because
@@ -300,6 +302,7 @@ struct SessionPaneView: View {
          onGateChange: @escaping (Bool) -> Void = { _ in },
          hosts: [HostEntry],
          workingOn: SessionState.WorkingOn? = nil,
+         workingOnDerived: SessionState.WorkingOnDerived? = nil,
          findBarState: FindBarState,
          sharedPRLadder: PRLadderModel,
          fallbackPRLadder: PRLadderModel) {
@@ -319,6 +322,7 @@ struct SessionPaneView: View {
         self.onGateChange = onGateChange
         self.hosts = hosts
         self.workingOn = workingOn
+        self.workingOnDerived = workingOnDerived
         self.sharedPRLadder = sharedPRLadder
         self.fallbackPRLadder = fallbackPRLadder
         self.findBarState = findBarState
@@ -544,6 +548,7 @@ struct SessionPaneView: View {
             dotAccent: accent ?? SessionPaneView.neutralAccent(appearance),
             dotSurface: inkSurface,
             workingOn: workingOn,
+            workingOnDerived: workingOnDerived,
             vitals: model.state.vitals,
             agentsAreFleetWide: model.state.agentsAreFleetWide,
             isLaunching: isLaunching,
@@ -783,6 +788,9 @@ struct PaneStatusBar: View {
     let dotSurface: RGB
     /// The co's own recording — see `SessionPaneView.workingOn`.
     let workingOn: SessionState.WorkingOn?
+    /// The fallback reading — see `SessionState.workingOnDerived`. Drawn
+    /// only when `workingOn` is stale or absent; see `slot`.
+    var workingOnDerived: SessionState.WorkingOnDerived? = nil
     let vitals: SessionState.Vitals?
     /// Whether the agents `vitals.agentsLabel` names are dispatched
     /// fleet-wide rather than for this session's own crew — carried
@@ -883,15 +891,23 @@ struct PaneStatusBar: View {
         } else if let reason, phase == .unknown {
             Text(reason).frameFont(.body).foregroundStyle(.secondary)
                 .lineLimit(1).truncationMode(.tail)
-        } else if let workingOn,
-                  // TRIMMED, so a whitespace-only recording draws nothing
-                  // rather than an empty-but-present line — and so this
-                  // agrees with `WaypointRibbon.isWorkLive`, which trims too.
-                  // The two surfaces read ONE recording and must not
-                  // disagree about whether it says anything (`deck-reviewer`,
-                  // PR #140).
-                  !workingOn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            workingOnRow(workingOn)
+        } else {
+            // TRIMMED AND FRESH-ONLY, both enforced inside `presentation`
+            // rather than here — see its own doc, and `WaypointRibbon.isWorkLive`,
+            // which trims the same recording the same way: the two surfaces
+            // read ONE recording and must not disagree about whether it says
+            // anything (`deck-reviewer`, PR #140). A stale or absent authored
+            // line yields to a newer dispatch record, but never to nothing —
+            // a stale line still draws with its age when there is no newer
+            // dispatch to show in its place (CQ-167).
+            switch WorkingStrip.presentation(workingOn: workingOn, workingOnDerived: workingOnDerived) {
+            case .authored(let workingOn):
+                workingOnRow(workingOn)
+            case .dispatch(let derived):
+                dispatchRow(derived)
+            case .none:
+                EmptyView()
+            }
         }
     }
 
@@ -913,6 +929,35 @@ struct PaneStatusBar: View {
             }
         }
         .help(workingOn.text)
+    }
+
+    /// The fallback row: the co's last dispatch task, labelled as such so it
+    /// is never mistaken for a current line — see `slot`'s doc for when this
+    /// draws.
+    ///
+    /// SANITISED HERE, UNLIKE `workingOnRow`'s text: `co-working-on` already
+    /// sanitises what it writes, but `derived.text` is the raw dispatch task
+    /// — see `SessionState.WorkingOnDerived`'s own doc. Bounded the same way
+    /// `workingOnRow` bounds its own line: one `lineLimit`, tail truncation,
+    /// the frame's body font.
+    private func dispatchRow(_ derived: SessionState.WorkingOnDerived) -> some View {
+        let text = WorkingStrip.dispatchDisplayText(derived.text)
+        return HStack(spacing: 6) {
+            Text("Last dispatch:")
+                .frameFont(.body)
+                .foregroundStyle(.secondary)
+            Text(text)
+                .frameFont(.body)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let suffix = WorkingStrip.dispatchDurationSuffix(for: derived) {
+                Text(suffix)
+                    .frameFont(.body)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .help(text)
     }
 }
 
@@ -1021,7 +1066,7 @@ private struct VitalsRow: View {
             //
             // `.fixedSize` so a narrow pane drops this token whole rather
             // than truncating it: `vitals.subSlot` already reduces
-            // `nyh (example-account)` to `nyh`, so there is no shorter form
+            // `lakeside (example-account)` to `lakeside`, so there is no shorter form
             // left to fall back to, and `n…` would be a different account,
             // not a smaller answer for the same one. This exempts billing
             // from the `Priority.rest` competition entirely rather than
@@ -1141,7 +1186,7 @@ extension SessionState.Vitals {
         return "\(count)"
     }
 
-    /// The slot name out of `sub`'s `"slot (account)"`, e.g. `nyh` from `nyh
+    /// The slot name out of `sub`'s `"slot (account)"`, e.g. `lakeside` from `lakeside
     /// (example-account)` — the token's label; the account stays in the
     /// tooltip. nil when `sub` doesn't have the `" ("` separator, so the
     /// caller falls back to the whole string rather than mangling it.

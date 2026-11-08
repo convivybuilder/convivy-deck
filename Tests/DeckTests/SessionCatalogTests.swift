@@ -2,7 +2,7 @@ import XCTest
 @testable import Deck
 
 /// The catalog is the list of sessions Deck can start but does not pin to the
-/// rail. The operator, 2026-07-23: "we have co's set up for NYH studio, write-better,
+/// rail. The operator, 2026-07-23: "we have co's set up for Lakeside studio, write-better,
 /// ask, etc. And no way to launch them from Deck. But we don't always need
 /// every co in the rail."
 final class SessionCatalogTests: XCTestCase {
@@ -21,15 +21,15 @@ final class SessionCatalogTests: XCTestCase {
     func testACatalogIsParsedBesideTheRail() throws {
         let file = try write("""
         {"rail": [{"session": "deck"}],
-         "catalog": [{"session": "nyh", "name": "NYH Studio", "workdir": "~/NYH"},
+         "catalog": [{"session": "lakeside", "name": "Lakeside Studio", "workdir": "~/Lakeside"},
                      {"session": "write-better"}]}
         """)
         let loaded = ThemeConfiguration.load(from: file)
 
         XCTAssertEqual(loaded.railSessions?.map(\.id), ["deck"])
-        XCTAssertEqual(loaded.catalog.map(\.id), ["nyh", "write-better"])
-        XCTAssertEqual(loaded.catalog[0].displayName, "NYH Studio")
-        XCTAssertEqual(loaded.catalog[0].workingDirectory, "~/NYH")
+        XCTAssertEqual(loaded.catalog.map(\.id), ["lakeside", "write-better"])
+        XCTAssertEqual(loaded.catalog[0].displayName, "Lakeside Studio")
+        XCTAssertEqual(loaded.catalog[0].workingDirectory, "~/Lakeside")
     }
 
     func testARailRowCarriesItsLaunchCommand() throws {
@@ -38,12 +38,12 @@ final class SessionCatalogTests: XCTestCase {
         // the row wrote; `launchCommand` is what a row without one resolves to.
         let file = try write("""
         {"rail": [{"session": "deck", "name": "Deck", "command": "co -r"},
-                  {"session": "vivy"}]}
+                  {"session": "orchard"}]}
         """)
         let rail = try XCTUnwrap(ThemeConfiguration.load(from: file).railSessions)
         XCTAssertEqual(rail.first { $0.id == "deck" }?.command, "co -r")
-        XCTAssertNil(rail.first { $0.id == "vivy" }?.command, "an unspecified command stays unspecified")
-        XCTAssertEqual(rail.first { $0.id == "vivy" }?.launchCommand, "co -r",
+        XCTAssertNil(rail.first { $0.id == "orchard" }?.command, "an unspecified command stays unspecified")
+        XCTAssertEqual(rail.first { $0.id == "orchard" }?.launchCommand, "co -r",
                        "and resolves to the rail default rather than the mini's plain `co`")
     }
 
@@ -65,7 +65,7 @@ final class SessionCatalogTests: XCTestCase {
     func testTheDefaultCommandIsNotWrittenIntoConfig() throws {
         let file = try write("{}")
         var config = ThemeConfiguration.empty
-        let rail = [Crew(id: "vivy", displayName: "Vivy"), Crew(id: "deck", displayName: "Deck")]
+        let rail = [Crew(id: "orchard", displayName: "Orchard"), Crew(id: "deck", displayName: "Deck")]
         config.railSessions = rail
         try config.save(to: file)
 
@@ -100,26 +100,26 @@ final class SessionCatalogTests: XCTestCase {
         // A launcher entry that fails the moment it is clicked is worse than an
         // absent one: it reads as the session being broken, not the config.
         let file = try write("""
-        {"catalog": [{"session": "nyh; rm -rf /"}, {"session": "ok"}]}
+        {"catalog": [{"session": "lakeside; rm -rf /"}, {"session": "ok"}]}
         """)
         XCTAssertEqual(ThemeConfiguration.load(from: file).catalog.map(\.id), ["ok"])
     }
 
     func testABadDirectoryCostsTheRowItsDirectoryNotItsPlace() throws {
         let file = try write("""
-        {"catalog": [{"session": "nyh", "workdir": "../escape"}]}
+        {"catalog": [{"session": "lakeside", "workdir": "../escape"}]}
         """)
         let entry = try XCTUnwrap(ThemeConfiguration.load(from: file).catalog.first)
-        XCTAssertEqual(entry.id, "nyh")
+        XCTAssertEqual(entry.id, "lakeside")
         XCTAssertNil(entry.workingDirectory)
     }
 
     func testABadCommandCostsTheRowItsOverrideNotItsPlace() throws {
         let file = try write("""
-        {"catalog": [{"session": "nyh", "command": "co\\nrm -rf /"}]}
+        {"catalog": [{"session": "lakeside", "command": "co\\nrm -rf /"}]}
         """)
         let entry = try XCTUnwrap(ThemeConfiguration.load(from: file).catalog.first)
-        XCTAssertEqual(entry.id, "nyh")
+        XCTAssertEqual(entry.id, "lakeside")
         XCTAssertNil(entry.command, "a bad override must fall back to the mini's default")
     }
 
@@ -127,8 +127,8 @@ final class SessionCatalogTests: XCTestCase {
         let file = try write("{}")
         var configuration = ThemeConfiguration.empty
         configuration.catalog = [
-            LaunchableSession(id: "nyh", displayName: "NYH Studio",
-                              workingDirectory: "~/NYH", command: "co -r")
+            LaunchableSession(id: "lakeside", displayName: "Lakeside Studio",
+                              workingDirectory: "~/Lakeside", command: "co -r")
         ]
         try configuration.save(to: file)
 
@@ -158,11 +158,11 @@ final class SessionCatalogTests: XCTestCase {
         // it is safe on argv. The command is not, so it goes on stdin — argv
         // carries only `--command -`.
         let argv = try SessionAgent.startArguments(
-            target: TestHost.target, session: "nyh", directory: "~/NYH", hasCommand: true)
+            target: TestHost.target, session: "lakeside", directory: "~/Lakeside", hasCommand: true)
 
         XCTAssertTrue(argv.contains("start"))
-        XCTAssertTrue(argv.contains("nyh"))
-        XCTAssertEqual(argv[argv.firstIndex(of: "--dir")! + 1], "~/NYH")
+        XCTAssertTrue(argv.contains("lakeside"))
+        XCTAssertEqual(argv[argv.firstIndex(of: "--dir")! + 1], "~/Lakeside")
         XCTAssertEqual(argv[argv.firstIndex(of: "--command")! + 1], "-",
                        "the command is read from stdin, never placed on argv")
     }
@@ -173,7 +173,7 @@ final class SessionCatalogTests: XCTestCase {
         // `co; curl evil` escapes into the ssh control shell. It goes on stdin.
         for command in ["co -r", "co --model kimi", "co; curl evil", "co && rm -rf /"] {
             let argv = try SessionAgent.startArguments(
-                target: TestHost.target, session: "nyh", hasCommand: true)
+                target: TestHost.target, session: "lakeside", hasCommand: true)
             XCTAssertFalse(argv.contains(command), command)
             XCTAssertFalse(argv.contains { $0.contains(" ") },
                            "no argv element carries a space for \(command)")
@@ -181,7 +181,7 @@ final class SessionCatalogTests: XCTestCase {
     }
 
     func testStartOmitsWhatTheRowDidNotSay() throws {
-        let argv = try SessionAgent.startArguments(target: TestHost.target, session: "nyh")
+        let argv = try SessionAgent.startArguments(target: TestHost.target, session: "lakeside")
         XCTAssertFalse(argv.contains("--dir"))
         XCTAssertFalse(argv.contains("--command"))
     }
@@ -189,24 +189,24 @@ final class SessionCatalogTests: XCTestCase {
     func testStartRejectsABadCommandBeforeSending() throws {
         // start() validates the command before it becomes stdin, so a bad row
         // fails at the call rather than being piped to the mini.
-        XCTAssertThrowsError(try SessionAgent.start(target: TestHost.target, session: "nyh", command: "co\nrm -rf /"))
+        XCTAssertThrowsError(try SessionAgent.start(target: TestHost.target, session: "lakeside", command: "co\nrm -rf /"))
     }
 
     func testStartRefusesADirectoryThatEscapes() throws {
         XCTAssertThrowsError(try SessionAgent.startArguments(
-            target: TestHost.target, session: "nyh", directory: "../../etc"))
+            target: TestHost.target, session: "lakeside", directory: "../../etc"))
     }
 
     func testACatalogEntryLaunchesWithItsDirectoryAndCommandChannel() throws {
         // The launcher hands a LaunchableSession to start(); its directory rides
         // argv and its command rides stdin. This is the argv half.
-        let entry = LaunchableSession(id: "nyh", displayName: "NYH Studio",
-                                      workingDirectory: "~/NYH", command: "co -r")
+        let entry = LaunchableSession(id: "lakeside", displayName: "Lakeside Studio",
+                                      workingDirectory: "~/Lakeside", command: "co -r")
         let argv = try SessionAgent.startArguments(
             target: TestHost.target, session: entry.id, directory: entry.workingDirectory,
             hasCommand: entry.command != nil)
 
-        XCTAssertEqual(argv[argv.firstIndex(of: "--dir")! + 1], "~/NYH")
+        XCTAssertEqual(argv[argv.firstIndex(of: "--dir")! + 1], "~/Lakeside")
         XCTAssertEqual(argv[argv.firstIndex(of: "--command")! + 1], "-")
         XCTAssertFalse(argv.contains("co -r"))
     }
@@ -222,10 +222,10 @@ final class SessionCatalogTests: XCTestCase {
     }
 
     func testKillIsNeverTheDefault() throws {
-        let gentle = try SessionAgent.stopArguments(target: TestHost.target, session: "nyh", kill: false)
+        let gentle = try SessionAgent.stopArguments(target: TestHost.target, session: "lakeside", kill: false)
         XCTAssertFalse(gentle.contains("--kill"))
 
-        let destructive = try SessionAgent.stopArguments(target: TestHost.target, session: "nyh", kill: true)
+        let destructive = try SessionAgent.stopArguments(target: TestHost.target, session: "lakeside", kill: true)
         XCTAssertTrue(destructive.contains("--kill"))
     }
 }
@@ -243,9 +243,9 @@ final class ShellPaneTests: XCTestCase {
         // THE FIX THIS PINS. The shell used to be a bare `exec "$SHELL"`, so the
         // only thing holding its process was the pane — and tearing the pane
         // down on a session switch killed it, taking whatever was running.
-        let a = try argv(session: "vivy")
+        let a = try argv(session: "orchard")
         XCTAssertTrue(a.contains("new-session"), "\(a)")
-        XCTAssertTrue(a.contains("deck-shell-vivy"), "\(a)")
+        XCTAssertTrue(a.contains("deck-shell-orchard"), "\(a)")
         XCTAssertFalse(a.contains { $0.contains("exec \"$SHELL\"") }, "\(a)")
     }
 
@@ -253,25 +253,25 @@ final class ShellPaneTests: XCTestCase {
         // `-A` is what makes switching back a REATTACH: same scrollback, same
         // running command. Without it every switch would start a fresh shell,
         // which is the old behaviour wearing tmux.
-        XCTAssertTrue(try argv(session: "vivy").contains("-A"))
+        XCTAssertTrue(try argv(session: "orchard").contains("-A"))
     }
 
     func testItNeverAttachesToTheAgentsOwnSession() throws {
-        // The prefix is the whole guard: a scratch shell that attached to `vivy`
+        // The prefix is the whole guard: a scratch shell that attached to `orchard`
         // itself would put the user's typing into the agent's pane.
-        let a = try argv(session: "vivy")
-        XCTAssertFalse(a.contains("vivy"), "attached to the agent's session: \(a)")
+        let a = try argv(session: "orchard")
+        XCTAssertFalse(a.contains("orchard"), "attached to the agent's session: \(a)")
     }
 
     func testTheDirectoryIsHonouredOnCreation() throws {
-        let a = try argv(session: "vivy", directory: "~/Convivy/vivy")
+        let a = try argv(session: "orchard", directory: "~/Convivy/orchard")
         XCTAssertTrue(a.contains("-c"), "\(a)")
-        XCTAssertTrue(a.contains("~/Convivy/vivy"), "\(a)")
+        XCTAssertTrue(a.contains("~/Convivy/orchard"), "\(a)")
     }
 
     func testADirectoryWithMetacharactersIsRefused() {
         for hostile in ["~/x; rm -rf /", "/tmp/$(whoami)", "/a b", "../escape"] {
-            XCTAssertThrowsError(try argv(session: "vivy", directory: hostile), hostile)
+            XCTAssertThrowsError(try argv(session: "orchard", directory: hostile), hostile)
         }
     }
 
@@ -284,9 +284,9 @@ final class ShellPaneTests: XCTestCase {
         // here is the scratch tmux SESSION NAME `TerminalTarget.remoteShell`
         // produces: derived from the fleet session alone, present in argv
         // regardless of which directory the shell was opened with.
-        XCTAssertTrue(try argv(session: "vivy", directory: "~/a").contains("deck-shell-vivy"))
-        XCTAssertTrue(try argv(session: "vivy", directory: "~/b").contains("deck-shell-vivy"))
-        XCTAssertFalse(try argv(session: "deck", directory: "~/a").contains("deck-shell-vivy"))
+        XCTAssertTrue(try argv(session: "orchard", directory: "~/a").contains("deck-shell-orchard"))
+        XCTAssertTrue(try argv(session: "orchard", directory: "~/b").contains("deck-shell-orchard"))
+        XCTAssertFalse(try argv(session: "deck", directory: "~/a").contains("deck-shell-orchard"))
     }
 
     func testAnOverlongSessionNameIsTruncatedRatherThanRefused() throws {
@@ -299,8 +299,8 @@ final class ShellPaneTests: XCTestCase {
     }
 
     func testTheCwdIsDecodedFromState() {
-        let json = #"{"session":"vivy","state":"working","alive":true,"cwd":"\#(TestHost.homeRoot)/vivy"}"#
-        let decoded = SessionState.decode(Data(json.utf8), fallbackSession: "vivy")
-        XCTAssertEqual(decoded.cwd, "\(TestHost.homeRoot)/vivy")
+        let json = #"{"session":"orchard","state":"working","alive":true,"cwd":"\#(TestHost.homeRoot)/orchard"}"#
+        let decoded = SessionState.decode(Data(json.utf8), fallbackSession: "orchard")
+        XCTAssertEqual(decoded.cwd, "\(TestHost.homeRoot)/orchard")
     }
 }

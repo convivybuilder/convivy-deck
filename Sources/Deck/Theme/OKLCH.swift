@@ -142,7 +142,7 @@ extension RGB {
     /// Chroma is raised as well as lightness moved, because on a near-white or
     /// near-black background a lightness step alone reads as "slightly grey"
     /// rather than as the theme's colour. The multiplier is what makes deck read
-    /// warm and vivy read green instead of both reading "a bit off-white".
+    /// warm and orchard read green instead of both reading "a bit off-white".
     func canvasTint(for appearance: Appearance, lift: Double, chroma: Double) -> RGB {
         var lch = toOKLCH()
         lch.l = min(max(appearance == .dark ? lch.l + lift : lch.l - lift, 0), 1)

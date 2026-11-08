@@ -33,14 +33,14 @@ final class RunningSessionNamesTests: XCTestCase {
     /// A crew's session set can name more than one session; only the ones
     /// the mini actually reported a tmux session for come back.
     func testOnlyNamesWithATmuxSessionAreReturned() {
-        let names: Set<String> = ["ask", "vivy", "gone"]
+        let names: Set<String> = ["ask", "orchard", "gone"]
         let set = discovered([
             DiscoveredSession(name: "ask", host: TestHost.target),
-            DiscoveredSession(name: "vivy", host: TestHost.target),
+            DiscoveredSession(name: "orchard", host: TestHost.target),
         ])
         let running = RailStateModel.runningSessionNames(
             among: names, host: nil, discovered: set, hosts: [mini], defaultHost: "mini")
-        XCTAssertEqual(running, ["ask", "vivy"])
+        XCTAssertEqual(running, ["ask", "orchard"])
     }
 
     /// A crew with no tmux sessions at all among its names comes back empty

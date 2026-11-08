@@ -666,6 +666,11 @@ enum LibraryClient {
     struct CorrectionDetail: Equatable {
         let id: String
         let title: String?
+        /// The stable key a PR row's chip carries — `"E39"` for an epic,
+        /// `"E9·4"` for a work item under one — see `CourseEntry.key`'s doc
+        /// for the full vocabulary. `nil` when this Library predates the
+        /// field or this item's type never gets one.
+        let key: String?
         /// The product this item is filed against.
         ///
         /// **Load-bearing rather than decorative.** An item reaches this pane
@@ -679,6 +684,11 @@ enum LibraryClient {
         let body: String?
         let type: String?
         let state: String?
+        /// An epic's `proposed`/`approved`/`built`/`superseded` — see
+        /// `LibraryClient.proposedMaturity`/`approvedMaturity` for the
+        /// Library's own words. `nil` on every correction and most work
+        /// items, the same degrade every optional field here takes.
+        let maturity: String?
         let severity: String?
         /// Who the item is waiting on — `"agent"` or `"operator"` in
         /// practice — a string field on the wire, not the array `needs`
@@ -723,8 +733,9 @@ enum LibraryClient {
         /// `true`. Defaulting it here instead keeps every existing call site
         /// (including `ItemDetailPaneTests`'s) compiling unchanged while
         /// still letting the decoder pass a real value.
-        init(id: String, title: String? = nil, product: String? = nil, body: String? = nil,
-             type: String? = nil, state: String? = nil, severity: String? = nil, needs: String? = nil,
+        init(id: String, title: String? = nil, key: String? = nil, product: String? = nil, body: String? = nil,
+             type: String? = nil, state: String? = nil, maturity: String? = nil, severity: String? = nil,
+             needs: String? = nil,
              resolution: String? = nil, outcomeNote: String? = nil, claimedBy: String? = nil,
              claimExpired: Bool = false, createdAt: String? = nil, parentId: String? = nil,
              foundDuring: String? = nil,
@@ -733,10 +744,12 @@ enum LibraryClient {
              comments: [CorrectionComment] = []) {
             self.id = id
             self.title = title
+            self.key = key
             self.product = product
             self.body = body
             self.type = type
             self.state = state
+            self.maturity = maturity
             self.severity = severity
             self.needs = needs
             self.resolution = resolution
@@ -764,7 +777,8 @@ enum LibraryClient {
     ///
     /// `title`, `maturity` and `specification` are what the Proposals region
     /// reads (`proposedEpics(from:)`). All three degrade to `nil` like every
-    /// other field here.
+    /// other field here, and so does `key`, which the same region now draws
+    /// beside the title.
     struct Epic: Equatable, Identifiable {
         let id: String
         let state: String?
@@ -774,6 +788,10 @@ enum LibraryClient {
         let title: String?
         let maturity: String?
         let specification: String?
+        /// The stable key a PR row's chip carries, `"E39"` for an epic with
+        /// no child under it — see `CourseEntry.key`'s doc for the full
+        /// vocabulary. `nil` when this Library predates the field.
+        let key: String?
 
         /// Written out for the reason `QueueItem.init` is: a synthesized
         /// memberwise init would make `title`, `maturity` and `specification`
@@ -781,7 +799,7 @@ enum LibraryClient {
         /// none of them.
         init(id: String, state: String?, resolution: String?, createdAt: String?,
              resolvedAt: String?, title: String? = nil, maturity: String? = nil,
-             specification: String? = nil) {
+             specification: String? = nil, key: String? = nil) {
             self.id = id
             self.state = state
             self.resolution = resolution
@@ -790,6 +808,7 @@ enum LibraryClient {
             self.title = title
             self.maturity = maturity
             self.specification = specification
+            self.key = key
         }
 
         /// A terminal outcome under any resolution, the same vocabulary
@@ -957,7 +976,7 @@ enum LibraryClient {
     /// this, the queue asked for neither and silently took the Library's
     /// default page, so a product past 50 open items in one state showed a
     /// subset with nothing indicating the rest — measured against the
-    /// running Library: `vivy`'s `state=open` answered 50 of 176 with
+    /// running Library: `orchard`'s `state=open` answered 50 of 176 with
     /// `truncated: true`, and the queue never looked. `fetchCorrectionsQueue`
     /// pages while the envelope keeps saying `truncated: true`, so `limit`
     /// only bounds one call's size, never the queue's total.
@@ -1002,7 +1021,7 @@ enum LibraryClient {
 
     /// The page size every corrections-queue request asks for. Large enough
     /// that a normal product's queue completes in one page per state —
-    /// measured against the running Library: `vivy`'s 176 open items came
+    /// measured against the running Library: `orchard`'s 176 open items came
     /// back whole, `truncated: false`, at `limit=200` — while
     /// `fetchCorrectionsQueue` still pages past it via `offset` for whatever
     /// product eventually exceeds it, rather than this number being load-
@@ -1154,6 +1173,19 @@ enum LibraryClient {
     /// only caller and validates first via `validateLibraryId`.
     static func itemApproveRemoteCommand(itemId: String) -> String {
         remoteWriteCommand(method: "POST", path: "/items/\(itemId)/approve",
+                           tokenFile: WorkingCopyStore.libraryApprovalTokenFile)
+    }
+
+    /// `POST /items/{id}/decline` — the write `declineEpic` sends, under the
+    /// same approval credential as `itemApproveRemoteCommand`
+    /// (`WorkingCopyStore.libraryApprovalTokenFile`), since declining is the
+    /// same `epic.approve` capability as approving (library/decisions/0005).
+    /// `itemId` reaches this unvalidated at the call site's discretion, same
+    /// as every other per-route builder in this section;
+    /// `declineEpicArguments` is the only caller and validates first via
+    /// `validateLibraryId`.
+    static func itemDeclineRemoteCommand(itemId: String) -> String {
+        remoteWriteCommand(method: "POST", path: "/items/\(itemId)/decline",
                            tokenFile: WorkingCopyStore.libraryApprovalTokenFile)
     }
 
@@ -1568,7 +1600,7 @@ enum LibraryClient {
     /// an array because the field is, but grouping is one choice per row —
     /// showing the same item twice, once per topic, would read as two
     /// corrections rather than one. Verified 2026-09-08: 145 of 145 open
-    /// `vivy` items carried exactly one, so this is today's universal case,
+    /// `orchard` items carried exactly one, so this is today's universal case,
     /// not a corner this sort quietly gets wrong.
     ///
     /// **Called ONCE over the whole queue — every state, every page —
@@ -1873,7 +1905,8 @@ enum LibraryClient {
                         resolvedAt: item["resolved_at"] as? String,
                         title: item["title"] as? String,
                         maturity: item["maturity"] as? String,
-                        specification: item["specification"] as? String)
+                        specification: item["specification"] as? String,
+                        key: item["key"] as? String)
         }
     }
 
@@ -1983,10 +2016,12 @@ enum LibraryClient {
         return CorrectionDetail(
             id: id,
             title: root["title"] as? String,
+            key: root["key"] as? String,
             product: root["product"] as? String,
             body: root["body"] as? String,
             type: root["type"] as? String,
             state: root["state"] as? String,
+            maturity: root["maturity"] as? String,
             severity: root["severity"] as? String,
             needs: root["needs"] as? String,
             resolution: root["resolution"] as? String,
@@ -2071,7 +2106,7 @@ enum LibraryClient {
     /// took whatever the Library's default page handed back — 50 items — and
     /// never looked at the envelope's own `truncated` flag, so a product past
     /// 50 open items in one state showed a silent subset. Measured against
-    /// the running Library: `vivy`'s `state=open` answered 50 of 176 with
+    /// the running Library: `orchard`'s `state=open` answered 50 of 176 with
     /// `truncated: true`. Paging is preferred over asking for one very large
     /// `limit` and hoping, because paging is correct at any queue size;
     /// `pagedQueueItems` still bounds itself at `itemsMaxPages` and reports
@@ -2358,6 +2393,63 @@ enum LibraryClient {
         }
     }
 
+    // MARK: - Write: declining a proposed epic
+
+    /// The body `declineEpic` sends, and the whole of what it sends. `POST
+    /// /items/{id}/decline` sets `maturity` to `declined` itself
+    /// (library/decisions/0005), so unlike `approveEpicBody` this carries no
+    /// `maturity` key — `acting_human` is the one fact the write needs to
+    /// attest. `owner` is not sent, for the same reason `approveEpicBody`
+    /// omits it: a live lease does not block this route, so Deck takes none.
+    /// `reason` is the operator's one line, which the Library records on the
+    /// decline and on every child it closes; a blank one is omitted, since
+    /// the route treats it as absent.
+    static func declineEpicBody(actingHuman: String, reason: String? = nil) -> [String: Any] {
+        var body: [String: Any] = ["acting_human": actingHuman]
+        if let trimmed = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+            body["reason"] = trimmed
+        }
+        return body
+    }
+
+    /// `declineEpic`'s argv, validated first: an id that fails
+    /// `validateLibraryId` throws here and reaches no command string.
+    /// Mirrors `approveEpicArguments` exactly.
+    static func declineEpicArguments(
+        target: SSHTarget, itemId: String, controlPath: String = defaultControlPath()
+    ) throws -> [String] {
+        guard let safeId = validateLibraryId(itemId) else {
+            throw FetchError.invalidInput(itemId)
+        }
+        return arguments(target: target, remoteCommand: itemDeclineRemoteCommand(itemId: safeId),
+                         controlPath: controlPath)
+    }
+
+    /// Ends a proposed epic's consideration — `POST /items/{id}/decline`,
+    /// under the approval credential. The Library refuses with 409 on
+    /// anything but a proposed epic (library/decisions/0005): an approved
+    /// epic's refusal hints at `/repropose`, and an epic with an approved
+    /// sub-epic names that sub-epic. Synchronous and blocking, like
+    /// `approveEpic`; callers run it off the main actor.
+    ///
+    /// `actingHuman` is checked locally first (`validateActingHuman`), the
+    /// same guard `approveEpic` applies. A refusal throws
+    /// `FetchError.libraryRefused`, which `declineRefusalMessage` turns into
+    /// words for the operator.
+    static func declineEpic(target: SSHTarget, itemId: String, actingHuman: String, reason: String? = nil) throws {
+        let argv = try declineEpicArguments(target: target, itemId: itemId)
+        let trimmed = try validateActingHuman(actingHuman, for: "decline")
+        _ = try postJSON(target: target, argv: argv, body: declineEpicBody(actingHuman: trimmed, reason: reason))
+    }
+
+    /// What the Decline control says when the write did not land — the
+    /// Library's own text, including the 409 that names a blocking approved
+    /// sub-epic or hints at `/repropose` for an already-approved epic, the
+    /// same pass-through `approvalRefusalMessage` gives every other refusal.
+    static func declineRefusalMessage(_ error: Error) -> String {
+        approvalRefusalMessage(error, retry: "Decline")
+    }
+
     // MARK: - Write: an item's model choice
 
     /// The Library's bounds on the model and reason of `POST /items/{id}/model`
@@ -2460,6 +2552,148 @@ enum LibraryClient {
         }
         if let at = choice.setAt { lines.append("Set at: \(at)") }
         return lines
+    }
+
+    // MARK: - Write: a Reference Room document's own checkout (CQ·177)
+    //
+    // `POST /reference/admission` (library `app.py`, around line 13948) refuses
+    // a `kb apply --provenance person` write unless the named `owner` holds a
+    // live checkout here — `library/reference_admission.py`'s `check_checkout`.
+    // `agentctl kb checkout`'s own lease is a different store entirely (its
+    // docstring: "the two stores know nothing of each other"), so the editor
+    // takes both: this one before it lets the reader type, `agentctl kb
+    // checkout`/`kb apply` after, all three under the same `holder`.
+
+    /// The body `checkoutReferenceDocument` and `checkinReferenceDocument`
+    /// send — `owner`, the exact field `POST /reference/admission` compares a
+    /// write's own `owner` against (`_claim_owner`'s doc in `app.py`). Neither
+    /// route reads `holder`.
+    static func referenceCheckoutBody(holder: String) -> [String: Any] {
+        ["owner": holder]
+    }
+
+    /// Percent-encodes `docId` for the URL path. A KB id's own charset
+    /// (`DeckOpenRef.validateKBId`: `[a-z0-9-]` in three slash-separated
+    /// segments) is already safe unquoted the way
+    /// `WorkingCopyStore.libraryDocumentRemoteCommand` embeds it, but encoding
+    /// it here means this call site does not depend on that charset staying
+    /// exactly what it is today. `.urlPathAllowed` keeps `/` unescaped, which
+    /// is what lets a three-segment id still reach the route as one path.
+    private static func encodedReferenceDocumentId(_ docId: String) -> String {
+        docId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? docId
+    }
+
+    /// `docId` reaches this unvalidated at the call site's discretion, same as
+    /// every other per-route builder in this file — `referenceDocumentCheckoutArguments`/
+    /// `referenceDocumentCheckinArguments` are the only callers and validate
+    /// first via `DeckOpenRef.validateKBId`.
+    static func referenceDocumentCheckoutRemoteCommand(docId: String) -> String {
+        remoteWriteCommand(method: "POST",
+                           path: "/reference/documents/\(encodedReferenceDocumentId(docId))/checkout")
+    }
+
+    /// `POST /reference/documents/{doc_id}/checkin` — beside `/checkout` in
+    /// `app.py`, and the route that hands the same lock back.
+    static func referenceDocumentCheckinRemoteCommand(docId: String) -> String {
+        remoteWriteCommand(method: "POST",
+                           path: "/reference/documents/\(encodedReferenceDocumentId(docId))/checkin")
+    }
+
+    static func referenceDocumentCheckoutArguments(
+        target: SSHTarget, docId: String, controlPath: String = defaultControlPath()
+    ) throws -> [String] {
+        guard let safeId = DeckOpenRef.validateKBId(docId) else {
+            throw FetchError.invalidInput(docId)
+        }
+        return arguments(target: target,
+                         remoteCommand: referenceDocumentCheckoutRemoteCommand(docId: safeId),
+                         controlPath: controlPath)
+    }
+
+    static func referenceDocumentCheckinArguments(
+        target: SSHTarget, docId: String, controlPath: String = defaultControlPath()
+    ) throws -> [String] {
+        guard let safeId = DeckOpenRef.validateKBId(docId) else {
+            throw FetchError.invalidInput(docId)
+        }
+        return arguments(target: target,
+                         remoteCommand: referenceDocumentCheckinRemoteCommand(docId: safeId),
+                         controlPath: controlPath)
+    }
+
+    /// Takes the Library's own checkout on a Reference Room document — the
+    /// lock `POST /reference/admission` requires before a `kb apply
+    /// --provenance person` write to the same id may land. `holder` must be
+    /// the exact string `KnowledgeBase.checkout` and `KBSignedSave.applyArguments`
+    /// pass as `--holder`: admission's checkout clause refuses unless the
+    /// write's `owner` equals this route's `owner` exactly
+    /// (`reference_admission.check_checkout`). Synchronous and blocking, like
+    /// every other write here; callers run it off the main actor. A refusal —
+    /// held by someone else, or the Library unreachable — throws
+    /// `FetchError.libraryRefused` or another `FetchError`, which
+    /// `referenceCheckoutRefusalMessage` turns into words.
+    static func checkoutReferenceDocument(target: SSHTarget, docId: String, holder: String) throws {
+        let argv = try referenceDocumentCheckoutArguments(target: target, docId: docId)
+        _ = try postJSON(target: target, argv: argv, body: referenceCheckoutBody(holder: holder))
+    }
+
+    /// Hands the Library's checkout back. Called from the editor on close and
+    /// after a save lands (`EditorModel.releaseLease`); a caller there
+    /// swallows the error, the same best-effort discipline
+    /// `KnowledgeBase.release` already applies to the agentctl lease — nothing
+    /// downstream depends on this succeeding, and a reader who has just closed
+    /// a window cannot act on "could not release a lock".
+    static func checkinReferenceDocument(target: SSHTarget, docId: String, holder: String) throws {
+        let argv = try referenceDocumentCheckinArguments(target: target, docId: docId)
+        _ = try postJSON(target: target, argv: argv, body: referenceCheckoutBody(holder: holder))
+    }
+
+    /// `POST /reference/documents/{doc_id}/heartbeat` — beside `/checkout`
+    /// and `/checkin` in `app.py`, and the route that exists for exactly the
+    /// gap those two leave open (CQ·177 finding 1): its docstring says a
+    /// person editing a document in Deck makes no calls while they type, so
+    /// the checkout `load` takes lapses mid-edit without something to renew
+    /// it. Refused with a 404 when the caller holds no live checkout under
+    /// `holder` — none, someone else's, or already lapsed — and never
+    /// creates one.
+    static func referenceDocumentHeartbeatRemoteCommand(docId: String) -> String {
+        remoteWriteCommand(method: "POST",
+                           path: "/reference/documents/\(encodedReferenceDocumentId(docId))/heartbeat")
+    }
+
+    static func referenceDocumentHeartbeatArguments(
+        target: SSHTarget, docId: String, controlPath: String = defaultControlPath()
+    ) throws -> [String] {
+        guard let safeId = DeckOpenRef.validateKBId(docId) else {
+            throw FetchError.invalidInput(docId)
+        }
+        return arguments(target: target,
+                         remoteCommand: referenceDocumentHeartbeatRemoteCommand(docId: safeId),
+                         controlPath: controlPath)
+    }
+
+    /// Renews the Library's own checkout so an edit that outlives the
+    /// Library's grace (four hours, `lease.py`'s `DEFAULT_GRACE`) does not
+    /// find its checkout gone the moment it tries to save. `holder` is the
+    /// same string `checkoutReferenceDocument` and `checkinReferenceDocument`
+    /// take, for the same reason theirs is: admission's checkout clause
+    /// compares a write's `owner` against this route's `owner` exactly.
+    /// Synchronous and blocking, like every other write here; callers run it
+    /// off the main actor. A 404 means the checkout is gone and must be
+    /// retaken by reopening the document; any other `FetchError` is a
+    /// transport failure a caller must not read the same way.
+    static func heartbeatReferenceDocument(target: SSHTarget, docId: String, holder: String) throws {
+        let argv = try referenceDocumentHeartbeatArguments(target: target, docId: docId)
+        _ = try postJSON(target: target, argv: argv, body: referenceCheckoutBody(holder: holder))
+    }
+
+    /// What the editor shows when the Library's own checkout is refused before
+    /// editing begins — the same pass-through `approvalRefusalMessage` gives
+    /// every other write's refusal. The Library's own `_checkout_refusal`
+    /// names the holder and the expiry inside the `error` field that function
+    /// already reads, so a reader sees who holds it rather than a bare "no".
+    static func referenceCheckoutRefusalMessage(_ error: Error) -> String {
+        approvalRefusalMessage(error, retry: "Reopen")
     }
 
     // MARK: - Write: reordering the Course

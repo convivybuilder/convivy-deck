@@ -4,19 +4,25 @@ import Foundation
 /// `design/start-section/index.html` (`issue_01M1SV8QKJ7ADH87PCNC0Q0YE8`):
 /// a fixed-height opener row that reveals the catalog in a popover instead
 /// of drawing every entry on the rail itself. Kept apart from the views so
-/// the filter's matching, the keyboard path, and the running-entry
-/// exclusion are each pinned by a test without a view-level test target —
+/// the filter's matching, the keyboard path, and the choose-vs-launch
+/// routing are each pinned by a test without a view-level test target —
 /// the same split `SessionGrouping`/`RailRunningSessions` already follow.
 enum StartPicker {
-    /// The catalog entries the picker offers — every entry EXCEPT one
-    /// `isRunning` already claims. This is the one correctness fix the
-    /// issue ties to option C: a catalog entry that has been launched
-    /// belongs under `OTHER SESSIONS`, not here, so it is excluded on this
-    /// side rather than left to draw twice.
-    static func availableEntries(
-        _ catalog: [LaunchableSession], isRunning: (LaunchableSession) -> Bool
-    ) -> [LaunchableSession] {
-        catalog.filter { !isRunning($0) }
+    /// What choosing a catalog entry does — `issue_01M5MME44FPVHRQB4KDBXZA5YR`:
+    /// a catalog entry with no session behind it launches one, but a
+    /// running one already has a pane to attach to, and launching a
+    /// second would duplicate it. `LaunchableSession.ref` is what `.select`
+    /// carries, the same ref `RailView` resolves a running entry to
+    /// everywhere else.
+    enum ChooseAction: Equatable {
+        case select(SessionRef)
+        case launch(LaunchableSession)
+    }
+
+    /// Chooses the action for an entry picked from `START`, pure so the
+    /// routing is pinned by a test rather than only read off the popover.
+    static func choose(_ entry: LaunchableSession, isRunning: Bool) -> ChooseAction {
+        isRunning ? .select(entry.ref) : .launch(entry)
     }
 
     /// The picker's own filtered order — a case-insensitive substring match
@@ -45,12 +51,14 @@ enum StartPicker {
         return entries[clamped].id
     }
 
-    /// The popover's foot label — `design/start-section/index.html`'s
-    /// `.pop .foot`: "16 not running" at rest, "6 of 16" once a filter has
-    /// narrowed the list.
+    /// The popover's foot label — "16 sessions" at rest, "6 of 16" once a
+    /// filter has narrowed the list. Every catalog entry is offered here now
+    /// regardless of whether it is running (`issue_01M5MME44FPVHRQB4KDBXZA5YR`),
+    /// so the rest wording can no longer claim the whole count is "not
+    /// running".
     static func footLabel(matchCount: Int, totalCount: Int) -> String {
         matchCount == totalCount
-            ? "\(totalCount) not running"
+            ? "\(totalCount) session\(totalCount == 1 ? "" : "s")"
             : "\(matchCount) of \(totalCount)"
     }
 }

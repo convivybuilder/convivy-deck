@@ -146,14 +146,14 @@ final class HostMutatorsTests: XCTestCase {
         // directly through the config and reload, the same file round trip
         // `HostConfigTests` uses to exercise a catalog row's `host` field.
         var config = store.configuration
-        config.catalog = [LaunchableSession(id: "nyh", displayName: "NYH Studio", host: "guest")]
+        config.catalog = [LaunchableSession(id: "lakeside", displayName: "Lakeside Studio", host: "guest")]
         try? config.save(to: file)
         let reloaded = ThemeStore(fileURL: file)
 
         reloaded.updateHost(named: "guest", to: HostEntry(name: "guest2", user: "guest", address: "1.2.3.4"))
 
         XCTAssertEqual(reloaded.configuration.railSessions?.first { $0.id == "ask" }?.host, "guest2")
-        XCTAssertEqual(reloaded.configuration.catalog.first { $0.id == "nyh" }?.host, "guest2")
+        XCTAssertEqual(reloaded.configuration.catalog.first { $0.id == "lakeside" }?.host, "guest2")
     }
 
     @MainActor

@@ -125,7 +125,7 @@ enum CockpitResolution {
     /// sweep besides — an unbounded served `repos` array becomes an
     /// unbounded, standing fetch load, one crew's spec away from hammering
     /// the Library on a timer. The busiest real crew measured for
-    /// `issue_01M2P5JHM1G8XCMKM4HEHVJB2P` (Constance) follows four repos;
+    /// `issue_01M2P5JHM1G8XCMKM4HEHVJB2P` (Meridian) follows four repos;
     /// this caps at 8, generous headroom for real growth while still
     /// bounding a malformed or runaway served spec to a fixed, small
     /// fan-out rather than an unbounded one.

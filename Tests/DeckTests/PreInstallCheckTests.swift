@@ -78,8 +78,44 @@ final class PreInstallCheckTests: XCTestCase {
         let argv = try PreInstallCheck.claudeArguments(
             target: SSHTarget(user: "builder", host: "kestrel"), controlPath: "/tmp/cm", home: "/nonexistent")
         XCTAssertTrue(argv.contains("ControlPath=/tmp/cm"))
-        XCTAssertEqual(Array(argv.suffix(8)),
-                       ["builder@kestrel", "claude", "-p", "ok", "--max-turns", "1", "--model", "haiku"])
+        XCTAssertEqual(Array(argv.suffix(2)),
+                       ["builder@kestrel", #"exec "$SHELL" -lc 'claude -p ok --max-turns 1 --model haiku'"#])
+    }
+
+    /// Runs the real remote command through a local `sh`, with `claude`
+    /// reachable only from the login profile, as on a stock Debian account
+    /// whose `.profile` adds `~/.local/bin`. A bare `claude` fails there
+    /// with 127, which the check read as "not installed".
+    func testTheCommandFindsAClaudeThatOnlyTheLoginProfilePutsOnPath() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("preinstall-\(UUID().uuidString)")
+        let bin = home.appendingPathComponent(".local/bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let fake = bin.appendingPathComponent("claude")
+        try "#!/bin/sh\necho signed-in\n".write(to: fake, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
+        try "PATH=\"$HOME/.local/bin:$PATH\"\n"
+            .write(to: home.appendingPathComponent(".profile"), atomically: true, encoding: .utf8)
+
+        func run(_ command: String) throws -> (Int32, String) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", command]
+            process.environment = ["HOME": home.path, "SHELL": "/bin/bash", "PATH": "/usr/bin:/bin"]
+            let out = Pipe()
+            process.standardOutput = out
+            process.standardError = Pipe()
+            try process.run()
+            process.waitUntilExit()
+            let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            return (process.terminationStatus, text)
+        }
+
+        XCTAssertEqual(try run("claude -p ok").0, 127, "control: a bare claude is not on the non-login PATH")
+        let (status, output) = try run(PreInstallCheck.claudeCommand)
+        XCTAssertEqual(status, 0)
+        XCTAssertEqual(output, "signed-in\n")
     }
 
     func testAHostileTargetIsRefusedBeforeAnyArgv() {

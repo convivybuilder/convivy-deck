@@ -36,6 +36,31 @@ enum SlateBadge {
         case .count(let n): return n == 1 ? "1 ask waiting on you" : "\(n) asks waiting on you"
         }
     }
+
+    /// A folded group's own badge: the sum of its members' — E24's "the
+    /// summed badge beside it." `nil` members (never polled) are skipped
+    /// rather than zeroed, the same degrade every other per-session reading
+    /// here gets; `nil` overall means no member has anything to show, which
+    /// draws no badge at all, matching a single row with nothing to show.
+    /// ANY member reading `.unknown` makes the sum `.unknown` too — a doubt
+    /// about even one member's count is a doubt about the group's total,
+    /// the same reason `.unknown` always draws on a single row regardless
+    /// of what else is known.
+    static func summed(_ members: [SessionState.AsksOpen?]) -> SessionState.AsksOpen? {
+        var total = 0
+        var sawUnknown = false
+        var sawAny = false
+        for member in members {
+            guard let member else { continue }
+            sawAny = true
+            switch member {
+            case .unknown: sawUnknown = true
+            case .count(let n): total += n
+            }
+        }
+        guard sawAny else { return nil }
+        return sawUnknown ? .unknown : .count(total)
+    }
 }
 
 /// The badge's drawing — sized and weighted like `RunModelMarkGlyph`, the
@@ -58,6 +83,18 @@ struct SlateBadgeGlyph: View {
         switch asksOpen {
         case .unknown: return ThemeRecipe.warningInk(on: surface)
         case .count: return ThemeRecipe.attentionTextInk(on: surface)
+        }
+    }
+
+    /// The group heading's own ink for its summed total — CQ·192: a
+    /// `.count` draws in `ThemeRecipe.groupAskTotalInk` rather than `ink`'s
+    /// own `attentionTextInk`, so the heading's total reads as a different
+    /// kind of number from a member row's own count beside it. `.unknown`
+    /// stays `warningInk`, the same doubt a single row reads with.
+    static func groupTotalInk(for asksOpen: SessionState.AsksOpen, on surface: RGB) -> RGB {
+        switch asksOpen {
+        case .unknown: return ThemeRecipe.warningInk(on: surface)
+        case .count: return ThemeRecipe.groupAskTotalInk(on: surface)
         }
     }
 

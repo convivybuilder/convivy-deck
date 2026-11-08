@@ -3,7 +3,7 @@ import Foundation
 /// Derives a sibling session's tmux name from a crew id and a user-typed
 /// short label — the naming rule `design-multiple-sessions.md` §A specifies:
 /// `<crew-id>--<slug>`, double-dash, because a single dash already occurs
-/// inside fleet names (`sous-chef`) and `--` cannot collide with one.
+/// inside fleet names (`galley`) and `--` cannot collide with one.
 ///
 /// PURE, DELIBERATELY. This is the part of "move a window to its own
 /// session" (`ContentView.moveWindowToOwnSession`, its one remaining caller)

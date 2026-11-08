@@ -88,16 +88,22 @@ enum PRLadder {
         case unavailable(reason: String)
     }
 
-    /// Maps a `StateRow`'s `ciConclusion`/`ciCaptured` onto `CIStatus`,
-    /// degrading per field like every other read in this file.
+    /// Maps a `StateRow`'s `ciConclusion`/`ciCaptured`/`ciCaptureStale` onto
+    /// `CIStatus`, degrading per field like every other read in this file.
     ///
     /// - `ciCaptured != true` (false, or missing/non-boolean and so `nil`
     ///   after decode): `.unavailable` naming which; the repository either
     ///   is not captured or this client could not tell.
-    /// - `ciCaptured == true`, `ciConclusion == nil`: `.running` — checks
-    ///   have not finished, or finished inside the fetcher's own lag and
-    ///   are not captured yet; the Library's two cases Deck cannot tell
-    ///   apart, both rendering as "in CI" either way.
+    /// - `ciCaptured == true`, `ciConclusion == nil`, `ciCaptureStale ==
+    ///   true`: `.unavailable` — the Library's own platform job that
+    ///   captures CI results has stopped producing fresh rows for this head
+    ///   sha (library#330), so there is no live signal to read as "running"
+    ///   either. Checked before the plain "no conclusion yet" case below,
+    ///   since both share `ciConclusion == nil`.
+    /// - `ciCaptured == true`, `ciConclusion == nil`, otherwise: `.running`
+    ///   — checks have not finished, or finished inside the fetcher's own
+    ///   lag and are not captured yet; the Library's two cases Deck cannot
+    ///   tell apart, both rendering as "in CI" either way.
     /// - `success`: `.passed`.
     /// - `failure`, `timed_out`, `cancelled`, `action_required`,
     ///   `startup_failure`: `.failed` — every GitHub check-run conclusion
@@ -110,6 +116,9 @@ enum PRLadder {
             return .unavailable(reason: "CI is not captured for this repository")
         }
         guard let conclusion = row.ciConclusion else {
+            if row.ciCaptureStale == true {
+                return .unavailable(reason: "the Library's CI capture for this pull request has gone stale")
+            }
             return .running
         }
         switch conclusion {
@@ -253,11 +262,29 @@ enum PRLadder {
         /// all. `false` or a missing/non-boolean value (both decode to
         /// `nil`) mean `ciConclusion` cannot be trusted even when present.
         let ciCaptured: Bool?
+        /// ISO time of the newest test-result row the Library has captured
+        /// for this PR's product and repo, or `nil` when `ciCaptured` is
+        /// `false` (library#330, contract text knowledge#1043). Not read by
+        /// `ciStatus(row:)` itself — the Library already folds it into
+        /// `ciCaptureStale` — but decoded so a panel wanting to show the
+        /// raw capture time has it without a second read. Defaulted so
+        /// every existing fixture keeps compiling unchanged.
+        let ciLastCapturedAt: String?
+        /// `true` exactly when `ciConclusion` is `nil`, `ciCaptured` is
+        /// `true`, and the Library's capture for this PR's current head sha
+        /// predates that head sha's earliest `pr_state` row — i.e. the
+        /// platform job that captures CI results has stopped keeping up
+        /// with this PR, rather than its checks simply not having run yet.
+        /// `false` or a missing/non-boolean value (both decode to `nil`)
+        /// mean the Library did not report staleness, which `ciStatus`
+        /// treats the same as "not stale" (the pre-library#330 behaviour).
+        let ciCaptureStale: Bool?
 
         init(
             repo: String?, number: Int?, title: String?, author: String?, draft: Bool?,
             headSha: String?, state: String?, producedAt: String?, ingestedAt: String?,
-            ciConclusion: String? = nil, ciCaptured: Bool? = nil
+            ciConclusion: String? = nil, ciCaptured: Bool? = nil,
+            ciLastCapturedAt: String? = nil, ciCaptureStale: Bool? = nil
         ) {
             self.repo = repo
             self.number = number
@@ -270,6 +297,8 @@ enum PRLadder {
             self.ingestedAt = ingestedAt
             self.ciConclusion = ciConclusion
             self.ciCaptured = ciCaptured
+            self.ciLastCapturedAt = ciLastCapturedAt
+            self.ciCaptureStale = ciCaptureStale
         }
     }
 
@@ -287,7 +316,9 @@ enum PRLadder {
             producedAt: raw["produced_at"] as? String,
             ingestedAt: raw["ingested_at"] as? String,
             ciConclusion: raw["ci_conclusion"] as? String,
-            ciCaptured: raw["ci_captured"] as? Bool)
+            ciCaptured: raw["ci_captured"] as? Bool,
+            ciLastCapturedAt: raw["ci_last_captured_at"] as? String,
+            ciCaptureStale: raw["ci_capture_stale"] as? Bool)
     }
 
     /// One page of `GET /signals/pr-state`, decoded. Every field degrades

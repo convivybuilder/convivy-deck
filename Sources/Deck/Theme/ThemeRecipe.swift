@@ -132,6 +132,18 @@ enum ThemeRecipe {
         solved(OKLCH(l: 0.60, c: 0.13, h: attentionHue), on: surface, target: minimumTextContrast)
     }
 
+    /// Ink for a group heading's summed Slate ask total — CQ·192: moved
+    /// beside the group name rather than into the trailing badge column a
+    /// member row's own count sits in, so it needs its own colour to read
+    /// as a different kind of number rather than one more row in that
+    /// column. Kept a single function, at `attentionHue` but a lower
+    /// chroma than `attentionTextInk`, so the chroma — or a neutral
+    /// replacement entirely — is a one-line change: the operator is still choosing
+    /// the colour on Slate a-1msdd1.
+    static func groupAskTotalInk(on surface: RGB) -> RGB {
+        solved(OKLCH(l: 0.60, c: 0.05, h: attentionHue), on: surface, target: minimumTextContrast)
+    }
+
     /// Ink for the stable-key chip a PR row draws before `#N`
     /// (`CockpitView.pullRequestRow`) — plain information, not a severity or
     /// a summons, so it is fully desaturated rather than drawn at
@@ -187,7 +199,7 @@ enum ThemeRecipe {
     static let progressNeutralBand = 40.0
 
     /// True when `accent`'s hue sits within `progressNeutralBand` of the
-    /// summons' — the case `design/redesign/02-cockpit.html` draws for Vivy
+    /// summons' — the case `design/redesign/02-cockpit.html` draws for Orchard
     /// Commercial (amber, hue 68, three degrees from the summons' 65).
     static func progressCollidesWithSummons(accent: RGB) -> Bool {
         let hue = accent.toOKLCH().h
@@ -205,7 +217,7 @@ enum ThemeRecipe {
     /// `nil` exactly when `progressCollidesWithSummons` — the caller's cue
     /// to fall back to the primary ink instead, since a mark that gives up
     /// matching its crew's identity beats one that reads as a second
-    /// summons. Select Vivy Commercial and the half-filled glyph would
+    /// summons. Select Orchard Commercial and the half-filled glyph would
     /// otherwise sit beside the held pause in what reads as one colour.
     static func progressMarkInk(accent: RGB, on surface: RGB) -> RGB? {
         guard !progressCollidesWithSummons(accent: accent) else { return nil }

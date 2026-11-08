@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Deck's settings window, reached by Cmd-, like every other Mac app.
@@ -44,6 +45,26 @@ struct SettingsView: View {
     /// the natural height and a stale floor cannot be seen from outside.
     var generalFloor: CGFloat = SettingsView.generalMinimumHeight
 
+    /// The window's own ceiling (issue_01M5CZ5JF1X2W56FFMAQ1Y6E7D): standard
+    /// macOS settings behaviour sizes the window to its content, but nothing
+    /// kept that growth from running past the screen before this. A tab whose
+    /// content wants more than this scrolls internally instead — every tab's
+    /// own `Form`/`List` already does that; `HostsSettingsView` gained its own
+    /// scroll area for the same reason.
+    ///
+    /// `NSScreen.main` is the screen a freshly opened window lands on absent
+    /// any other association, and this is read while the window is still
+    /// being sized, before it has one of its own. `nil` happens with no
+    /// window server at all — `swift test` on a machine with no console
+    /// session logged in — where a generous fallback is as good as any real
+    /// number, since nothing here is actually drawn to a screen.
+    static var maxWindowHeight: CGFloat {
+        guard let screen = NSScreen.main else { return 900 }
+        // Leaves room for the title bar and the native tab strip, which sit
+        // above this content and are not part of what this frame measures.
+        return screen.visibleFrame.height - 80
+    }
+
     private var configuration: ThemeConfiguration { store.configuration }
 
     var body: some View {
@@ -65,7 +86,11 @@ struct SettingsView: View {
         // A floor, not a fixed width. `width: 460` pinned every tab and left the
         // window with no resizable axis, which is survivable for a tab of
         // sliders and not for the Sessions list, whose length is the user's.
-        .frame(minWidth: 460)
+        //
+        // A ceiling on height, not a floor: each tab already sets its own
+        // `minHeight`, so the window still grows to fit short content. This
+        // stops it growing past the visible screen for tall content instead.
+        .frame(minWidth: 460, maxHeight: SettingsView.maxWindowHeight)
         .padding(.top, 8)
         // The window draws the chrome's pin, so it matches the header above the main
         // pane. The window's own appearance reaches the title bar and the tab strip,

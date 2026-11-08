@@ -41,7 +41,15 @@ final class ColumnOccupantTests: XCTestCase {
         XCTAssertEqual(ColumnOccupant.togglingRemoteShell(from: .localTerminal), .remoteShell)
     }
 
-    // MARK: - Closing a document opened from a run's pane
+    // MARK: - Opening and closing a back trail (CQ·174)
+    //
+    // `ContentView.openNestedColumnOccupant`/`closeNestedColumnOccupant` are
+    // thin, private wrappers around `ColumnOccupant.opening`/`.closing` —
+    // not reachable from a test directly (ContentView-level wiring is not
+    // reachable from XCTest in this repo, convivy-deck#153, per
+    // `CockpitView.topmostVisiblePanelID`'s own doc) — so these tests pin
+    // the pure functions those wrappers call, which is the whole decision:
+    // what the column shows after an open, and after a close.
 
     private let docTarget = SSHTarget(user: "operator", host: "10.0.0.5")
 
@@ -49,20 +57,81 @@ final class ColumnOccupantTests: XCTestCase {
         .viewer(ref: .kb(id: id), target: docTarget)
     }
 
+    private func item(_ id: String) -> ColumnOccupant {
+        .item(id: id, target: docTarget)
+    }
+
+    private func reviewRecords(pr: Int) -> ColumnOccupant {
+        .reviewRecords(repo: "convivy/convivy-deck", pr: pr, headSha: "abc123", target: docTarget)
+    }
+
+    /// Every one of CQ·174's five, opened from the cockpit: the occupant
+    /// `opening` produces is the one asked for, and the trail behind it is
+    /// the cockpit alone, so one `closing` already lands back on it.
+    func testOpeningEachOfTheFiveFromTheCockpitRemembersTheCockpitAsTheBack() {
+        let run = ColumnOccupant.run(runId: "run-2f2b88b2")
+        let slateOccupant = slate("deck-coder", host: "macstudio")
+        for occupant in [document("deck/agents/deck-coder"), item("issue_1"), run,
+                          reviewRecords(pr: 42), slateOccupant] {
+            let opened = ColumnOccupant.opening(occupant, from: .cockpit, trail: [])
+            XCTAssertEqual(opened.occupant, occupant)
+            XCTAssertEqual(opened.trail, [.cockpit])
+            let closed = ColumnOccupant.closing(trail: opened.trail)
+            XCTAssertEqual(closed.occupant, .cockpit, "closing \(occupant) must reveal the cockpit it was opened from")
+            XCTAssertEqual(closed.trail, [])
+        }
+    }
+
+    /// The nested case the issue tests by name: an item opened from an item.
+    /// Closing the second returns to the first; closing the first then
+    /// returns to the cockpit, not past it.
+    func testClosingAnItemOpenedFromAnItemReturnsToTheFirstItemThenTheCockpit() {
+        let openedFirst = ColumnOccupant.opening(item("issue_1"), from: .cockpit, trail: [])
+        XCTAssertEqual(openedFirst.occupant, item("issue_1"))
+        XCTAssertEqual(openedFirst.trail, [.cockpit])
+
+        let openedSecond = ColumnOccupant.opening(item("issue_2"), from: openedFirst.occupant, trail: openedFirst.trail)
+        XCTAssertEqual(openedSecond.occupant, item("issue_2"))
+        XCTAssertEqual(openedSecond.trail, [.cockpit, item("issue_1")], "the first item must still be behind the second")
+
+        let closedToFirst = ColumnOccupant.closing(trail: openedSecond.trail)
+        XCTAssertEqual(closedToFirst.occupant, item("issue_1"), "closing the second item must reveal the first, not the cockpit")
+        XCTAssertEqual(closedToFirst.trail, [.cockpit])
+
+        let closedToCockpit = ColumnOccupant.closing(trail: closedToFirst.trail)
+        XCTAssertEqual(closedToCockpit.occupant, .cockpit)
+        XCTAssertEqual(closedToCockpit.trail, [])
+    }
+
+    /// A document opened from a run's own pane (`RunDetailPane.onOpenDocument`)
+    /// — the one case the old, single-level `ColumnBack` covered — still
+    /// closes back to that run under the generalized trail.
     func testClosingADocumentOpenedFromARunReturnsToThatRun() {
-        // The reported bug: closing returned to the cockpit's top level.
-        let opened = document("deck/agents/deck-coder")
-        let back = ColumnBack(opened: opened, previous: .run(runId: "run-2f2b88b2"))
-        XCTAssertEqual(ColumnOccupant.revealedOnClose(opened, back: back), .run(runId: "run-2f2b88b2"))
+        let run = ColumnOccupant.run(runId: "run-2f2b88b2")
+        let opened = ColumnOccupant.opening(document("deck/agents/deck-coder"), from: run, trail: [.cockpit])
+        XCTAssertEqual(opened.trail, [.cockpit, run])
+        let closed = ColumnOccupant.closing(trail: opened.trail)
+        XCTAssertEqual(closed.occupant, run)
+        XCTAssertEqual(closed.trail, [.cockpit])
     }
 
-    func testClosingAnotherDocumentThanTheOneOpenedFromTheRunRevealsTheCockpit() {
-        let back = ColumnBack(opened: document("deck/agents/deck-coder"), previous: .run(runId: "run-1"))
-        XCTAssertEqual(ColumnOccupant.revealedOnClose(document("deck/runbooks/post-merge"), back: back), .cockpit)
+    /// Re-clicking the rail's Slate badge while that Slate is open: the
+    /// trail must not gain the Slate itself, so one close still returns to
+    /// what was open before it.
+    func testOpeningWhatIsAlreadyShowingLeavesTheTrailAlone() {
+        let slateOccupant = slate("deck-coder", host: "macstudio")
+        let opened = ColumnOccupant.opening(slateOccupant, from: item("issue_1"), trail: [.cockpit])
+        let reopened = ColumnOccupant.opening(slateOccupant, from: opened.occupant, trail: opened.trail)
+        XCTAssertEqual(reopened.occupant, slateOccupant)
+        XCTAssertEqual(reopened.trail, [.cockpit, item("issue_1")])
+        let closed = ColumnOccupant.closing(trail: reopened.trail)
+        XCTAssertEqual(closed.occupant, item("issue_1"), "one close must leave the Slate, not reveal it again")
     }
 
-    func testClosingADocumentWithNoRememberedPaneRevealsTheCockpit() {
-        XCTAssertEqual(ColumnOccupant.revealedOnClose(document("deck/agents/deck-coder"), back: nil), .cockpit)
+    func testClosingWithNoBackTrailRevealsTheCockpit() {
+        let closed = ColumnOccupant.closing(trail: [])
+        XCTAssertEqual(closed.occupant, .cockpit)
+        XCTAssertEqual(closed.trail, [])
     }
 
     // MARK: - Slate follows the rail selection

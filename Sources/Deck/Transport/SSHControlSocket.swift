@@ -67,6 +67,40 @@ enum SSHControlSocketCheck: Equatable {
     }
 }
 
+/// What the bounded no-op session `SSHControlSocket.probe` sends found when
+/// it actually tried to ride a master `-O check` already called
+/// `confirmedAlive` — the one reading `-O check` structurally cannot give,
+/// since it only ever reaches the local master process and never crosses
+/// the network (CQ·166: 241 requests on the operator laptop failed transport
+/// with `confirmedAlive` on every retry, because `-O check` was answering
+/// truthfully about a master whose underlying connection to the server had
+/// already died).
+enum SSHControlSocketProbe: Equatable, CustomStringConvertible {
+    /// The no-op session completed, exit 0: the master still carries real
+    /// traffic, not merely its own local mux handshake.
+    case passed
+    /// The no-op session ran and failed — ssh's own exit, not ours. The
+    /// master answered `-O check` but could not carry this request either.
+    case failed
+    /// The no-op session could not complete within its own bound — the same
+    /// "a check that cannot finish is not a shrug" reading
+    /// `SSHControlSocketCheck.classify` already applies to `-O check` itself.
+    case timedOut
+
+    static func classify(exitCode: Int32, timedOut: Bool) -> SSHControlSocketProbe {
+        guard !timedOut else { return .timedOut }
+        return exitCode == 0 ? .passed : .failed
+    }
+
+    var description: String {
+        switch self {
+        case .passed: return "passed"
+        case .failed: return "failed"
+        case .timedOut: return "timedOut"
+        }
+    }
+}
+
 /// Checks and clears a possibly-wedged control socket — the recovery path
 /// `SessionAgent.run` takes after a transport failure, never on a healthy
 /// connection (see its own doc for why speculative clearing is not this).
@@ -79,11 +113,22 @@ enum SSHControlSocket {
     /// already the failure `SSHControlSocketCheck.unresponsive` names.
     static let checkTimeout: TimeInterval = 5
 
+    /// How long `probe` and `stop` are each allowed. Unlike `checkTimeout`,
+    /// `probe`'s own call is NOT local-only — it is a real session through
+    /// the master, which is the whole reason it can catch what `-O check`
+    /// cannot — but CQ·166's own evidence shows a live master answering a
+    /// real request in well under this: every one of its 241 transport
+    /// failures only ever showed up after 20s or more, so a few seconds
+    /// here still tells a live master apart from a dead one without paying
+    /// for a near-miss on `SessionAgent.defaultTimeout` on top of it.
+    static let probeTimeout: TimeInterval = 5
+
     static func check(
-        target: SSHTarget, controlPath: String, transportLog: TransportLog = .shared
+        target: SSHTarget, controlPath: String, sshExecutable: String = "/usr/bin/ssh",
+        transportLog: TransportLog = .shared
     ) -> SSHControlSocketCheck {
         guard let argv = try? sshControlSocketCheckArguments(target: target, controlPath: controlPath),
-              let outcome = try? SSHProcessRunner.run(argv, timeout: checkTimeout)
+              let outcome = try? SSHProcessRunner.run(argv, timeout: checkTimeout, executable: sshExecutable)
         else {
             transportLog.append(host: TransportLog.hostLabel(target: target), event: "control-check result=unresponsive")
             return .unresponsive
@@ -92,6 +137,53 @@ enum SSHControlSocket {
             exitCode: outcome.terminationStatus, stderr: outcome.stderr, timedOut: outcome.timedOut)
         transportLog.append(host: TransportLog.hostLabel(target: target), event: "control-check result=\(result)")
         return result
+    }
+
+    /// Sends a bounded no-op session through the master `check` just called
+    /// `confirmedAlive`, so a caller never trusts that reading past the one
+    /// thing it cannot see: whether the master's actual transport to the
+    /// server still carries traffic. Routed through `SSHConnectionGate` via
+    /// `SSHProcessRunner.runQueued` — the same per-master session cap every
+    /// other call through this control path already respects — because this
+    /// is a real session, not a control command.
+    static func probe(
+        target: SSHTarget, controlPath: String, sshExecutable: String = "/usr/bin/ssh",
+        transportLog: TransportLog = .shared
+    ) -> SSHControlSocketProbe {
+        guard let argv = try? sshControlSocketProbeArguments(target: target, controlPath: controlPath),
+              let outcome = try? SSHProcessRunner.runQueued(
+                argv, timeout: probeTimeout,
+                run: { a, s, t in try SSHProcessRunner.run(a, stdin: s, timeout: t, executable: sshExecutable) })
+        else {
+            transportLog.append(host: TransportLog.hostLabel(target: target), event: "control-probe result=timedOut")
+            return .timedOut
+        }
+        let result = SSHControlSocketProbe.classify(exitCode: outcome.terminationStatus, timedOut: outcome.timedOut)
+        transportLog.append(host: TransportLog.hostLabel(target: target), event: "control-probe result=\(result)")
+        return result
+    }
+
+    /// Asks the master at `controlPath` to exit — the step between a probe
+    /// that found it unusable and forcibly deleting its socket file.
+    /// Returns whether it answered and exited cleanly; a master that does
+    /// this has already removed its own socket, so the caller only needs
+    /// `clear` when this returns `false`. Not routed through
+    /// `SSHConnectionGate`: `-O exit` is a control command, the same as
+    /// `-O check`, and never opens a new session on the master it targets.
+    static func stop(
+        target: SSHTarget, controlPath: String, sshExecutable: String = "/usr/bin/ssh",
+        transportLog: TransportLog = .shared
+    ) -> Bool {
+        let host = TransportLog.hostLabel(target: target)
+        guard let argv = try? sshControlSocketExitArguments(target: target, controlPath: controlPath),
+              let outcome = try? SSHProcessRunner.run(argv, timeout: checkTimeout, executable: sshExecutable),
+              !outcome.timedOut, outcome.terminationStatus == 0
+        else {
+            transportLog.append(host: host, event: "master-stop result=unresponsive")
+            return false
+        }
+        transportLog.append(host: host, event: "master-stop result=exited")
+        return true
     }
 
     /// Deletes the concrete socket file `controlPath` (a template that may
@@ -108,9 +200,12 @@ enum SSHControlSocket {
     /// nothing is always a safe outcome here, since a caller only reaches
     /// this after `check` has already said the socket is not a live
     /// master's.
-    static func clear(target: SSHTarget, controlPath: String, transportLog: TransportLog = .shared) {
+    static func clear(
+        target: SSHTarget, controlPath: String, sshExecutable: String = "/usr/bin/ssh",
+        transportLog: TransportLog = .shared
+    ) {
         guard let argv = try? sshResolvedConfigArguments(target: target, controlPath: controlPath),
-              let outcome = try? SSHProcessRunner.run(argv, timeout: checkTimeout),
+              let outcome = try? SSHProcessRunner.run(argv, timeout: checkTimeout, executable: sshExecutable),
               outcome.terminationStatus == 0,
               let resolved = resolvedControlPath(fromConfigOutput: outcome.stdout)
         else { return }

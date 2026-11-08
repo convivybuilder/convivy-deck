@@ -13,4 +13,8 @@ import Foundation
 struct PaneLoadIdentity: Equatable {
     let ref: DeckOpenRef.Origin
     let target: SSHTarget
+    /// Bumped by the viewer's refresh button (CQ·185) to refire the task
+    /// without a `ref`/`target` change. Defaulted so `EditorPane`, which has
+    /// no refresh button, keeps building this with two arguments.
+    var refreshToken: Int = 0
 }

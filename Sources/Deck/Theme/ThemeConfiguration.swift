@@ -11,10 +11,10 @@ import Foundation
 /// ```json
 /// {
 ///   "rail": [
-///     { "session": "vivy", "host": "macstudio", "name": "Vivy", "workdir": "~/work/vivy" },
+///     { "session": "orchard", "host": "macstudio", "name": "Orchard", "workdir": "~/work/orchard" },
 ///     { "session": "deck", "host": "macstudio" }
 ///   ],
-///   "sessions": { "macstudio|vivy": "azure", "macstudio|deck": "gold" },
+///   "sessions": { "macstudio|orchard": "azure", "macstudio|deck": "gold" },
 ///   "defaultHost": "macstudio",
 ///   "appearance": "system"
 /// }
@@ -49,6 +49,13 @@ struct ThemeConfiguration: Equatable {
     /// decides what color it is, and a session can be themed without being
     /// pinned to the rail.
     var railSessions: [Crew]? = nil
+
+    /// Operator-defined folds over the rail's top-level crews (E24) — see
+    /// `CrewGroup`. Empty is the common case, every install before this
+    /// field existed and every one since that has never grouped anything;
+    /// `RailNesting.drawItems` is what turns this plus `rail` into what the
+    /// rail actually draws.
+    var groups: [CrewGroup] = []
 
     /// Sessions Deck can start but does not pin to the rail.
     ///
@@ -230,13 +237,20 @@ struct ThemeConfiguration: Equatable {
         )
         let composer = (root["composer"] as? [String: Any]) ?? [:]
         let frame = (root["frame"] as? [String: Any]) ?? [:]
-        let (railSessions, catalog) = droppingScratchShellCollisions(
+        let (railSessions, catalogRows) = droppingScratchShellCollisions(
             rail: parseRail(root["rail"], defaultHost: defaultHost),
             catalog: parseCatalog(root["catalog"], defaultHost: defaultHost))
+        // A file that grew several catalog rows sharing one `ref` — the
+        // repeated-unpin bug `CrewMerge.merge` used to have, before it
+        // learned to check the catalog — heals on this load rather than on
+        // a hand edit: only the first survives, the same "first occurrence
+        // wins" rule `droppingScratchShellCollisions` just applied above.
+        let catalog = collapsingDuplicateCatalogRefs(catalogRows)
         let sessions = parseThemeMap(root["sessions"], rail: railSessions,
                                      catalog: catalog, defaultHost: defaultHost)
         return ThemeConfiguration(
             sessions: sessions, railSessions: railSessions,
+            groups: parseGroups(root["groups"]),
             catalog: catalog,
             appearancePreference: appearance, typography: typography,
             sessionTypography: parseSession(root["session"], terminal: typography),
@@ -309,6 +323,24 @@ struct ThemeConfiguration: Equatable {
             }
         }
         return map
+    }
+
+    /// A row missing `name` is dropped outright — a group with no name is
+    /// nothing a heading could draw — the same "costs the whole row" rule
+    /// `parseHosts` already applies to a host row missing one of its own
+    /// required fields. A member string that fails `SessionRef.parse` is
+    /// dropped on its own, the same "field costs itself" degradation every
+    /// list entry in this file gets — see `parseRepos`. `folded` absent
+    /// means open, matching every group this field predates.
+    private static func parseGroups(_ raw: Any?) -> [CrewGroup] {
+        guard let rows = raw as? [[String: Any]] else { return [] }
+        return rows.compactMap { row in
+            guard let name = row["name"] as? String, !name.isEmpty else { return nil }
+            let members = (row["members"] as? [Any])?
+                .compactMap { $0 as? String }
+                .compactMap(SessionRef.parse(stringForm:)) ?? []
+            return CrewGroup(name: name, members: members, folded: (row["folded"] as? Bool) ?? false)
+        }
     }
 
     /// A malformed row is dropped, not fatal — the same per-field
@@ -594,6 +626,18 @@ struct ThemeConfiguration: Equatable {
         return (filteredRail, filteredCatalog)
     }
 
+    /// A catalog row's (host, id) is its identity, the same way
+    /// `LaunchableSession.ref` says it is for every other reader of this
+    /// list — so several rows sharing one collapse to the first, the row
+    /// `CrewMerge.merge` would have matched a served spec against anyway
+    /// had there been only one. This is what lets a file the repeated-unpin
+    /// bug already grew duplicates into heal on its next save with no hand
+    /// editing, rather than needing the fix to also migrate data on disk.
+    private static func collapsingDuplicateCatalogRefs(_ catalog: [LaunchableSession]) -> [LaunchableSession] {
+        var seenRefs: Set<SessionRef> = []
+        return catalog.filter { seenRefs.insert($0.ref).inserted }
+    }
+
     /// A SHAPE gate, not an injection gate. The command travels to the mini on
     /// stdin (`SessionAgent.start`), so it never reaches ssh argv and the remote
     /// shell never parses it — `;`, `|`, `&&` are therefore NOT blocked, because
@@ -729,6 +773,16 @@ struct ThemeConfiguration: Equatable {
     }
 
     /// Omitted when empty, the same reason `railArray` is omitted when
+    /// unconfigured: a save triggered by something unrelated (picking a
+    /// theme, resizing the column) must not freeze an empty `groups` key
+    /// into a file that never had one.
+    private var groupsArray: [[String: Any]]? {
+        groups.isEmpty ? nil : groups.map { group in
+            ["name": group.name, "members": group.members.map(\.stringForm), "folded": group.folded]
+        }
+    }
+
+    /// Omitted when empty, the same reason `railArray` is omitted when
     /// unconfigured: nothing writes this table yet, and a save triggered by
     /// something unrelated must not freeze an empty array into a file that
     /// had no `hosts` key at all.
@@ -805,6 +859,7 @@ struct ThemeConfiguration: Equatable {
             root["appearance"] = appearancePreference.rawValue
         }
         if let railArray { root["rail"] = railArray }
+        if let groupsArray { root["groups"] = groupsArray }
         if let hostsArray { root["hosts"] = hostsArray }
         if let defaultHost { root["defaultHost"] = defaultHost }
         // Sorted keys so a hand-edited file and a picker-written one stay

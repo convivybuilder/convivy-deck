@@ -19,7 +19,7 @@ final class LibraryClientTests: XCTestCase {
     /// code, so the command must carry exactly one state.
     func testItemsCommandCarriesExactlyOneState() {
         for state in LibraryClient.queueStates {
-            let command = LibraryClient.itemsRemoteCommand(product: "vivy", state: state)
+            let command = LibraryClient.itemsRemoteCommand(product: "orchard", state: state)
             XCTAssertTrue(command.contains("state=\(state.rawValue)"),
                           "missing state=\(state.rawValue)")
             XCTAssertFalse(command.contains(","), "a comma in the state filter returns nothing")
@@ -1336,6 +1336,34 @@ final class LibraryClientTests: XCTestCase {
         XCTAssertEqual(detail.comments.first?.body, "a probe comment")
     }
 
+    /// The Item pane's header draws this beside the title
+    /// (`CockpitView.keyedTitle`) for an epic's own id as readily as a work
+    /// item's — the Library serves `key` on `GET /items/{id}` the same way
+    /// it does on every other route carrying it.
+    func testDecodesACorrectionDetailsKey() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"id":"issue_01EPIC","title":"Ship the widget","type":"epic","key":"E39"}
+        """)
+        let detail = try LibraryClient.decodeCorrectionDetail(raw)
+        XCTAssertEqual(detail.key, "E39")
+    }
+
+    /// An item predating the field, or a type the Library never assigns one
+    /// to, decodes with `key` `nil` rather than failing the whole detail.
+    func testACorrectionDetailWithNoKeyStillDecodes() throws {
+        let raw = curlResponse(status: 200, body: #"{"id":"issue_01ABC","title":"A bug"}"#)
+        let detail = try LibraryClient.decodeCorrectionDetail(raw)
+        XCTAssertNil(detail.key)
+    }
+
+    /// An explicit empty string decodes as given — see the equivalent `Epic`
+    /// test for why normalising it to `nil` here would be the wrong layer.
+    func testACorrectionDetailWithAnEmptyKeyDecodesTheEmptyString() throws {
+        let raw = curlResponse(status: 200, body: #"{"id":"issue_01ABC","title":"A bug","key":""}"#)
+        let detail = try LibraryClient.decodeCorrectionDetail(raw)
+        XCTAssertEqual(detail.key, "")
+    }
+
     /// `claim_expired: true` decodes as expired — the corrections-queue
     /// detail pane's own version of the `CourseEntry` case pinned above.
     func testACorrectionDetailWithClaimExpiredTrueDecodesAsExpired() throws {
@@ -1826,7 +1854,7 @@ final class LibraryClientTests: XCTestCase {
     /// **THE DEFECT THIS ISSUE FIXES.** Before `pagedQueueItems` existed, a
     /// state's items came from exactly one call, so a `truncated: true` first
     /// page was never followed up — measured against the running Library,
-    /// `vivy`'s `state=open` answered 50 of 176 with `truncated: true` and
+    /// `orchard`'s `state=open` answered 50 of 176 with `truncated: true` and
     /// nothing asked for the rest. Here the fake remote-command layer (the
     /// `fetchPage` closure) hands back a truncated first page and a complete
     /// second page; the queue this produces must hold the union of both.
@@ -1926,6 +1954,38 @@ final class LibraryClientTests: XCTestCase {
         XCTAssertEqual(epics.map(\.title), ["Ship the widget", nil])
         XCTAssertEqual(epics.map(\.maturity), ["proposed", nil])
         XCTAssertEqual(epics.map(\.specification), ["Do the thing", nil])
+    }
+
+    /// The Proposals region draws this beside the title (`CockpitView.keyedTitle`),
+    /// so it has to survive the decode the same way `title` does.
+    func testDecodesAnEpicsKey() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"items":[{"id":"epic_1","state":"open","title":"Ship the widget","key":"E39"}]}
+        """)
+        let epics = try LibraryClient.decodeEpics(raw)
+        XCTAssertEqual(epics.map(\.key), ["E39"])
+    }
+
+    /// An epic predating the field, or one the Library never assigned one
+    /// to, decodes with `key` `nil` rather than dropping the epic.
+    func testAnEpicWithNoKeyStillDecodes() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"items":[{"id":"epic_1","state":"open","title":"Ship the widget"}]}
+        """)
+        let epics = try LibraryClient.decodeEpics(raw)
+        XCTAssertEqual(epics.map(\.key), [nil])
+    }
+
+    /// An explicit empty string is a real, if unhelpful, served value —
+    /// decoded as given rather than normalised to `nil`. `keyedTitle`, not
+    /// this decode, is where an empty key is treated the same as an absent
+    /// one.
+    func testAnEpicWithAnEmptyKeyDecodesTheEmptyString() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"items":[{"id":"epic_1","state":"open","title":"Ship the widget","key":""}]}
+        """)
+        let epics = try LibraryClient.decodeEpics(raw)
+        XCTAssertEqual(epics.map(\.key), [""])
     }
 
     // MARK: - Decode: work item records (the chip join's own read)
@@ -2217,6 +2277,326 @@ final class LibraryClientTests: XCTestCase {
         let message = LibraryClient.approvalRefusalMessage(
             LibraryClient.FetchError.invalidActingHuman("Deck has no operator name to send with this approval."))
         XCTAssertEqual(message, "Deck has no operator name to send with this approval.")
+    }
+
+    // MARK: - Declining a proposed epic
+
+    /// The body travels as process stdin and never enters the command
+    /// string, same as the approve write.
+    func testTheDeclineWriteCommandNamesNoBodyContent() {
+        let command = LibraryClient.itemDeclineRemoteCommand(itemId: "issue_01ABC")
+        XCTAssertTrue(command.contains(#"data-binary = "@-""#))
+        XCTAssertFalse(command.contains("acting_human"))
+    }
+
+    /// Unlike `approveEpicBody`, this carries no `maturity` key — the route
+    /// sets `declined` itself (library/decisions/0005).
+    func testTheDeclineBodyIsExactlyActingHuman() {
+        let body = LibraryClient.declineEpicBody(actingHuman: "deck:operator@example.com")
+        XCTAssertEqual(Set(body.keys), ["acting_human"])
+        XCTAssertEqual(body["acting_human"] as? String, "deck:operator@example.com")
+    }
+
+    /// A reason is sent trimmed; a blank one is left out, since the route
+    /// treats it as absent.
+    func testTheDeclineBodyCarriesATrimmedReasonAndOmitsABlankOne() {
+        let body = LibraryClient.declineEpicBody(actingHuman: "deck:operator@example.com", reason: "  Product retired  ")
+        XCTAssertEqual(Set(body.keys), ["acting_human", "reason"])
+        XCTAssertEqual(body["reason"] as? String, "Product retired")
+        for blank in ["", "   ", nil] as [String?] {
+            XCTAssertEqual(Set(LibraryClient.declineEpicBody(actingHuman: "deck:operator@example.com", reason: blank).keys),
+                           ["acting_human"], "\(String(describing: blank)) must not send a reason")
+        }
+    }
+
+    /// The reason arrives at a stand-in Library unmangled, quotes and all.
+    func testTheDeclineReasonArrivesAtTheListenerIntact() throws {
+        try assertPOSTBodySurvivesRoundTrip(
+            command: LibraryClient.itemDeclineRemoteCommand(itemId: "issue_01ABC"),
+            body: LibraryClient.declineEpicBody(actingHuman: "deck:operator@example.com",
+                                                reason: "It's retired; no \"QR\" work $HOME"),
+            field: "reason", expectedValue: "It's retired; no \"QR\" work $HOME",
+            expectedRequestLine: "POST /items/issue_01ABC/decline HTTP/1.1")
+    }
+
+    func testTheDeclineArgumentsCarryTheControlMasterAndAddressTheTarget() throws {
+        let target = SSHTarget(user: "operator", host: "10.0.0.5")
+        let args = try LibraryClient.declineEpicArguments(target: target, itemId: "issue_01ABC")
+        XCTAssertTrue(args.contains("ControlMaster=auto"))
+        XCTAssertTrue(args.contains("operator@10.0.0.5"))
+        XCTAssertTrue(try XCTUnwrap(args.last).contains("/items/issue_01ABC/decline"))
+    }
+
+    /// An id that fails validation throws before any command string exists,
+    /// the same guard `approveEpicArguments` applies.
+    func testTheDeclineArgumentsRefuseAnIdThatCouldInjectIntoTheCommand() {
+        for hostile in ["issue_01`whoami`", "a b", "x$(id)", "../decline", "", "a;b"] {
+            XCTAssertThrowsError(try LibraryClient.declineEpicArguments(
+                target: TestHost.target, itemId: hostile), "\(hostile) was accepted") { error in
+                guard case LibraryClient.FetchError.invalidInput = error else {
+                    return XCTFail("expected invalidInput for \(hostile), got \(error)")
+                }
+            }
+        }
+        XCTAssertThrowsError(try LibraryClient.declineEpic(target: TestHost.target, itemId: "a b", actingHuman: "operator"))
+    }
+
+    /// A real bash runs the real command against a listener standing in for
+    /// the Library, so `acting_human` arrives unmangled, the same proof
+    /// `testTheApproveBodyArrivesAtTheListenerIntact` runs for approve.
+    func testTheDeclineBodyArrivesAtTheListenerIntact() throws {
+        try assertPOSTBodySurvivesRoundTrip(
+            command: LibraryClient.itemDeclineRemoteCommand(itemId: "issue_01ABC"),
+            body: LibraryClient.declineEpicBody(actingHuman: "deck:operator@example.com"),
+            field: "acting_human", expectedValue: "deck:operator@example.com",
+            expectedRequestLine: "POST /items/issue_01ABC/decline HTTP/1.1")
+    }
+
+    /// `declineEpic` refuses locally before building any request, the same
+    /// guard `approveEpic` applies.
+    func testDeclineEpicRefusesADegenerateActingHumanLocally() {
+        for degenerate in ["", "   "] {
+            XCTAssertThrowsError(try LibraryClient.declineEpic(
+                target: TestHost.unreachableTarget, itemId: "issue_01ABC", actingHuman: degenerate)) { error in
+                guard case LibraryClient.FetchError.invalidActingHuman = error else {
+                    return XCTFail("expected invalidActingHuman for \"\(degenerate)\", got \(error)")
+                }
+            }
+        }
+    }
+
+    // MARK: - A Reference Room document's own checkout (CQ·177)
+
+    /// The whole payload is one key — `owner`, the exact field
+    /// `POST /reference/admission` compares a write's own `owner` against.
+    func testTheReferenceCheckoutBodyIsExactlyOwner() {
+        let body = LibraryClient.referenceCheckoutBody(holder: "deck:operator@example.com")
+        XCTAssertEqual(Set(body.keys), ["owner"])
+        XCTAssertEqual(body["owner"] as? String, "deck:operator@example.com")
+    }
+
+    func testTheReferenceCheckoutWriteAddressesTheCheckoutRouteOfTheGivenDocId() {
+        let command = LibraryClient.referenceDocumentCheckoutRemoteCommand(docId: "deck/reference/cockpit-edit-check")
+        XCTAssertTrue(command.contains("/reference/documents/deck/reference/cockpit-edit-check/checkout\""), command)
+        XCTAssertTrue(command.contains("-X POST"))
+    }
+
+    /// Beside `/checkout`, as the diagnosis names it — the route that hands
+    /// the same lock back.
+    func testTheReferenceCheckinWriteAddressesTheCheckinRouteOfTheGivenDocId() {
+        let command = LibraryClient.referenceDocumentCheckinRemoteCommand(docId: "deck/reference/cockpit-edit-check")
+        XCTAssertTrue(command.contains("/reference/documents/deck/reference/cockpit-edit-check/checkin\""), command)
+        XCTAssertTrue(command.contains("-X POST"))
+    }
+
+    /// The document id reaches the URL percent-encoded — not merely safe
+    /// because of `DeckOpenRef.validateKBId`'s own charset, but independent
+    /// of it: a value this charset would never admit still comes out encoded
+    /// rather than reaching the URL raw. `/` stays unescaped, since a KB id's
+    /// three segments have to reach the route as one path.
+    func testTheReferenceCheckoutRemoteCommandPercentEncodesTheDocId() {
+        let command = LibraryClient.referenceDocumentCheckoutRemoteCommand(docId: "deck/specs/a b")
+        XCTAssertTrue(command.contains("/reference/documents/deck/specs/a%20b/checkout\""), command)
+        XCTAssertFalse(command.contains("/reference/documents/deck/specs/a b/checkout"))
+    }
+
+    /// Neither write enters the command string as literal JSON — the body
+    /// travels on stdin, the same discipline every write in this file keeps.
+    func testTheReferenceCheckoutWriteCommandNamesNoBodyContent() {
+        let command = LibraryClient.referenceDocumentCheckoutRemoteCommand(docId: "deck/specs/a")
+        XCTAssertTrue(command.contains(#"data-binary = "@-""#))
+        XCTAssertFalse(command.contains("owner"))
+    }
+
+    /// Both reach the URL through the credential every other read and
+    /// `reorderCourse` use — neither is an approval-gated action, so neither
+    /// takes `libraryApprovalTokenFile`.
+    func testTheReferenceCheckoutAndCheckinWritesReadTheSharedCredential() {
+        XCTAssertTrue(LibraryClient.referenceDocumentCheckoutRemoteCommand(docId: "deck/specs/a")
+            .contains("agent-platform-token"))
+        XCTAssertTrue(LibraryClient.referenceDocumentCheckinRemoteCommand(docId: "deck/specs/a")
+            .contains("agent-platform-token"))
+    }
+
+    func testTheReferenceCheckoutArgumentsCarryTheControlMasterAndAddressTheTarget() throws {
+        let target = SSHTarget(user: "operator", host: "10.0.0.5")
+        let args = try LibraryClient.referenceDocumentCheckoutArguments(target: target, docId: "deck/specs/a")
+        XCTAssertTrue(args.contains("ControlMaster=auto"))
+        XCTAssertTrue(args.contains("operator@10.0.0.5"))
+        XCTAssertTrue(try XCTUnwrap(args.last).contains("/reference/documents/deck/specs/a/checkout"))
+    }
+
+    func testTheReferenceCheckinArgumentsCarryTheControlMasterAndAddressTheTarget() throws {
+        let target = SSHTarget(user: "operator", host: "10.0.0.5")
+        let args = try LibraryClient.referenceDocumentCheckinArguments(target: target, docId: "deck/specs/a")
+        XCTAssertTrue(args.contains("ControlMaster=auto"))
+        XCTAssertTrue(args.contains("operator@10.0.0.5"))
+        XCTAssertTrue(try XCTUnwrap(args.last).contains("/reference/documents/deck/specs/a/checkin"))
+    }
+
+    /// An id that fails `DeckOpenRef.validateKBId` throws before any command
+    /// string exists, for both routes — the same guard every other per-route
+    /// builder in this file applies.
+    func testTheReferenceCheckoutAndCheckinArgumentsRefuseAnInvalidDocId() {
+        for hostile in ["issue_01`whoami`", "a b", "x$(id)", "a", "a/b", "../a/b/c", "", "a/b;c"] {
+            XCTAssertThrowsError(try LibraryClient.referenceDocumentCheckoutArguments(
+                target: TestHost.target, docId: hostile), "\(hostile) was accepted") { error in
+                guard case LibraryClient.FetchError.invalidInput = error else {
+                    return XCTFail("expected invalidInput for \(hostile), got \(error)")
+                }
+            }
+            XCTAssertThrowsError(try LibraryClient.referenceDocumentCheckinArguments(
+                target: TestHost.target, docId: hostile), "\(hostile) was accepted") { error in
+                guard case LibraryClient.FetchError.invalidInput = error else {
+                    return XCTFail("expected invalidInput for \(hostile), got \(error)")
+                }
+            }
+        }
+        XCTAssertThrowsError(try LibraryClient.checkoutReferenceDocument(
+            target: TestHost.target, docId: "a b", holder: "deck:operator@example.com"))
+        XCTAssertThrowsError(try LibraryClient.checkinReferenceDocument(
+            target: TestHost.target, docId: "a b", holder: "deck:operator@example.com"))
+    }
+
+    /// A real bash runs the real command against a listener standing in for
+    /// the Library, so `owner` arrives unmangled — the same proof
+    /// `testTheApproveBodyArrivesAtTheListenerIntact` runs for approve.
+    func testTheReferenceCheckoutBodyArrivesAtTheListenerIntact() throws {
+        try assertPOSTBodySurvivesRoundTrip(
+            command: LibraryClient.referenceDocumentCheckoutRemoteCommand(docId: "deck/reference/cockpit-edit-check"),
+            body: LibraryClient.referenceCheckoutBody(holder: "deck:operator@example.com"),
+            field: "owner", expectedValue: "deck:operator@example.com",
+            expectedRequestLine: "POST /reference/documents/deck/reference/cockpit-edit-check/checkout HTTP/1.1")
+    }
+
+    /// The Library's own `_checkout_refusal` names the holder and the expiry
+    /// inside its `error` field; `referenceCheckoutRefusalMessage` passes
+    /// that straight through, the same shape `approvalRefusalMessage` gives
+    /// every other write's refusal.
+    func testReferenceCheckoutRefusalMessageNamesTheHolderAndExpiry() {
+        let message = LibraryClient.referenceCheckoutRefusalMessage(LibraryClient.FetchError.libraryRefused(
+            status: 409, body: """
+            {"error": "already checked out: deck/reference/cockpit-edit-check is held by \
+            session:other until 2026-10-24T23:00:00Z", "hint": "an agent may reclaim a checkout whose holder is gone"}
+            """))
+        XCTAssertTrue(message.contains("held by session:other"), message)
+        XCTAssertTrue(message.contains("2026-10-24T23:00:00Z"), message)
+    }
+
+    /// An unreachable Library reads the same way every other write's
+    /// transport failure does.
+    func testReferenceCheckoutRefusalMessageReadsATransportFailure() {
+        let message = LibraryClient.referenceCheckoutRefusalMessage(
+            LibraryClient.FetchError.unexpectedResponse("ssh: timed out"))
+        XCTAssertTrue(message.contains("ssh: timed out"), message)
+    }
+
+    // MARK: - Keeping a Reference Room checkout alive mid-edit (CQ·177 finding 1)
+
+    /// Beside `/checkout` and `/checkin`, the route that renews the same
+    /// checkout's expiry without a person doing anything.
+    func testTheReferenceHeartbeatWriteAddressesTheHeartbeatRouteOfTheGivenDocId() {
+        let command = LibraryClient.referenceDocumentHeartbeatRemoteCommand(docId: "deck/reference/cockpit-edit-check")
+        XCTAssertTrue(command.contains("/reference/documents/deck/reference/cockpit-edit-check/heartbeat\""), command)
+        XCTAssertTrue(command.contains("-X POST"))
+    }
+
+    /// Same percent-encoding discipline as `/checkout` and `/checkin` — see
+    /// `testTheReferenceCheckoutRemoteCommandPercentEncodesTheDocId`.
+    func testTheReferenceHeartbeatRemoteCommandPercentEncodesTheDocId() {
+        let command = LibraryClient.referenceDocumentHeartbeatRemoteCommand(docId: "deck/specs/a b")
+        XCTAssertTrue(command.contains("/reference/documents/deck/specs/a%20b/heartbeat\""), command)
+        XCTAssertFalse(command.contains("/reference/documents/deck/specs/a b/heartbeat"))
+    }
+
+    /// Same stdin-body discipline as `/checkout` and `/checkin` — the owner
+    /// never reaches the command string itself.
+    func testTheReferenceHeartbeatWriteCommandNamesNoBodyContent() {
+        let command = LibraryClient.referenceDocumentHeartbeatRemoteCommand(docId: "deck/specs/a")
+        XCTAssertTrue(command.contains(#"data-binary = "@-""#))
+        XCTAssertFalse(command.contains("owner"))
+    }
+
+    /// Same shared credential as `/checkout` and `/checkin`, not the
+    /// approval-gated one — a heartbeat is not an approval action either.
+    func testTheReferenceHeartbeatWriteReadsTheSharedCredential() {
+        XCTAssertTrue(LibraryClient.referenceDocumentHeartbeatRemoteCommand(docId: "deck/specs/a")
+            .contains("agent-platform-token"))
+    }
+
+    func testTheReferenceHeartbeatArgumentsCarryTheControlMasterAndAddressTheTarget() throws {
+        let target = SSHTarget(user: "operator", host: "10.0.0.5")
+        let args = try LibraryClient.referenceDocumentHeartbeatArguments(target: target, docId: "deck/specs/a")
+        XCTAssertTrue(args.contains("ControlMaster=auto"))
+        XCTAssertTrue(args.contains("operator@10.0.0.5"))
+        XCTAssertTrue(try XCTUnwrap(args.last).contains("/reference/documents/deck/specs/a/heartbeat"))
+    }
+
+    /// Same guard every other per-route builder in this file applies, and
+    /// the same id-validation gate `checkoutReferenceDocument` and
+    /// `checkinReferenceDocument` enforce before any command string exists.
+    func testTheReferenceHeartbeatArgumentsRefuseAnInvalidDocId() {
+        for hostile in ["issue_01`whoami`", "a b", "x$(id)", "a", "a/b", "../a/b/c", "", "a/b;c"] {
+            XCTAssertThrowsError(try LibraryClient.referenceDocumentHeartbeatArguments(
+                target: TestHost.target, docId: hostile), "\(hostile) was accepted") { error in
+                guard case LibraryClient.FetchError.invalidInput = error else {
+                    return XCTFail("expected invalidInput for \(hostile), got \(error)")
+                }
+            }
+        }
+        XCTAssertThrowsError(try LibraryClient.heartbeatReferenceDocument(
+            target: TestHost.target, docId: "a b", holder: "deck:operator@example.com"))
+    }
+
+    /// A real bash runs the real command against a listener standing in for
+    /// the Library, so `owner` arrives unmangled — the same proof
+    /// `testTheReferenceCheckoutBodyArrivesAtTheListenerIntact` runs for
+    /// checkout.
+    func testTheReferenceHeartbeatBodyArrivesAtTheListenerIntact() throws {
+        try assertPOSTBodySurvivesRoundTrip(
+            command: LibraryClient.referenceDocumentHeartbeatRemoteCommand(docId: "deck/reference/cockpit-edit-check"),
+            body: LibraryClient.referenceCheckoutBody(holder: "deck:operator@example.com"),
+            field: "owner", expectedValue: "deck:operator@example.com",
+            expectedRequestLine: "POST /reference/documents/deck/reference/cockpit-edit-check/heartbeat HTTP/1.1")
+    }
+
+    /// The point of a heartbeat: a refusal is a 404 when the caller holds no
+    /// live checkout under this holder — none, someone else's, or already
+    /// lapsed — which `EditorModel`'s timer tells apart from a transport
+    /// failure before it shows the lapsed banner.
+    func testAHeartbeatRefusalIsDistinguishableFromATransportFailure() {
+        let lapsed = refusal(404, #"{"error": "no live checkout for deck/reference/cockpit-edit-check under this owner"}"#)
+        guard case LibraryClient.FetchError.libraryRefused(let status, _) = lapsed else {
+            return XCTFail("expected libraryRefused, got \(lapsed)")
+        }
+        XCTAssertEqual(status, 404)
+
+        let transportFailure = LibraryClient.FetchError.unexpectedResponse("ssh: timed out")
+        guard case LibraryClient.FetchError.libraryRefused = transportFailure else {
+            return
+        }
+        XCTFail("a transport failure must not read as libraryRefused")
+    }
+
+    /// The point of the 409 this route can send that approve cannot: an
+    /// epic with an approved sub-epic refuses the decline, naming the
+    /// sub-epic rather than a generic failure.
+    func testADeclineRefusedOverAnApprovedSubEpicNamesIt() {
+        let message = LibraryClient.declineRefusalMessage(refusal(409, """
+        {"error":"issue_01PARENT has an approved sub-epic, issue_01CHILD, and cannot be declined",
+         "reason":"has_approved_sub_epic","sub_epic":"issue_01CHILD"}
+        """))
+        XCTAssertTrue(message.contains("issue_01CHILD"), message)
+    }
+
+    /// An already-approved epic's refusal hints at reversing the approval
+    /// first — passed through in the Library's own words, same as every
+    /// other refusal `declineRefusalMessage` surfaces.
+    func testADeclineRefusedOnAnApprovedEpicPointsAtRepropose() {
+        let message = LibraryClient.declineRefusalMessage(refusal(409, """
+        {"error":"issue_01ABC is approved and cannot be declined; reverse the approval first: POST /items/issue_01ABC/repropose"}
+        """))
+        XCTAssertTrue(message.contains("repropose"), message)
     }
 
     // MARK: - Approving an epic: the actor assertion

@@ -117,6 +117,20 @@ enum RailPoll {
         }
         return merged
     }
+
+    /// The served crews as the one array every reader draws from, in a fixed
+    /// order: by crew id, then host. A dictionary's iteration order is not
+    /// stable across rebuilds, and `mergedServedCrews` rebuilds it on every
+    /// poll, so reading `.values` directly reshuffled the served-only crews
+    /// `CrewMerge.merge` appends to the rail, and the same rows in Settings
+    /// › Sessions, on every tick.
+    /// `SessionRoster.applied(to:)` also reads positions in this array to
+    /// decide whether a drag moved a row, which needs the order to hold.
+    static func orderedServedCrews(_ crews: [ServedCrew.ID: ServedCrew]) -> [ServedCrew] {
+        crews.values.sorted {
+            ($0.crewId, $0.host.host, $0.host.user) < ($1.crewId, $1.host.host, $1.host.user)
+        }
+    }
 }
 
 /// Polls the mini for the liveness and phase of every session on the rail, so a
@@ -369,6 +383,19 @@ final class RailStateModel: ObservableObject {
     /// tick, so the cost is a round trip carrying all of them at this cadence.
     private static let pollInterval = Duration.seconds(4)
 
+    /// Assigns a published property only when the new value differs.
+    /// `@Published` fires `objectWillChange` on every assignment, equal or
+    /// not, and `ContentView` observes this model at the window's root, so
+    /// every fire re-evaluates the whole window: rail, toolbar and title
+    /// bar. A poll that read back the same answer used to fire about seven
+    /// times per host every tick (CQ·196). `generation` still changes on
+    /// every answered tick, because `ContentView` keys per-tick work on it.
+    private func publishIfChanged<Value: Equatable>(
+        _ keyPath: ReferenceWritableKeyPath<RailStateModel, Value>, _ value: Value
+    ) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+    }
+
     deinit { pollTask?.cancel() }
 
     /// The sessions to watch. Idempotent, so the shell can call it on every rail
@@ -569,17 +596,20 @@ final class RailStateModel: ObservableObject {
                 // `unreachableHosts` here: there is nothing to demote, and a
                 // crew-less host being unreachable is not a fact about any
                 // session's mark.
+                //
+                // EVERY PUBLISHED WRITE BELOW GOES THROUGH `publishIfChanged`
+                // (CQ·196). See that function's doc.
                 if !groupRefs.isEmpty {
                     if let hostStates {
-                        states = RailPoll.mergedStates(previous: states, outcomes: [target: hostStates])
+                        publishIfChanged(\.states, RailPoll.mergedStates(previous: states, outcomes: [target: hostStates]))
                         // `max`, so an out-of-order landing can never walk the
                         // reading backwards.
-                        generation = max(generation, ticket)
-                        unreachableHosts.remove(target)
+                        publishIfChanged(\.generation, max(generation, ticket))
+                        publishIfChanged(\.unreachableHosts, unreachableHosts.subtracting([target]))
                     } else {
-                        states = RailPoll.mergedStates(
-                            previous: states, outcomes: [target: RailPoll.demotedStates(for: groupRefs)])
-                        unreachableHosts.insert(target)
+                        publishIfChanged(\.states, RailPoll.mergedStates(
+                            previous: states, outcomes: [target: RailPoll.demotedStates(for: groupRefs)]))
+                        publishIfChanged(\.unreachableHosts, unreachableHosts.union([target]))
                     }
                 }
                 // A row-level empty list (no tmux server, or genuinely no
@@ -589,17 +619,17 @@ final class RailStateModel: ObservableObject {
                 // `SessionAgent.discoveredSessions` could not even parse
                 // into an envelope — leaves that host's rows standing.
                 if let hostDiscovered {
-                    discovered = RailPoll.mergedDiscovered(
-                        previous: discovered, outcomes: [target: hostDiscovered])
+                    publishIfChanged(\.discovered, RailPoll.mergedDiscovered(
+                        previous: discovered, outcomes: [target: hostDiscovered]))
                 }
                 // Same "a row-level empty list is a real answer, only `nil`
                 // leaves the host's entries standing" rule as `discovered`.
                 if let hostServedCrews {
-                    servedCrews = RailPoll.mergedServedCrews(
-                        previous: servedCrews, outcomes: [target: hostServedCrews])
+                    publishIfChanged(\.servedCrews, RailPoll.mergedServedCrews(
+                        previous: servedCrews, outcomes: [target: hostServedCrews]))
                 }
                 runChoicesByHost[target] = hostRunRegister
-                runChoices = runChoicesByHost.values.reduce(into: [:]) { $0.merge($1) { first, _ in first } }
+                publishIfChanged(\.runChoices, runChoicesByHost.values.reduce(into: [:]) { $0.merge($1) { first, _ in first } })
 
                 // Runs for EVERY target in `groups`, including a crew-less
                 // configured host — "For each configured host" per
@@ -607,15 +637,20 @@ final class RailStateModel: ObservableObject {
                 // which only ever runs once per host.
                 let (nextDesktopState, notify) = DesktopSessionTracker.apply(
                     reading: desktopReading, lastKnown: desktopSessionKnownState[target])
-                desktopSessionKnownState[target] = nextDesktopState
+                if desktopSessionKnownState[target] != nextDesktopState {
+                    desktopSessionKnownState[target] = nextDesktopState
+                }
                 if notify { onDesktopSessionLoggedOut(target) }
 
-                builderServerState[target] = BuilderServerTracker.apply(
+                let nextServerState = BuilderServerTracker.apply(
                     serverReading, lastKnown: builderServerState[target])
+                if builderServerState[target] != nextServerState {
+                    builderServerState[target] = nextServerState
+                }
 
                 guard attempted else { continue }
                 if let probed {
-                    probedMachineNames[target] = probed
+                    if probedMachineNames[target] != probed { probedMachineNames[target] = probed }
                     probeRetryAtTick[target] = nil
                 } else {
                     probeRetryAtTick[target] = currentTick + Self.probeBackoffTicks

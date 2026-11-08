@@ -89,15 +89,15 @@ final class SessionPaneModelDraftStorageTests: XCTestCase {
     func testASecondSessionsModelStartsEmptyEvenWithAnotherSessionsDraftPresent() {
         let store = SessionDraftStore()
         let deck = SessionRef(host: nil, name: "deck")
-        let vivy = SessionRef(host: nil, name: "vivy")
+        let orchard = SessionRef(host: nil, name: "orchard")
 
         let deckModel = SessionPaneModel(session: "deck", target: TestHost.target,
                                          draftStore: store, draftKey: deck)
         deckModel.draft = "for deck"
 
-        let vivyModel = SessionPaneModel(session: "vivy", target: TestHost.target,
-                                         draftStore: store, draftKey: vivy)
-        XCTAssertEqual(vivyModel.draft, "")
+        let orchardModel = SessionPaneModel(session: "orchard", target: TestHost.target,
+                                         draftStore: store, draftKey: orchard)
+        XCTAssertEqual(orchardModel.draft, "")
     }
 
     /// THE ACCEPTANCE TEST: `send()` must actually empty the box, in the

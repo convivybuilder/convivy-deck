@@ -91,8 +91,8 @@ final class WindowLeafTests: XCTestCase {
     /// distinct leaf refs — the same collision the tuple exists to
     /// resolve, one level down.
     func testTwoHostsWithTheSameSessionNameProduceDistinctLeafRefs() {
-        let miniLeaf = WindowLeaf.ref(session: SessionRef(host: "mini", name: "vivy"), window: 2)
-        let guestLeaf = WindowLeaf.ref(session: SessionRef(host: "guest", name: "vivy"), window: 2)
+        let miniLeaf = WindowLeaf.ref(session: SessionRef(host: "mini", name: "orchard"), window: 2)
+        let guestLeaf = WindowLeaf.ref(session: SessionRef(host: "guest", name: "orchard"), window: 2)
         XCTAssertNotEqual(miniLeaf, guestLeaf)
     }
 

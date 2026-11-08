@@ -34,14 +34,14 @@ CSS_BASE, theme_css, HUES, SYMBOLS, use, mark, CREWS, MARK_LABEL = (
 
 # ---------------------------------------------------------------------------
 # The catalog: seventeen sessions a user might reasonably have unpinned. The
-# real catalog on this machine is three (NYH Studio, Write Better, Ask); the
+# real catalog on this machine is three (Lakeside Studio, Write Better, Ask); the
 # problem needs a dozen or more to show, and the operator's premise is that it
 # will get there. Hues cycle through ThemeCatalog's ten the way `themeForSession`
 # hashes a bare name to a theme.
 # ---------------------------------------------------------------------------
 
-CATALOG = ["Agent Platform", "Convivy Builder", "Hollis", "Keel", "Knowledge", "NYH Studio", "Placard",
-           "Research", "Shipwright", "Sous Chef", "Substrate", "Talk Better", "Tax 2025", "Write Better",
+CATALOG = ["Agent Platform", "Convivy Builder", "Quarry", "Keel", "Knowledge", "Lakeside Studio", "Signpost",
+           "Research", "Shipwright", "Galley", "Substrate", "Talk Better", "Tax 2025", "Write Better",
            "Working Copy", "Yacht Log", "Zero Inbox"]
 CATALOG_HUES = {name: HUES[(i * 3) % len(HUES)] for i, name in enumerate(CATALOG)}
 
@@ -382,7 +382,7 @@ def build():
         "C · 44pt; the picker open",
         frame("dark", "dots", rail_html("dots", start_opener(True, len(remaining), open_=True), promoted=promoted),
               side=popover(row_mid_dots, 44 + 10, remaining, focus=4, typed="s")),
-        "One hollow square sits under the rule, which is how the spec's dot rail already draws a START row. The popover is where the names live, so nothing is lost at 44pt; here the user has typed <b>s</b> and arrowed to Sous Chef.",
+        "One hollow square sits under the rule, which is how the spec's dot rail already draws a START row. The popover is where the names live, so nothing is lost at 44pt; here the user has typed <b>s</b> and arrowed to Substrate.",
     ) + labelled(
         "C · right-click on a row · light",
         frame("light", "full", rail_html("full", start_opener(False, len(remaining), open_=True), promoted=promoted),
@@ -391,7 +391,7 @@ def build():
     ) + "</div>"
 
     # -- D. recents + the rest -------------------------------------------------
-    recents = ["Write Better", "NYH Studio", "Tax 2025"]
+    recents = ["Write Better", "Lakeside Studio", "Tax 2025"]
     d = '<div class="grid">' + labelled(
         "D · three most recent, the rest behind one row · light",
         frame("light", "full", rail_html("full", start_recents(False, recents, n - 3))),

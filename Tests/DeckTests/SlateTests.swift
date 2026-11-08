@@ -167,8 +167,8 @@ final class SlateTests: XCTestCase {
     }
 
     func testAnEnvelopeWithNoSessionFallsBackToTheAskedName() {
-        let slate = decode(#"{"ok": true, "cards": []}"#, session: "hollis")
-        XCTAssertEqual(slate?.session, "hollis")
+        let slate = decode(#"{"ok": true, "cards": []}"#, session: "quarry")
+        XCTAssertEqual(slate?.session, "quarry")
     }
 
     func testAMissingCardsArrayDecodesToAnEmptyList() {

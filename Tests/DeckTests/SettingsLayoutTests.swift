@@ -57,7 +57,7 @@ final class SettingsLayoutTests: XCTestCase {
         {"rail": [{"session": "crew-1"}, {"session": "crew-2"}, {"session": "crew-3"},
                   {"session": "crew-4"}, {"session": "crew-5"}, {"session": "crew-6"},
                   {"session": "crew-7"}, {"session": "crew-8"}],
-         "catalog": [{"session": "nyh", "name": "NYH Studio"},
+         "catalog": [{"session": "lakeside", "name": "Lakeside Studio"},
                      {"session": "write-better", "name": "Write Better"},
                      {"session": "ask", "name": "Ask"}]}
         """#.write(to: file, atomically: true, encoding: .utf8)

@@ -3,10 +3,10 @@ import XCTest
 
 /// `Crew.repos` — issue_01M2P5JHM1G8XCMKM4HEHVJB2P's crew-model half: a
 /// crew follows an ORDERED LIST of repos rather than exactly one. Real
-/// crews this covers: Selector (`selector`, `selector-backend`), Constance
-/// (`constance`, `constance-commercial`, `constance-landing`,
-/// `constance-updates`), Vivy (`vivy`, `vivy-landing`,
-/// `vivy-ownerrez-sandbox-tools`) and the Library crew (`library`,
+/// crews this covers: Lantern (`lantern`, `lantern-backend`), Meridian
+/// (`meridian`, `meridian-commercial`, `meridian-landing`,
+/// `meridian-updates`), Orchard (`orchard`, `orchard-landing`,
+/// `orchard-ownerrez-sandbox-tools`) and the Library crew (`library`,
 /// `knowledge`).
 ///
 /// `Crew.repo` (singular) stays as a computed `repos.first` — the accessor
@@ -26,9 +26,9 @@ final class CrewRepoListTests: XCTestCase {
 
     func testAPluralReposKeyDecodes() {
         let rows = ServedCrew.decode(Data("""
-        {"crews": [{"id": "selector", "repos": ["convivy/selector", "convivy/selector-backend"]}]}
+        {"crews": [{"id": "lantern", "repos": ["convivy/lantern", "convivy/lantern-backend"]}]}
         """.utf8), host: mini)
-        XCTAssertEqual(rows.first?.resolvedRepos, ["convivy/selector", "convivy/selector-backend"])
+        XCTAssertEqual(rows.first?.resolvedRepos, ["convivy/lantern", "convivy/lantern-backend"])
     }
 
     /// A spec written before this issue only ever has the singular key —
@@ -47,17 +47,17 @@ final class CrewRepoListTests: XCTestCase {
     /// should not double up.
     func testThePluralKeyWinsOverTheSingularWhenBothArePresent() {
         let rows = ServedCrew.decode(Data("""
-        {"crews": [{"id": "constance", "repo": "convivy/constance",
-                     "repos": ["convivy/constance", "convivy/constance-commercial",
-                               "convivy/constance-landing", "convivy/constance-updates"]}]}
+        {"crews": [{"id": "meridian", "repo": "convivy/meridian",
+                     "repos": ["convivy/meridian", "convivy/meridian-commercial",
+                               "convivy/meridian-landing", "convivy/meridian-updates"]}]}
         """.utf8), host: mini)
         XCTAssertEqual(rows.first?.resolvedRepos,
-                       ["convivy/constance", "convivy/constance-commercial",
-                        "convivy/constance-landing", "convivy/constance-updates"])
+                       ["convivy/meridian", "convivy/meridian-commercial",
+                        "convivy/meridian-landing", "convivy/meridian-updates"])
     }
 
     func testNeitherKeyResolvesToAnEmptyList() {
-        let rows = ServedCrew.decode(Data(#"{"crews": [{"id": "vivy"}]}"#.utf8), host: mini)
+        let rows = ServedCrew.decode(Data(#"{"crews": [{"id": "orchard"}]}"#.utf8), host: mini)
         XCTAssertEqual(rows.first?.resolvedRepos, [])
     }
 
@@ -67,9 +67,9 @@ final class CrewRepoListTests: XCTestCase {
     /// to every other key.
     func testAMalformedPluralValueFallsBackToTheSingularKey() {
         let rows = ServedCrew.decode(Data("""
-        {"crews": [{"id": "vivy", "repo": "convivy/vivy", "repos": "not-an-array"}]}
+        {"crews": [{"id": "orchard", "repo": "convivy/orchard", "repos": "not-an-array"}]}
         """.utf8), host: mini)
-        XCTAssertEqual(rows.first?.resolvedRepos, ["convivy/vivy"])
+        XCTAssertEqual(rows.first?.resolvedRepos, ["convivy/orchard"])
     }
 
     /// A producer that always emits the plural key, even naming no repos,
@@ -77,9 +77,9 @@ final class CrewRepoListTests: XCTestCase {
     /// its valid `repo` shadowed by the empty `repos` sitting beside it.
     func testAPresentButEmptyPluralKeyFallsBackToTheSingularKey() {
         let rows = ServedCrew.decode(Data("""
-        {"crews": [{"id": "vivy", "repo": "convivy/vivy", "repos": []}]}
+        {"crews": [{"id": "orchard", "repo": "convivy/orchard", "repos": []}]}
         """.utf8), host: mini)
-        XCTAssertEqual(rows.first?.resolvedRepos, ["convivy/vivy"])
+        XCTAssertEqual(rows.first?.resolvedRepos, ["convivy/orchard"])
     }
 
     /// Same failure mode as the empty-array case, reached a different way:
@@ -89,9 +89,9 @@ final class CrewRepoListTests: XCTestCase {
     /// "the spec said no repos".
     func testAPluralKeyWithNoUsableEntriesFallsBackToTheSingularKey() {
         let rows = ServedCrew.decode(Data("""
-        {"crews": [{"id": "vivy", "repo": "convivy/vivy", "repos": [123, 456]}]}
+        {"crews": [{"id": "orchard", "repo": "convivy/orchard", "repos": [123, 456]}]}
         """.utf8), host: mini)
-        XCTAssertEqual(rows.first?.resolvedRepos, ["convivy/vivy"])
+        XCTAssertEqual(rows.first?.resolvedRepos, ["convivy/orchard"])
     }
 
     /// The gap this PR closes: a served `repos` entry that is a string but
@@ -101,9 +101,9 @@ final class CrewRepoListTests: XCTestCase {
     /// refused. An entry that fails costs only itself.
     func testAnEntryThatIsNotAValidRepoIdentityIsDropped() {
         let rows = ServedCrew.decode(Data("""
-        {"crews": [{"id": "vivy", "repos": ["convivy/vivy", "not a repo", "no-slash-here"]}]}
+        {"crews": [{"id": "orchard", "repos": ["convivy/orchard", "not a repo", "no-slash-here"]}]}
         """.utf8), host: mini)
-        XCTAssertEqual(rows.first?.resolvedRepos, ["convivy/vivy"])
+        XCTAssertEqual(rows.first?.resolvedRepos, ["convivy/orchard"])
     }
 
     /// The singular `repo` field gets the identical validation — it has
@@ -112,7 +112,7 @@ final class CrewRepoListTests: XCTestCase {
     /// querying it.
     func testAnInvalidSingularRepoIsRefused() {
         let rows = ServedCrew.decode(Data("""
-        {"crews": [{"id": "vivy", "repo": "not a repo"}]}
+        {"crews": [{"id": "orchard", "repo": "not a repo"}]}
         """.utf8), host: mini)
         XCTAssertEqual(rows.first?.resolvedRepos, [])
     }
@@ -120,21 +120,21 @@ final class CrewRepoListTests: XCTestCase {
     // MARK: - Crew.repos / Crew.repo
 
     func testCrewRepoIsTheFirstEntryOfRepos() {
-        var crew = Crew(id: "selector", displayName: "Selector")
-        crew.repos = ["selector", "selector-backend"]
-        XCTAssertEqual(crew.repo, "selector")
+        var crew = Crew(id: "lantern", displayName: "Lantern")
+        crew.repos = ["lantern", "lantern-backend"]
+        XCTAssertEqual(crew.repo, "lantern")
     }
 
     func testSettingCrewRepoReplacesTheWholeList() {
-        var crew = Crew(id: "selector", displayName: "Selector")
-        crew.repos = ["selector", "selector-backend"]
+        var crew = Crew(id: "lantern", displayName: "Lantern")
+        crew.repos = ["lantern", "lantern-backend"]
         crew.repo = "convivy/convivy-deck"
         XCTAssertEqual(crew.repos, ["convivy/convivy-deck"], "the singular setter is not additive")
     }
 
     func testClearingCrewRepoClearsTheWholeList() {
-        var crew = Crew(id: "selector", displayName: "Selector")
-        crew.repos = ["selector", "selector-backend"]
+        var crew = Crew(id: "lantern", displayName: "Lantern")
+        crew.repos = ["lantern", "lantern-backend"]
         crew.repo = nil
         XCTAssertEqual(crew.repos, [])
     }
@@ -142,9 +142,9 @@ final class CrewRepoListTests: XCTestCase {
     /// `repo:` and `repos:` are two ways to set the same storage at
     /// construction — `repos:` wins when non-empty.
     func testConstructingWithRepoAndReposPrefersRepos() {
-        let crew = Crew(id: "vivy", displayName: "Vivy", repo: "convivy/vivy",
-                        repos: ["vivy", "vivy-landing", "vivy-ownerrez-sandbox-tools"])
-        XCTAssertEqual(crew.repos, ["vivy", "vivy-landing", "vivy-ownerrez-sandbox-tools"])
+        let crew = Crew(id: "orchard", displayName: "Orchard", repo: "convivy/orchard",
+                        repos: ["orchard", "orchard-landing", "orchard-ownerrez-sandbox-tools"])
+        XCTAssertEqual(crew.repos, ["orchard", "orchard-landing", "orchard-ownerrez-sandbox-tools"])
     }
 
     // MARK: - CrewMerge: fan-out through the same precedence as `documents`
@@ -162,23 +162,23 @@ final class CrewRepoListTests: XCTestCase {
     /// Settings' own (non-empty) list wins over the spec's, the same
     /// precedence `project`/`bead`/`documents` already have.
     func testAConfiguredReposListIsNotOverwrittenByTheSpec() {
-        var configured = Crew(id: "constance", displayName: "constance")
-        configured.repos = ["constance"]
-        let spec = served(id: "constance",
-                          repos: ["constance", "constance-commercial", "constance-landing", "constance-updates"])
+        var configured = Crew(id: "meridian", displayName: "meridian")
+        configured.repos = ["meridian"]
+        let spec = served(id: "meridian",
+                          repos: ["meridian", "meridian-commercial", "meridian-landing", "meridian-updates"])
         let merged = merge(configured: [configured], served: [spec])
-        XCTAssertEqual(merged.first?.repos, ["constance"])
+        XCTAssertEqual(merged.first?.repos, ["meridian"])
     }
 
     func testReposFollowsTheSpecWhenSettingsLeavesThemEmpty() {
-        let configured = Crew(id: "constance", displayName: "constance")
-        let spec = served(id: "constance",
-                          repos: ["convivy/constance", "convivy/constance-commercial",
-                                  "convivy/constance-landing", "convivy/constance-updates"])
+        let configured = Crew(id: "meridian", displayName: "meridian")
+        let spec = served(id: "meridian",
+                          repos: ["convivy/meridian", "convivy/meridian-commercial",
+                                  "convivy/meridian-landing", "convivy/meridian-updates"])
         let merged = merge(configured: [configured], served: [spec])
         XCTAssertEqual(merged.first?.repos,
-                       ["convivy/constance", "convivy/constance-commercial",
-                        "convivy/constance-landing", "convivy/constance-updates"])
+                       ["convivy/meridian", "convivy/meridian-commercial",
+                        "convivy/meridian-landing", "convivy/meridian-updates"])
     }
 
     // MARK: - sparse: editing the repo list must not freeze anything else
@@ -189,14 +189,14 @@ final class CrewRepoListTests: XCTestCase {
     /// freezing into local config — the exact trap `CrewMergeTests`
     /// already guards for `project`/`bead`/`shape`, now for a list field.
     func testEditingTheRepoListDoesNotFreezeOtherServedFields() {
-        let spec = ServedCrew(crewId: "vivy", host: mini,
-                              workingDirectory: "\(TestHost.homeRoot)/Convivy/vivy",
-                              project: "vivy", repos: ["convivy/vivy", "convivy/vivy-landing"])
+        let spec = ServedCrew(crewId: "orchard", host: mini,
+                              workingDirectory: "\(TestHost.homeRoot)/Convivy/orchard",
+                              project: "orchard", repos: ["convivy/orchard", "convivy/orchard-landing"])
         var merged = merge(configured: [], served: [spec])[0]
-        merged.repos = ["convivy/vivy", "convivy/vivy-landing", "convivy/vivy-ownerrez-sandbox-tools"]
+        merged.repos = ["convivy/orchard", "convivy/orchard-landing", "convivy/orchard-ownerrez-sandbox-tools"]
 
         let sparse = CrewMerge.sparse(merged, relativeTo: spec, hosts: miniHosts)
-        XCTAssertEqual(sparse.repos, ["convivy/vivy", "convivy/vivy-landing", "convivy/vivy-ownerrez-sandbox-tools"],
+        XCTAssertEqual(sparse.repos, ["convivy/orchard", "convivy/orchard-landing", "convivy/orchard-ownerrez-sandbox-tools"],
                        "the edit survives")
         XCTAssertNil(sparse.workingDirectory, "untouched, so it keeps following the spec")
         XCTAssertNil(sparse.project, "untouched, so it keeps following the spec")
@@ -217,11 +217,11 @@ final class CrewRepoListTests: XCTestCase {
     /// edit and must survive `sparse` — the common case the list editor
     /// exists for.
     func testRemovingOneRepoFromASpecsListSurvivesSparse() {
-        let spec = served(id: "vivy", repos: ["convivy/vivy", "convivy/vivy-landing", "convivy/vivy-ownerrez-sandbox-tools"])
+        let spec = served(id: "orchard", repos: ["convivy/orchard", "convivy/orchard-landing", "convivy/orchard-ownerrez-sandbox-tools"])
         var merged = merge(configured: [], served: [spec])[0]
-        merged.repos = ["convivy/vivy", "convivy/vivy-landing"]
+        merged.repos = ["convivy/orchard", "convivy/orchard-landing"]
         let sparse = CrewMerge.sparse(merged, relativeTo: spec, hosts: miniHosts)
-        XCTAssertEqual(sparse.repos, ["convivy/vivy", "convivy/vivy-landing"])
+        XCTAssertEqual(sparse.repos, ["convivy/orchard", "convivy/orchard-landing"])
         XCTAssertFalse(CrewMerge.isUnedited(sparse))
     }
 
@@ -239,20 +239,20 @@ final class CrewRepoListTests: XCTestCase {
 
     func testARailRowsPluralReposKeyDecodes() throws {
         let file = try write("""
-        {"rail": [{"session": "selector", "repos": ["convivy/selector", "convivy/selector-backend"]}]}
+        {"rail": [{"session": "lantern", "repos": ["convivy/lantern", "convivy/lantern-backend"]}]}
         """)
         XCTAssertEqual(ThemeConfiguration.load(from: file).railSessions?.first?.repos,
-                       ["convivy/selector", "convivy/selector-backend"])
+                       ["convivy/lantern", "convivy/lantern-backend"])
     }
 
     /// Each entry is validated independently — one bad entry costs only
     /// itself, not the whole list.
     func testAnInvalidEntryInThePluralListIsDroppedButTheRestSurvive() throws {
         let file = try write("""
-        {"rail": [{"session": "vivy", "repos": ["convivy/vivy", "no-slash-here", "convivy/vivy-landing"]}]}
+        {"rail": [{"session": "orchard", "repos": ["convivy/orchard", "no-slash-here", "convivy/orchard-landing"]}]}
         """)
         XCTAssertEqual(ThemeConfiguration.load(from: file).railSessions?.first?.repos,
-                       ["convivy/vivy", "convivy/vivy-landing"])
+                       ["convivy/orchard", "convivy/orchard-landing"])
     }
 
     func testReposListSurvivesSaveAndLoad() throws {
@@ -287,13 +287,13 @@ final class CrewRepoListTests: XCTestCase {
     /// round trip for the list.
     func testUnpinningACrewCarriesItsWholeRepoListToTheCatalog() {
         var roster = SessionRoster(entries: [
-            RosterEntry(id: "constance", displayName: "Constance", isPinned: true,
-                       repos: ["constance", "constance-commercial", "constance-landing", "constance-updates"]),
+            RosterEntry(id: "meridian", displayName: "Meridian", isPinned: true,
+                       repos: ["meridian", "meridian-commercial", "meridian-landing", "meridian-updates"]),
         ])
-        roster.update("constance") { $0.setPinned(false) }
-        XCTAssertEqual(roster["constance"]?.repos,
-                       ["constance", "constance-commercial", "constance-landing", "constance-updates"])
-        XCTAssertEqual(roster["constance"]?.asLaunchableSession.repos,
-                       ["constance", "constance-commercial", "constance-landing", "constance-updates"])
+        roster.update("meridian") { $0.setPinned(false) }
+        XCTAssertEqual(roster["meridian"]?.repos,
+                       ["meridian", "meridian-commercial", "meridian-landing", "meridian-updates"])
+        XCTAssertEqual(roster["meridian"]?.asLaunchableSession.repos,
+                       ["meridian", "meridian-commercial", "meridian-landing", "meridian-updates"])
     }
 }

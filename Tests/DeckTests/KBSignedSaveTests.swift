@@ -64,7 +64,7 @@ final class KBSignedSaveTests: XCTestCase {
 
     private let doc = KnowledgeBase.CheckedOutDocument(
         id: "deck/specs/session-pane", content: "# T\n", contentSha: "3acf9780aa451c2f0d0e",
-        sourceRef: "projects/deck/specs/session-pane.md", target: TestHost.target)
+        sourceRef: "projects/deck/specs/session-pane.md", target: TestHost.target, holder: TestHost.holder)
 
     private let signedAt = Date(timeIntervalSince1970: 1_800_000_000) // 2027-01-15T08:00:00Z
 
@@ -123,7 +123,7 @@ final class KBSignedSaveTests: XCTestCase {
         let argv = KnowledgeBase.applyArguments(
             target: TestHost.target, id: "deck/specs/session-pane", baseSha: "3acf9780aa451c2f0d0e",
             contentFilePath: ("/home/" + "operator") + "/.cache/agentctl-deck-saves/deck-save.abc123",
-            controlPath: "/tmp/cm")
+            holder: TestHost.holder, controlPath: "/tmp/cm")
 
         XCTAssertTrue(argv.contains("agentctl"))
         XCTAssertTrue(argv.contains("kb"))
@@ -138,12 +138,22 @@ final class KBSignedSaveTests: XCTestCase {
         XCTAssertFalse(argv.contains("--edits-file"))
     }
 
+    // MARK: - The one explicit holder, carried to kb apply too (CQ·177)
+
+    func testApplyArgumentsSendsTheExplicitHolder() {
+        let argv = KnowledgeBase.applyArguments(
+            target: TestHost.target, id: "deck/specs/session-pane", baseSha: "3acf9780aa451c2f0d0e",
+            contentFilePath: "/tmp/deck-save.abc123", holder: TestHost.holder, controlPath: "/tmp/cm")
+
+        XCTAssertEqual(argv[argv.firstIndex(of: "--holder")! + 1], "'\(TestHost.holder)'")
+    }
+
     func testApplyArgumentsQuotesBaseShaAgainstShellMetacharacters() {
         let argv = KnowledgeBase.applyArguments(
             target: TestHost.target, id: "deck/specs/session-pane",
             baseSha: "abc'; rm -rf ~ #",
             contentFilePath: ("/home/" + "operator") + "/.cache/agentctl-deck-saves/deck-save.abc123",
-            controlPath: "/tmp/cm")
+            holder: TestHost.holder, controlPath: "/tmp/cm")
 
         XCTAssertEqual(argv[argv.firstIndex(of: "--base-sha")! + 1], "'abc'\\''; rm -rf ~ #'")
     }
@@ -182,6 +192,10 @@ final class KBSignedSaveTests: XCTestCase {
         // signature envelope — never the content — on stdin.
         XCTAssertEqual(transport.calls[1].argv[transport.calls[1].argv.firstIndex(of: "--content-file")! + 1],
                        "'\(remotePath)'")
+        // `apply` carries the same holder the document was checked out under —
+        // never a value `kb apply` would derive on its own (CQ·177).
+        XCTAssertEqual(transport.calls[1].argv[transport.calls[1].argv.firstIndex(of: "--holder")! + 1],
+                       "'\(TestHost.holder)'")
         let proof = try XCTUnwrap(transport.calls[1].stdin)
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(proof.utf8)) as? [String: String])

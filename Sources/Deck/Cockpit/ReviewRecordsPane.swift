@@ -86,7 +86,7 @@ struct ReviewRecordsPane: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Close and return to the cockpit")
+            .help("Close and go back to where this was opened from")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)

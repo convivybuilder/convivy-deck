@@ -30,24 +30,24 @@ final class CrewMergeTests: XCTestCase {
 
     // MARK: - the acceptance case: a spec with no configured counterpart
 
-    /// `placard`, created through `new-crew` on 2026-09-05: no local config
+    /// `signpost`, created through `new-crew` on 2026-09-05: no local config
     /// at all, yet it must draw a rail row with the spec's own display name
     /// (title case), working directory, project and bead — no Settings
     /// step, no change to the spec file.
     func testAServedOnlyCrewDrawsAsARowWithTheSpecsOwnFields() {
-        let placard = served(id: "placard", displayName: "Placard",
-                             workingDirectory: "\(TestHost.homeRoot)/Convivy/placard",
-                             sessionId: "$58", project: "placard", bead: "placard/bead/placard")
-        let merged = merge(configured: [], served: [placard])
+        let signpost = served(id: "signpost", displayName: "Signpost",
+                             workingDirectory: "\(TestHost.homeRoot)/Convivy/signpost",
+                             sessionId: "$58", project: "signpost", bead: "signpost/bead/signpost")
+        let merged = merge(configured: [], served: [signpost])
 
         XCTAssertEqual(merged.count, 1)
         let crew = merged[0]
-        XCTAssertEqual(crew.id, "placard")
-        XCTAssertEqual(crew.displayName, "Placard", "title case from the spec, not the lowercase id")
-        XCTAssertEqual(crew.workingDirectory, "\(TestHost.homeRoot)/Convivy/placard")
+        XCTAssertEqual(crew.id, "signpost")
+        XCTAssertEqual(crew.displayName, "Signpost", "title case from the spec, not the lowercase id")
+        XCTAssertEqual(crew.workingDirectory, "\(TestHost.homeRoot)/Convivy/signpost")
         XCTAssertEqual(crew.sessionId, "$58")
-        XCTAssertEqual(crew.project, "placard")
-        XCTAssertEqual(crew.bead, "placard/bead/placard")
+        XCTAssertEqual(crew.project, "signpost")
+        XCTAssertEqual(crew.bead, "signpost/bead/signpost")
     }
 
     /// A served crew with no `displayName` of its own falls back to its id —
@@ -61,27 +61,27 @@ final class CrewMergeTests: XCTestCase {
     // MARK: - a spec row and a configured row for the same crew are one row
 
     func testAConfiguredCrewMatchingByIdMergesIntoOneRow() {
-        let configured = Crew(id: "placard", displayName: "placard")
-        let spec = served(id: "placard", displayName: "Placard", sessionId: "$58",
-                          project: "placard", bead: "placard/bead/placard")
+        let configured = Crew(id: "signpost", displayName: "signpost")
+        let spec = served(id: "signpost", displayName: "Signpost", sessionId: "$58",
+                          project: "signpost", bead: "signpost/bead/signpost")
         let merged = merge(configured: [configured], served: [spec])
 
         XCTAssertEqual(merged.count, 1, "one row, not two")
-        XCTAssertEqual(merged[0].displayName, "Placard")
-        XCTAssertEqual(merged[0].project, "placard")
-        XCTAssertEqual(merged[0].bead, "placard/bead/placard")
+        XCTAssertEqual(merged[0].displayName, "Signpost")
+        XCTAssertEqual(merged[0].project, "signpost")
+        XCTAssertEqual(merged[0].bead, "signpost/bead/signpost")
         XCTAssertEqual(merged[0].sessionId, "$58")
     }
 
     /// A value Settings actually set is never overwritten by the spec —
     /// only a gap the configured row left open gets filled.
     func testASettingsValueIsNotOverwrittenByTheSpec() {
-        var configured = Crew(id: "placard", displayName: "My Placard")
+        var configured = Crew(id: "signpost", displayName: "My Signpost")
         configured.project = "convivy-deck"
-        let spec = served(id: "placard", displayName: "Placard", project: "placard")
+        let spec = served(id: "signpost", displayName: "Signpost", project: "signpost")
         let merged = merge(configured: [configured], served: [spec])
 
-        XCTAssertEqual(merged[0].displayName, "My Placard", "an explicit display name wins over the spec's")
+        XCTAssertEqual(merged[0].displayName, "My Signpost", "an explicit display name wins over the spec's")
         XCTAssertEqual(merged[0].project, "convivy-deck", "Settings wins over the spec")
     }
 
@@ -102,59 +102,59 @@ final class CrewMergeTests: XCTestCase {
     /// A configured row with no matching spec draws unchanged.
     func testAConfiguredCrewWithNoMatchingSpecIsUnchanged() {
         let configured = Crew(id: "legacy", displayName: "Legacy Crew")
-        let merged = merge(configured: [configured], served: [served(id: "placard")])
-        XCTAssertEqual(merged.map(\.id), ["legacy", "placard"])
+        let merged = merge(configured: [configured], served: [served(id: "signpost")])
+        XCTAssertEqual(merged.map(\.id), ["legacy", "signpost"])
         XCTAssertEqual(merged[0].displayName, "Legacy Crew")
     }
 
     // MARK: - project/bead resolution precedence: Settings > spec > nil
 
     func testProjectFollowsSettingsWhenSet() {
-        var configured = Crew(id: "placard", displayName: "placard")
+        var configured = Crew(id: "signpost", displayName: "signpost")
         configured.project = "convivy-deck"
         let merged = merge(
-            configured: [configured], served: [served(id: "placard", project: "placard")])
+            configured: [configured], served: [served(id: "signpost", project: "signpost")])
         XCTAssertEqual(merged[0].project, "convivy-deck")
     }
 
     func testProjectFollowsSpecWhenSettingsLeavesItUnset() {
-        let configured = Crew(id: "placard", displayName: "placard")
+        let configured = Crew(id: "signpost", displayName: "signpost")
         let merged = merge(
-            configured: [configured], served: [served(id: "placard", project: "placard")])
-        XCTAssertEqual(merged[0].project, "placard")
+            configured: [configured], served: [served(id: "signpost", project: "signpost")])
+        XCTAssertEqual(merged[0].project, "signpost")
         // The acceptance criterion this exists for: the cockpit can resolve
         // with no Settings step, once the spec supplies a project.
         XCTAssertNotNil(CockpitResolution.projectAndTarget(for: merged[0], target: mini))
     }
 
     func testProjectIsNilWhenNeitherSettingsNorTheSpecSetIt() {
-        let configured = Crew(id: "placard", displayName: "placard")
-        let merged = merge(configured: [configured], served: [served(id: "placard")])
+        let configured = Crew(id: "signpost", displayName: "signpost")
+        let merged = merge(configured: [configured], served: [served(id: "signpost")])
         XCTAssertNil(merged[0].project)
         XCTAssertNil(CockpitResolution.projectAndTarget(for: merged[0], target: mini))
     }
 
     func testBeadFollowsTheSamePrecedenceAsProject() {
-        var configured = Crew(id: "placard", displayName: "placard")
+        var configured = Crew(id: "signpost", displayName: "signpost")
         configured.bead = "convivy-deck/bead/convivy-deck"
         let merged = merge(
-            configured: [configured], served: [served(id: "placard", bead: "placard/bead/placard")])
+            configured: [configured], served: [served(id: "signpost", bead: "signpost/bead/signpost")])
         XCTAssertEqual(merged[0].bead, "convivy-deck/bead/convivy-deck")
     }
 
     func testRepoFollowsTheSamePrecedenceAsProject() {
-        var configured = Crew(id: "placard", displayName: "placard")
+        var configured = Crew(id: "signpost", displayName: "signpost")
         configured.repo = "convivy/convivy-deck"
         let merged = merge(
-            configured: [configured], served: [served(id: "placard", repo: "convivy/placard")])
+            configured: [configured], served: [served(id: "signpost", repo: "convivy/signpost")])
         XCTAssertEqual(merged[0].repo, "convivy/convivy-deck")
     }
 
     func testRepoFollowsSpecWhenSettingsLeavesItUnset() {
-        let configured = Crew(id: "placard", displayName: "placard")
+        let configured = Crew(id: "signpost", displayName: "signpost")
         let merged = merge(
-            configured: [configured], served: [served(id: "placard", repo: "convivy/placard")])
-        XCTAssertEqual(merged[0].repo, "convivy/placard")
+            configured: [configured], served: [served(id: "signpost", repo: "convivy/signpost")])
+        XCTAssertEqual(merged[0].repo, "convivy/signpost")
     }
 
     // MARK: - shape/documents resolution precedence: Settings > spec > unset
@@ -177,8 +177,8 @@ final class CrewMergeTests: XCTestCase {
     }
 
     func testShapeIsNilWhenNeitherSettingsNorTheSpecSetIt() {
-        let configured = Crew(id: "placard", displayName: "placard")
-        let merged = merge(configured: [configured], served: [served(id: "placard")])
+        let configured = Crew(id: "signpost", displayName: "signpost")
+        let merged = merge(configured: [configured], served: [served(id: "signpost")])
         XCTAssertNil(merged[0].shape)
     }
 
@@ -200,8 +200,8 @@ final class CrewMergeTests: XCTestCase {
     }
 
     func testDocumentsAreEmptyWhenNeitherSettingsNorTheSpecSetThem() {
-        let configured = Crew(id: "placard", displayName: "placard")
-        let merged = merge(configured: [configured], served: [served(id: "placard")])
+        let configured = Crew(id: "signpost", displayName: "signpost")
+        let merged = merge(configured: [configured], served: [served(id: "signpost")])
         XCTAssertEqual(merged[0].documents, [])
     }
 
@@ -221,11 +221,11 @@ final class CrewMergeTests: XCTestCase {
         // The child's display name is left unset (equal to its own name),
         // the same sentinel the crew-level test above relies on, so the
         // spec's "Build" fills the gap.
-        let configured = Crew(id: "placard", displayName: "Placard",
-                              sessions: [PinnedSession(name: "placard--build",
-                                                        displayName: "placard--build")])
-        let spec = served(id: "placard", sessions: [
-            ServedCrew.Child(name: "placard--build", displayName: "Build", sessionId: "$19"),
+        let configured = Crew(id: "signpost", displayName: "Signpost",
+                              sessions: [PinnedSession(name: "signpost--build",
+                                                        displayName: "signpost--build")])
+        let spec = served(id: "signpost", sessions: [
+            ServedCrew.Child(name: "signpost--build", displayName: "Build", sessionId: "$19"),
         ])
         let merged = merge(configured: [configured], served: [spec])
 
@@ -237,10 +237,10 @@ final class CrewMergeTests: XCTestCase {
     /// An explicitly set child display name is never overwritten by the
     /// spec — the same "Settings wins" precedence as the crew level.
     func testAnExplicitChildDisplayNameIsNotOverwrittenByTheSpec() {
-        let configured = Crew(id: "placard", displayName: "Placard",
-                              sessions: [PinnedSession(name: "placard--build", displayName: "My Build")])
-        let spec = served(id: "placard", sessions: [
-            ServedCrew.Child(name: "placard--build", displayName: "Build", sessionId: "$19"),
+        let configured = Crew(id: "signpost", displayName: "Signpost",
+                              sessions: [PinnedSession(name: "signpost--build", displayName: "My Build")])
+        let spec = served(id: "signpost", sessions: [
+            ServedCrew.Child(name: "signpost--build", displayName: "Build", sessionId: "$19"),
         ])
         let merged = merge(configured: [configured], served: [spec])
         XCTAssertEqual(merged[0].sessions[0].displayName, "My Build")
@@ -248,12 +248,12 @@ final class CrewMergeTests: XCTestCase {
     }
 
     func testASpecOnlyChildIsAppended() {
-        let configured = Crew(id: "placard", displayName: "Placard")
-        let spec = served(id: "placard", sessions: [
-            ServedCrew.Child(name: "placard--build", displayName: "Build", sessionId: "$19"),
+        let configured = Crew(id: "signpost", displayName: "Signpost")
+        let spec = served(id: "signpost", sessions: [
+            ServedCrew.Child(name: "signpost--build", displayName: "Build", sessionId: "$19"),
         ])
         let merged = merge(configured: [configured], served: [spec])
-        XCTAssertEqual(merged[0].sessions.map(\.name), ["placard--build"])
+        XCTAssertEqual(merged[0].sessions.map(\.name), ["signpost--build"])
         XCTAssertEqual(merged[0].sessions.map(\.sessionId), ["$19"])
     }
 
@@ -317,17 +317,91 @@ final class CrewMergeTests: XCTestCase {
                        "the configured row on guest is untouched by mini's same-numbered session")
     }
 
+    // MARK: - a catalog entry is a served crew, unpinned
+
+    /// THE BUG THIS GUARDS. Unpinning a served-only crew in Settings ›
+    /// Sessions writes it into `catalog` (`SessionRoster.applied(to:)`), but
+    /// `merge` used to know nothing of the catalog, so the very next rail
+    /// build drew the same crew pinned again, right beside its own catalog
+    /// row — one crew, two rows, sharing a `SessionRef`.
+    func testAServedCrewAlreadyInTheCatalogDoesNotAlsoDrawPinned() {
+        let atlas = served(id: "atlas", displayName: "Atlas")
+        let catalog = [LaunchableSession(id: "atlas", displayName: "Atlas")]
+        let merged = CrewMerge.merge(configured: [], served: [atlas], catalog: catalog,
+                                     hosts: miniHosts, defaultHost: "mini")
+        XCTAssertTrue(merged.isEmpty, "atlas is the catalog row, unpinned — not a second, pinned copy")
+    }
+
+    /// A catalog entry on a DIFFERENT host than the served spec names is a
+    /// different crew (every machine can serve its own `atlas`), so it must
+    /// not swallow this host's row.
+    func testACatalogEntryOnADifferentHostDoesNotSuppressTheServedCrew() {
+        let hosts = [HostEntry(name: "mini", user: TestHost.user, address: TestHost.address),
+                    HostEntry(name: "guest", user: TestHost.secondaryUser, address: TestHost.secondaryAddress)]
+        let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas")
+        let catalog = [LaunchableSession(id: "atlas", displayName: "Atlas", host: "guest")]
+        let merged = CrewMerge.merge(configured: [], served: [atlas], catalog: catalog,
+                                     hosts: hosts, defaultHost: "mini")
+        XCTAssertEqual(merged.map(\.id), ["atlas"], "mini's atlas has no catalog row of its own")
+    }
+
+    /// A served crew the catalog does NOT hold still draws pinned, exactly
+    /// as before — the exclusion is scoped to the crew the catalog actually
+    /// names, not every served crew once any catalog entry exists.
+    func testAServedCrewNotInTheCatalogStillDrawsPinned() {
+        let atlas = served(id: "atlas", displayName: "Atlas")
+        let catalog = [LaunchableSession(id: "lakeside", displayName: "Lakeside")]
+        let merged = CrewMerge.merge(configured: [], served: [atlas], catalog: catalog,
+                                     hosts: miniHosts, defaultHost: "mini")
+        XCTAssertEqual(merged.map(\.id), ["atlas"])
+    }
+
+    /// `catalogMatch` is the catalog-side counterpart to `match`: the served
+    /// spec a catalog row's (host, id) names, used to fill it the way a
+    /// rail row would be filled.
+    func testCatalogMatchFindsTheServedSpecOfTheSameHostAndId() {
+        let atlas = served(id: "atlas", displayName: "Atlas", workingDirectory: "\(TestHost.homeRoot)/Convivy/atlas")
+        let entry = LaunchableSession(id: "atlas", displayName: "atlas")
+        let match = CrewMerge.catalogMatch(entry, in: [atlas], hosts: miniHosts, defaultHost: "mini")
+        XCTAssertEqual(match?.crewId, "atlas")
+    }
+
+    /// `applyingToCatalog` fills a catalog row's unset fields from its
+    /// matched spec, the same rule `applying` gives a rail row — minus
+    /// `sessionId`, which `LaunchableSession` has no field for.
+    func testApplyingToCatalogFillsUnsetFieldsFromTheServedSpec() {
+        let atlas = served(id: "atlas", displayName: "Atlas",
+                          workingDirectory: "\(TestHost.homeRoot)/Convivy/atlas",
+                          project: "atlas-project", bead: "atlas/bead/atlas")
+        let entry = LaunchableSession(id: "atlas", displayName: "atlas")
+        let filled = CrewMerge.applyingToCatalog(atlas, to: entry, hosts: miniHosts)
+        XCTAssertEqual(filled.displayName, "Atlas")
+        XCTAssertEqual(filled.workingDirectory, "\(TestHost.homeRoot)/Convivy/atlas")
+        XCTAssertEqual(filled.project, "atlas-project")
+        XCTAssertEqual(filled.bead, "atlas/bead/atlas")
+    }
+
+    /// A catalog row's own edit (a renamed display name, here) is never
+    /// overwritten by the spec's — the identical "fills only what was left
+    /// unset" rule `applying` follows for a rail row.
+    func testApplyingToCatalogNeverOverwritesAnEditedField() {
+        let atlas = served(id: "atlas", displayName: "Atlas")
+        let entry = LaunchableSession(id: "atlas", displayName: "My Atlas")
+        let filled = CrewMerge.applyingToCatalog(atlas, to: entry, hosts: miniHosts)
+        XCTAssertEqual(filled.displayName, "My Atlas")
+    }
+
     // MARK: - `sparse`/`match`/`isUnedited`, the inverse `SessionRoster.applied(to:)`
     // needs so persisting a merged crew cannot freeze a spec's own fill into
     // local config — see `issue_01M2P6E8EQHDMWFY02Q4GVMZ7R` and that
     // function's doc.
 
     func testMatchFindsTheServedRowMergeWouldHaveUsed() {
-        let spec = served(id: "placard")
+        let spec = served(id: "signpost")
         XCTAssertEqual(
-            CrewMerge.match(Crew(id: "placard", displayName: "placard"), in: [spec],
+            CrewMerge.match(Crew(id: "signpost", displayName: "signpost"), in: [spec],
                             hosts: miniHosts, defaultHost: "mini")?.crewId,
-            "placard")
+            "signpost")
     }
 
     func testMatchPrefersSessionIdOverCrewId() {
@@ -394,10 +468,10 @@ final class CrewMergeTests: XCTestCase {
     /// state `isUnedited` recognizes — the round trip a served-only row
     /// must complete with nothing written to local config at all.
     func testSparseOfAnUntouchedServedOnlyCrewIsFullyUnset() {
-        let spec = served(id: "placard", displayName: "Placard",
-                          workingDirectory: "\(TestHost.homeRoot)/Convivy/placard",
-                          sessionId: "$58", project: "placard", bead: "placard/bead/placard",
-                          repo: "convivy/placard", shape: "board", documents: ["backlog.md"])
+        let spec = served(id: "signpost", displayName: "Signpost",
+                          workingDirectory: "\(TestHost.homeRoot)/Convivy/signpost",
+                          sessionId: "$58", project: "signpost", bead: "signpost/bead/signpost",
+                          repo: "convivy/signpost", shape: "board", documents: ["backlog.md"])
         let merged = merge(configured: [], served: [spec])[0]
         let sparse = CrewMerge.sparse(merged, relativeTo: spec, hosts: miniHosts)
         XCTAssertTrue(CrewMerge.isUnedited(sparse))
@@ -407,15 +481,15 @@ final class CrewMergeTests: XCTestCase {
     /// leaves every other field stripped back to unset — this is the sparse
     /// override itself, not merely the all-or-nothing case above.
     func testSparseKeepsOnlyTheFieldThatDiffersFromTheSpec() {
-        let spec = served(id: "placard", displayName: "Placard",
-                          workingDirectory: "\(TestHost.homeRoot)/Convivy/placard")
+        let spec = served(id: "signpost", displayName: "Signpost",
+                          workingDirectory: "\(TestHost.homeRoot)/Convivy/signpost")
         var merged = merge(configured: [], served: [spec])[0]
-        merged.repo = "convivy/placard"
+        merged.repo = "convivy/signpost"
         let sparse = CrewMerge.sparse(merged, relativeTo: spec, hosts: miniHosts)
 
-        XCTAssertEqual(sparse.repo, "convivy/placard", "the edit survives")
+        XCTAssertEqual(sparse.repo, "convivy/signpost", "the edit survives")
         XCTAssertNil(sparse.workingDirectory, "untouched, so it keeps following the spec")
-        XCTAssertEqual(sparse.displayName, "placard", "untouched, so displayName reverts to the unset sentinel")
+        XCTAssertEqual(sparse.displayName, "signpost", "untouched, so displayName reverts to the unset sentinel")
         XCTAssertFalse(CrewMerge.isUnedited(sparse))
     }
 

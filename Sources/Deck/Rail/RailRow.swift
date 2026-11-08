@@ -69,6 +69,33 @@ struct RailRow: View {
     /// the config write, the same division every other destructive or
     /// structural action here already follows.
     var onSetParent: ((String?) -> Void)? = nil
+    /// Whether this crew sits at the rail's top level. Groups only ever
+    /// hold a top-level crew — see `CrewGroup`'s own doc for why a nested
+    /// crew or pinned child can never be a member — so "Move to
+    /// Group"/"Remove from Group" are offered only when this is true,
+    /// regardless of what the shell passes for `otherGroups`/`isInGroup`.
+    /// Defaults to true, so a call site that predates groups, or any crew
+    /// row that is not itself nested, keeps offering them.
+    var isTopLevel: Bool = true
+    /// Every group `crew` could move into — every group except the one it
+    /// already belongs to, resolved by the shell (`RailNesting.group`).
+    /// Offered on `isTopLevel` rows only.
+    var otherGroups: [CrewGroup] = []
+    /// Whether `crew` currently belongs to a group — gates "Remove from
+    /// Group" the same way `onSetParent`/`crew.parent != nil` gates "Move
+    /// to Top Level".
+    var isInGroup: Bool = false
+    /// "Move to Group ▸ <name>" was chosen. The shell owns the
+    /// `ThemeStore.moveCrew(_:toGroup:)` call, the same division every
+    /// other structural action here already follows.
+    var onMoveToGroup: ((String) -> Void)? = nil
+    /// "Move to Group ▸ New Group…" was chosen. The shell owns the name
+    /// prompt (mirroring `onRename`'s alert) and the
+    /// `ThemeStore.createGroup(named:firstMember:)` call.
+    var onCreateGroup: (() -> Void)? = nil
+    /// "Remove from Group" was chosen. The shell owns the
+    /// `ThemeStore.removeCrewFromGroup` call.
+    var onRemoveFromGroup: (() -> Void)? = nil
     /// "user@machine" for this crew's resolved host — `HostDisplay.crewLabel`,
     /// resolved by the shell. Nil unless this row's name is drawn by more
     /// than one entry on the rail right now, so an ordinary install with no
@@ -401,6 +428,19 @@ struct RailRow: View {
                 }
                 if crew.parent != nil {
                     Button("Move to Top Level") { onSetParent(nil) }
+                }
+            }
+            if isTopLevel, let onMoveToGroup, let onCreateGroup {
+                Divider()
+                Menu("Move to Group") {
+                    ForEach(otherGroups, id: \.name) { group in
+                        Button(group.name) { onMoveToGroup(group.name) }
+                    }
+                    if !otherGroups.isEmpty { Divider() }
+                    Button("New Group…", action: onCreateGroup)
+                }
+                if isInGroup, let onRemoveFromGroup {
+                    Button("Remove from Group", action: onRemoveFromGroup)
                 }
             }
             if let onRemove {

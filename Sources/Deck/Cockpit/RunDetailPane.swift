@@ -169,7 +169,7 @@ struct RunDetailPane: View {
             Button(action: onClose) { Image(systemName: "xmark") }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Close and return to the cockpit")
+                .help("Close and go back to where this was opened from")
         }
         .padding(.horizontal, 10).padding(.vertical, 4)
     }

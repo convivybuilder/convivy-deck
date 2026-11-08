@@ -8,33 +8,33 @@ final class SessionLifecycleTests: XCTestCase {
     // MARK: - The batched states read
 
     func testStatesBatchesEveryNameIntoOneCommand() throws {
-        let argv = try SessionAgent.statesArguments(target: TestHost.target, sessions: ["vivy", "deck", "selector"])
+        let argv = try SessionAgent.statesArguments(target: TestHost.target, sessions: ["orchard", "deck", "lantern"])
         // One `states` verb, then every validated name — one ssh call for the
         // whole rail rather than one per row.
         guard let verb = argv.firstIndex(of: "states") else {
             return XCTFail("no states verb in \(argv)")
         }
-        XCTAssertEqual(Array(argv[(verb + 1)...]), ["vivy", "deck", "selector"])
+        XCTAssertEqual(Array(argv[(verb + 1)...]), ["orchard", "deck", "lantern"])
         XCTAssertTrue(argv.contains("session-agent"))
     }
 
     func testAnInvalidNameNeverReachesTheBatchedArgv() {
         for hostile in ["deck; rm -rf /", "a b", "", String(repeating: "d", count: 65)] {
             XCTAssertThrowsError(
-                try SessionAgent.statesArguments(target: TestHost.target, sessions: ["vivy", hostile]), hostile)
+                try SessionAgent.statesArguments(target: TestHost.target, sessions: ["orchard", hostile]), hostile)
         }
     }
 
     func testStatesDecodesTheKeyedObjectPerSession() throws {
         // The shape `session-agent states` emits: a brief state keyed by name.
         let json = """
-            {"vivy": {"session":"vivy","state":"working","alive":true},
+            {"orchard": {"session":"orchard","state":"working","alive":true},
              "deck": {"session":"deck","state":"unknown","alive":false,
                       "reason":"no claude process found in any pane of 'deck'"}}
             """
         let decoded = try SessionAgent.decodeStates(Data(json.utf8))
-        XCTAssertEqual(decoded["vivy"]?.phase, .working)
-        XCTAssertEqual(decoded["vivy"]?.alive, true)
+        XCTAssertEqual(decoded["orchard"]?.phase, .working)
+        XCTAssertEqual(decoded["orchard"]?.alive, true)
         XCTAssertEqual(decoded["deck"]?.alive, false)
     }
 

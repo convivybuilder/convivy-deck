@@ -52,6 +52,16 @@ enum PreInstallCheck {
     /// still ends as `.couldNotCheck`.
     static let timeout: TimeInterval = 60
 
+    /// The remote command, run through the user's LOGIN shell. ssh runs a
+    /// command in a non-login shell, and Claude Code's Linux installer puts
+    /// `claude` in `~/.local/bin`, which a stock Debian account adds to PATH
+    /// only in `.profile`. Run bare, `claude` was not found on such a host
+    /// and the check reported it not installed (live install check 2,
+    /// 2026-10-20). A login shell is also what tmux gives the sessions that
+    /// will run `claude` after the install, so the check sees their PATH.
+    /// `$SHELL` is expanded by the remote shell; the text is fixed.
+    static let claudeCommand = #"exec "$SHELL" -lc 'claude -p ok --max-turns 1 --model haiku'"#
+
     static func claudeArguments(
         target: SSHTarget,
         controlPath: String = defaultControlPath(),
@@ -66,7 +76,7 @@ enum PreInstallCheck {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
             "\(user)@\(host)",
-            "claude", "-p", "ok", "--max-turns", "1", "--model", "haiku",
+            claudeCommand,
         ], home: home)
     }
 

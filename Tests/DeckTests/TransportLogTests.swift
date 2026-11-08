@@ -35,10 +35,10 @@ final class TransportLogTests: XCTestCase {
     /// existing.
     func testAppendedLineCarriesATimestampHostAndEventSeparatedBySpaces() {
         let log = TransportLog(directory: tempDir)
-        log.append(host: "vivy@fleet-mini", event: "control-check result=confirmedDead")
+        log.append(host: "orchard@fleet-mini", event: "control-check result=confirmedDead")
 
         let line = contents(tempDir.appendingPathComponent("transport.log"))
-        let pattern = #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z vivy@fleet-mini control-check result=confirmedDead\n$"#
+        let pattern = #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z orchard@fleet-mini control-check result=confirmedDead\n$"#
         XCTAssertNotNil(line.range(of: pattern, options: .regularExpression),
                         "line did not match the pinned format: \(line)")
     }
@@ -47,8 +47,8 @@ final class TransportLogTests: XCTestCase {
     /// overwrite.
     func testTwoAppendsProduceTwoLinesInOrder() {
         let log = TransportLog(directory: tempDir)
-        log.append(host: "vivy@fleet-mini", event: "first")
-        log.append(host: "vivy@fleet-mini", event: "second")
+        log.append(host: "orchard@fleet-mini", event: "first")
+        log.append(host: "orchard@fleet-mini", event: "second")
 
         let lines = contents(tempDir.appendingPathComponent("transport.log"))
             .split(separator: "\n")
@@ -63,7 +63,7 @@ final class TransportLogTests: XCTestCase {
     /// underlying text was not one line.
     func testAQuotedMultilineEventStaysOnOneLine() {
         let log = TransportLog(directory: tempDir)
-        log.append(host: "vivy@fleet-mini",
+        log.append(host: "orchard@fleet-mini",
                    event: "transport-failure stderr=\(TransportLog.quoted("line one\nline two"))")
 
         let lines = contents(tempDir.appendingPathComponent("transport.log")).split(separator: "\n")
@@ -75,8 +75,8 @@ final class TransportLogTests: XCTestCase {
 
     func testHostLabelFromATargetIsUserAtHost() {
         XCTAssertEqual(
-            TransportLog.hostLabel(target: SSHTarget(user: "vivy", host: "fleet-mini")),
-            "vivy@fleet-mini")
+            TransportLog.hostLabel(target: SSHTarget(user: "orchard", host: "fleet-mini")),
+            "orchard@fleet-mini")
     }
 
     /// Every destination token this codebase builds is `"\(user)@\(host)"`
@@ -85,9 +85,9 @@ final class TransportLogTests: XCTestCase {
     /// `SessionAgent.run` recover a host label from argv alone, without a
     /// `SSHTarget` in hand.
     func testHostLabelFromArgvFindsTheDestinationToken() {
-        let argv = ["-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/deck-cm-%C", "vivy@fleet-mini",
+        let argv = ["-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/deck-cm-%C", "orchard@fleet-mini",
                     "session-agent", "state", "deck"]
-        XCTAssertEqual(TransportLog.hostLabel(fromArgv: argv), "vivy@fleet-mini")
+        XCTAssertEqual(TransportLog.hostLabel(fromArgv: argv), "orchard@fleet-mini")
     }
 
     func testHostLabelFromArgvWithNoDestinationTokenIsUnknown() {
@@ -148,10 +148,10 @@ final class TransportLogTests: XCTestCase {
         let filler = String(repeating: "x", count: 90)
         // The first line has no existing file to measure, so it always
         // writes rather than rotating — there is nothing yet to rotate.
-        log.append(host: "vivy@fleet-mini", event: filler)
+        log.append(host: "orchard@fleet-mini", event: filler)
         // The second line's own size, added to the first's, crosses 100,
         // which is what triggers the rotation this test checks for.
-        log.append(host: "vivy@fleet-mini", event: filler)
+        log.append(host: "orchard@fleet-mini", event: filler)
 
         let currentURL = tempDir.appendingPathComponent("transport.log")
         let previousURL = tempDir.appendingPathComponent("transport.log.1")
@@ -168,7 +168,7 @@ final class TransportLogTests: XCTestCase {
         let log = TransportLog(directory: tempDir, maxBytes: 100)
         let filler = String(repeating: "x", count: 90)
         for n in 0..<5 {
-            log.append(host: "vivy@fleet-mini", event: "\(filler)\(n)")
+            log.append(host: "orchard@fleet-mini", event: "\(filler)\(n)")
         }
 
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: tempDir.path)) ?? []
@@ -184,7 +184,7 @@ final class TransportLogTests: XCTestCase {
         let log = TransportLog(directory: tempDir, maxBytes: maxBytes)
         let filler = String(repeating: "x", count: 50)
         for n in 0..<40 {
-            log.append(host: "vivy@fleet-mini", event: "\(filler)\(n)")
+            log.append(host: "orchard@fleet-mini", event: "\(filler)\(n)")
         }
 
         let currentURL = tempDir.appendingPathComponent("transport.log")

@@ -1301,8 +1301,11 @@ enum SessionAgent {
                     throwOnNonZeroExit: Bool = true,
                     timeout: TimeInterval = defaultTimeout,
                     staleSocketRecovery: (target: SSHTarget, controlPath: String)? = nil,
-                    transportLog: TransportLog = .shared) throws -> Data {
+                    transportLog: TransportLog = .shared,
+                    sshExecutable: String = "/usr/bin/ssh") throws -> Data {
         let started = Date()
+        let runViaExecutable: (_ argv: [String], _ stdin: String?, _ timeout: TimeInterval) throws -> SSHProcessOutcome
+            = { a, s, t in try SSHProcessRunner.run(a, stdin: s, timeout: t, executable: sshExecutable) }
         // `runQueued` holds this call to `SSHConnectionGate`'s own cap on
         // sessions through one ControlMaster, queueing it FIFO behind
         // whatever else is already using that master and requeuing it
@@ -1310,7 +1313,7 @@ enum SessionAgent {
         // an outcome reaches here, ssh's own refusal wording has already
         // been retried past, which is also why the transport-failure check
         // below excludes it explicitly rather than relying on that alone.
-        let outcome = try SSHProcessRunner.runQueued(argv, stdin: stdin, timeout: timeout)
+        let outcome = try SSHProcessRunner.runQueued(argv, stdin: stdin, timeout: timeout, run: runViaExecutable)
         // ssh's own documented convention: 255 is the client's own transport
         // failure, distinct from a remote command's forwarded exit status.
         // Only that shape, or our own watchdog firing, is worth spending a
@@ -1343,12 +1346,39 @@ enum SessionAgent {
             if let staleSocketRecovery {
                 let check = SSHControlSocket.check(
                     target: staleSocketRecovery.target, controlPath: staleSocketRecovery.controlPath,
-                    transportLog: transportLog)
-                if check.warrantsClearing {
+                    sshExecutable: sshExecutable, transportLog: transportLog)
+                var masterIsGone = check.warrantsClearing
+                if !masterIsGone {
+                    // `confirmedAlive` ONLY MEANS THE LOCAL MASTER PROCESS
+                    // ANSWERED — `-O check` never crosses the network, so it
+                    // cannot tell a master whose transport died under it
+                    // apart from a genuinely healthy one (CQ·166: 241
+                    // requests on the operator laptop failed transport and
+                    // were followed by `confirmedAlive` on every one of
+                    // them). The probe below sends a real request through
+                    // the SAME master, so it fails exactly when the request
+                    // that triggered this recovery did.
+                    let probe = SSHControlSocket.probe(
+                        target: staleSocketRecovery.target, controlPath: staleSocketRecovery.controlPath,
+                        sshExecutable: sshExecutable, transportLog: transportLog)
+                    if probe != .passed {
+                        let stopped = SSHControlSocket.stop(
+                            target: staleSocketRecovery.target, controlPath: staleSocketRecovery.controlPath,
+                            sshExecutable: sshExecutable, transportLog: transportLog)
+                        if !stopped {
+                            SSHControlSocket.clear(
+                                target: staleSocketRecovery.target, controlPath: staleSocketRecovery.controlPath,
+                                sshExecutable: sshExecutable, transportLog: transportLog)
+                        }
+                        masterIsGone = true
+                    }
+                } else {
                     SSHControlSocket.clear(
                         target: staleSocketRecovery.target, controlPath: staleSocketRecovery.controlPath,
-                        transportLog: transportLog)
-                    let retried = try SSHProcessRunner.runQueued(argv, stdin: stdin, timeout: timeout)
+                        sshExecutable: sshExecutable, transportLog: transportLog)
+                }
+                if masterIsGone {
+                    let retried = try SSHProcessRunner.runQueued(argv, stdin: stdin, timeout: timeout, run: runViaExecutable)
                     transportLog.append(
                         host: host,
                         event: "retry timed_out=\(retried.timedOut) exit=\(retried.terminationStatus)")

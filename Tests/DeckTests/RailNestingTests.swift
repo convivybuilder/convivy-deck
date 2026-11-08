@@ -10,23 +10,23 @@ final class RailNestingTests: XCTestCase {
     func testFlatListDrawsEveryCrewTopLevelInOrder() {
         let crews = [
             Crew(id: "steward", displayName: "Steward"),
-            Crew(id: "vivy", displayName: "Vivy"),
-            Crew(id: "constance", displayName: "Constance"),
+            Crew(id: "orchard", displayName: "Orchard"),
+            Crew(id: "meridian", displayName: "Meridian"),
         ]
         let rows = RailNesting.flatten(crews)
-        XCTAssertEqual(rows.map(\.crew.id), ["steward", "vivy", "constance"])
+        XCTAssertEqual(rows.map(\.crew.id), ["steward", "orchard", "meridian"])
         XCTAssertTrue(rows.allSatisfy { $0.depth == 0 })
     }
 
-    /// The spec's own worked example: `vivy-commercial` nests under `vivy`.
+    /// The spec's own worked example: `orchard-commercial` nests under `orchard`.
     func testOneNestedCrewDrawsAfterItsParent() {
         let crews = [
-            Crew(id: "vivy", displayName: "Vivy"),
-            Crew(id: "constance", displayName: "Constance"),
-            Crew(id: "vivy-commercial", displayName: "Commercial", parent: "vivy"),
+            Crew(id: "orchard", displayName: "Orchard"),
+            Crew(id: "meridian", displayName: "Meridian"),
+            Crew(id: "orchard-commercial", displayName: "Commercial", parent: "orchard"),
         ]
         let rows = RailNesting.flatten(crews)
-        XCTAssertEqual(rows.map(\.crew.id), ["vivy", "vivy-commercial", "constance"])
+        XCTAssertEqual(rows.map(\.crew.id), ["orchard", "orchard-commercial", "meridian"])
         XCTAssertEqual(rows.map(\.depth), [0, 1, 0])
     }
 
@@ -35,13 +35,13 @@ final class RailNestingTests: XCTestCase {
     /// children already follow.
     func testSeveralCrewsNestedUnderOneParentKeepConfigOrder() {
         let crews = [
-            Crew(id: "vivy", displayName: "Vivy"),
-            Crew(id: "vivy-commercial", displayName: "Commercial", parent: "vivy"),
-            Crew(id: "vivy-labs", displayName: "Labs", parent: "vivy"),
-            Crew(id: "constance", displayName: "Constance"),
+            Crew(id: "orchard", displayName: "Orchard"),
+            Crew(id: "orchard-commercial", displayName: "Commercial", parent: "orchard"),
+            Crew(id: "orchard-labs", displayName: "Labs", parent: "orchard"),
+            Crew(id: "meridian", displayName: "Meridian"),
         ]
         let rows = RailNesting.flatten(crews)
-        XCTAssertEqual(rows.map(\.crew.id), ["vivy", "vivy-commercial", "vivy-labs", "constance"])
+        XCTAssertEqual(rows.map(\.crew.id), ["orchard", "orchard-commercial", "orchard-labs", "meridian"])
         XCTAssertEqual(rows.map(\.depth), [0, 1, 1, 0])
     }
 
@@ -123,19 +123,19 @@ final class RailNestingTests: XCTestCase {
     // MARK: - eligibleParents ("Nest under ▸")
 
     func testEligibleParentsExcludesSelf() {
-        let crews = [Crew(id: "ask", displayName: "Ask"), Crew(id: "vivy", displayName: "Vivy")]
+        let crews = [Crew(id: "ask", displayName: "Ask"), Crew(id: "orchard", displayName: "Orchard")]
         let eligible = RailNesting.eligibleParents(for: crews[0], in: crews)
         XCTAssertFalse(eligible.map(\.id).contains("ask"))
     }
 
     func testEligibleParentsExcludesTheCurrentParent() {
         let crews = [
-            Crew(id: "vivy", displayName: "Vivy"),
-            Crew(id: "constance", displayName: "Constance"),
-            Crew(id: "vivy-commercial", displayName: "Commercial", parent: "vivy"),
+            Crew(id: "orchard", displayName: "Orchard"),
+            Crew(id: "meridian", displayName: "Meridian"),
+            Crew(id: "orchard-commercial", displayName: "Commercial", parent: "orchard"),
         ]
         let eligible = RailNesting.eligibleParents(for: crews[2], in: crews)
-        XCTAssertEqual(eligible.map(\.id), ["constance"])
+        XCTAssertEqual(eligible.map(\.id), ["meridian"])
     }
 
     /// Only a crew with no `parent` of its own can be offered — nesting
@@ -143,22 +143,22 @@ final class RailNestingTests: XCTestCase {
     /// instant it was chosen.
     func testEligibleParentsExcludesAlreadyNestedCrews() {
         let crews = [
-            Crew(id: "vivy", displayName: "Vivy"),
-            Crew(id: "vivy-commercial", displayName: "Commercial", parent: "vivy"),
+            Crew(id: "orchard", displayName: "Orchard"),
+            Crew(id: "orchard-commercial", displayName: "Commercial", parent: "orchard"),
             Crew(id: "ask", displayName: "Ask"),
         ]
         let eligible = RailNesting.eligibleParents(for: crews[2], in: crews)
-        XCTAssertEqual(eligible.map(\.id), ["vivy"])
+        XCTAssertEqual(eligible.map(\.id), ["orchard"])
     }
 
     func testEligibleParentsForAnUnnestedCrewListsEveryOtherTopLevelCrew() {
         let crews = [
-            Crew(id: "vivy", displayName: "Vivy"),
-            Crew(id: "constance", displayName: "Constance"),
+            Crew(id: "orchard", displayName: "Orchard"),
+            Crew(id: "meridian", displayName: "Meridian"),
             Crew(id: "ask", displayName: "Ask"),
         ]
         let eligible = RailNesting.eligibleParents(for: crews[2], in: crews)
-        XCTAssertEqual(eligible.map(\.id), ["vivy", "constance"])
+        XCTAssertEqual(eligible.map(\.id), ["orchard", "meridian"])
     }
 
     // MARK: - Accent inheritance composes with ThemeConfiguration.theme(forSession:fallbackParent:)
@@ -170,31 +170,31 @@ final class RailNestingTests: XCTestCase {
     /// `fallbackParent`.
     func testNestedCrewWithNoThemeResolvesToItsParents() {
         let crews = [
-            Crew(id: "vivy", displayName: "Vivy"),
-            Crew(id: "vivy-commercial", displayName: "Commercial", parent: "vivy"),
+            Crew(id: "orchard", displayName: "Orchard"),
+            Crew(id: "orchard-commercial", displayName: "Commercial", parent: "orchard"),
         ]
         let config = ThemeConfiguration(
-            sessions: [SessionRef(host: nil, name: "vivy"): "azure"], appearancePreference: .system, typography: .default)
+            sessions: [SessionRef(host: nil, name: "orchard"): "azure"], appearancePreference: .system, typography: .default)
         let parent = RailNesting.nestingParent(of: crews[1], in: crews)
-        XCTAssertEqual(parent?.id, "vivy")
+        XCTAssertEqual(parent?.id, "orchard")
         XCTAssertEqual(
-            config.theme(forSession: SessionRef(host: nil, name: "vivy-commercial"), fallbackParent: parent?.ref).name,
-            config.theme(forSession: SessionRef(host: nil, name: "vivy")).name)
+            config.theme(forSession: SessionRef(host: nil, name: "orchard-commercial"), fallbackParent: parent?.ref).name,
+            config.theme(forSession: SessionRef(host: nil, name: "orchard")).name)
     }
 
     /// A nested crew that HAS its own theme keeps it — inheritance is only
     /// the fallback for a crew with none of its own.
     func testNestedCrewWithItsOwnThemeKeepsIt() {
         let crews = [
-            Crew(id: "vivy", displayName: "Vivy"),
-            Crew(id: "vivy-commercial", displayName: "Commercial", parent: "vivy"),
+            Crew(id: "orchard", displayName: "Orchard"),
+            Crew(id: "orchard-commercial", displayName: "Commercial", parent: "orchard"),
         ]
         let config = ThemeConfiguration(
-            sessions: [SessionRef(host: nil, name: "vivy"): "azure", SessionRef(host: nil, name: "vivy-commercial"): "gold"],
+            sessions: [SessionRef(host: nil, name: "orchard"): "azure", SessionRef(host: nil, name: "orchard-commercial"): "gold"],
             appearancePreference: .system, typography: .default)
         let parent = RailNesting.nestingParent(of: crews[1], in: crews)
         XCTAssertEqual(
-            config.theme(forSession: SessionRef(host: nil, name: "vivy-commercial"), fallbackParent: parent?.ref).name,
+            config.theme(forSession: SessionRef(host: nil, name: "orchard-commercial"), fallbackParent: parent?.ref).name,
             ThemeCatalog.named("gold")?.name)
     }
 
@@ -216,6 +216,276 @@ final class RailNestingTests: XCTestCase {
         XCTAssertTrue(firstNine.allSatisfy { !$0.id.hasPrefix("nested") })
     }
 
+    // MARK: - drawItems / drawOrderCrews / foldedGroup (E24, CQ·183)
+
+    /// No groups: every crew draws ungrouped, in rail order — identical to
+    /// today's `topLevelCrews`.
+    func testDrawItemsWithNoGroupsMatchesTopLevelOrder() {
+        let crews = [
+            Crew(id: "steward", displayName: "Steward"),
+            Crew(id: "orchard", displayName: "Orchard"),
+            Crew(id: "meridian", displayName: "Meridian"),
+        ]
+        let items = RailNesting.drawItems(for: crews, groups: [])
+        XCTAssertEqual(items.map(\.id), crews.map { "crew:\($0.ref.stringForm)" })
+        for item in items {
+            guard case .crew = item.kind else { return XCTFail("expected every item to be an ungrouped crew") }
+        }
+        XCTAssertEqual(RailNesting.drawOrderCrews(for: crews, groups: []).map(\.id), crews.map(\.id))
+    }
+
+    /// An open group draws at its first member's rail position, carrying
+    /// every member still on the rail in rail order; ungrouped crews keep
+    /// their own places around it.
+    func testOpenGroupDrawsAtItsFirstMembersPosition() {
+        let crews = [
+            Crew(id: "a", displayName: "A"),
+            Crew(id: "b", displayName: "B"),
+            Crew(id: "c", displayName: "C"),
+            Crew(id: "d", displayName: "D"),
+        ]
+        let group = CrewGroup(name: "Rentals", members: ["b", "d"], folded: false)
+        let items = RailNesting.drawItems(for: crews, groups: [group])
+        XCTAssertEqual(items.count, 3, "a, the Rentals group, c")
+        guard case .crew(let first) = items[0].kind else { return XCTFail("expected a to draw ungrouped") }
+        XCTAssertEqual(first.id, "a")
+        guard case .group(let drawnGroup, let members) = items[1].kind else {
+            return XCTFail("expected the group to draw at b's position")
+        }
+        XCTAssertEqual(drawnGroup, group)
+        XCTAssertEqual(members.map(\.id), ["b", "d"], "members draw in rail order")
+        guard case .crew(let last) = items[2].kind else { return XCTFail("expected c to draw ungrouped") }
+        XCTAssertEqual(last.id, "c")
+    }
+
+    /// A folded group still carries its members in the draw item — what a
+    /// folded heading's colour marks and summed badge are built from —
+    /// even though `RailView` draws only the heading for it.
+    func testFoldedGroupStillCarriesItsMembers() {
+        let crews = [Crew(id: "a", displayName: "A"), Crew(id: "b", displayName: "B")]
+        let group = CrewGroup(name: "Folded", members: ["a", "b"], folded: true)
+        let items = RailNesting.drawItems(for: crews, groups: [group])
+        XCTAssertEqual(items.count, 1)
+        guard case .group(let drawnGroup, let members) = items[0].kind else {
+            return XCTFail("expected a single group item")
+        }
+        XCTAssertTrue(drawnGroup.folded)
+        XCTAssertEqual(members.map(\.id), ["a", "b"])
+    }
+
+    /// A member that is itself a parent, with its own nested crew and
+    /// pinned sessions, carries both unaffected — group membership buckets
+    /// a top-level crew's own row; its children are unrelated to grouping.
+    func testGroupMemberKeepsItsNestedCrewAndPinnedSessions() {
+        let pinned = PinnedSession(name: "a--sibling", displayName: "Sibling")
+        let crews = [
+            Crew(id: "a", displayName: "A", sessions: [pinned]),
+            Crew(id: "a-nested", displayName: "Nested", parent: "a"),
+            Crew(id: "b", displayName: "B"),
+        ]
+        let group = CrewGroup(name: "G", members: ["a"], folded: false)
+        let items = RailNesting.drawItems(for: crews, groups: [group])
+        guard case .group(_, let members) = items[0].kind else { return XCTFail("expected a group item") }
+        XCTAssertEqual(members.map(\.id), ["a"])
+        XCTAssertEqual(members[0].sessions, [pinned])
+        // The nested crew is not itself a group member — it travels with
+        // `a` via the existing one-level nesting rule, unrelated to groups.
+        XCTAssertEqual(RailNesting.nestingParent(of: crews[1], in: crews)?.id, "a")
+    }
+
+    /// A member naming a crew not on the rail is ignored.
+    func testDanglingGroupMemberIsIgnored() {
+        let crews = [Crew(id: "a", displayName: "A")]
+        let group = CrewGroup(name: "G", members: ["a", "ghost"], folded: false)
+        let items = RailNesting.drawItems(for: crews, groups: [group])
+        guard case .group(_, let members) = items[0].kind else { return XCTFail("expected a group item") }
+        XCTAssertEqual(members.map(\.id), ["a"], "the dangling member should not appear")
+    }
+
+    /// A group none of whose members are on the rail draws nothing at all.
+    func testGroupWithNoLiveMembersDrawsNothing() {
+        let crews = [Crew(id: "a", displayName: "A")]
+        let group = CrewGroup(name: "Ghosts", members: ["ghost1", "ghost2"], folded: false)
+        let items = RailNesting.drawItems(for: crews, groups: [group])
+        XCTAssertEqual(items.count, 1)
+        guard case .crew(let only) = items[0].kind else { return XCTFail("expected a to draw ungrouped") }
+        XCTAssertEqual(only.id, "a")
+    }
+
+    /// A crew named in two groups belongs to the first.
+    func testCrewNamedInTwoGroupsBelongsToTheFirst() {
+        let crews = [Crew(id: "a", displayName: "A"), Crew(id: "b", displayName: "B")]
+        let first = CrewGroup(name: "First", members: ["a"], folded: false)
+        let second = CrewGroup(name: "Second", members: ["a", "b"], folded: false)
+        let items = RailNesting.drawItems(for: crews, groups: [first, second])
+        XCTAssertEqual(items.count, 2, "First (carrying a), then Second (carrying only b)")
+        guard case .group(let firstDrawn, let firstMembers) = items[0].kind else {
+            return XCTFail("expected First to draw")
+        }
+        XCTAssertEqual(firstDrawn.name, "First")
+        XCTAssertEqual(firstMembers.map(\.id), ["a"])
+        guard case .group(let secondDrawn, let secondMembers) = items[1].kind else {
+            return XCTFail("expected Second to draw, carrying only b")
+        }
+        XCTAssertEqual(secondDrawn.name, "Second")
+        XCTAssertEqual(secondMembers.map(\.id), ["b"])
+    }
+
+    /// `drawOrderCrews` flattens a group's members into the sequence
+    /// Cmd-1…9 counts against, even when the group reorders non-contiguous
+    /// rail rows next to each other.
+    func testDrawOrderCrewsFlattensGroupMembersInPlace() {
+        let crews = [
+            Crew(id: "a", displayName: "A"),
+            Crew(id: "b", displayName: "B"),
+            Crew(id: "c", displayName: "C"),
+            Crew(id: "d", displayName: "D"),
+        ]
+        let group = CrewGroup(name: "G", members: ["b", "d"], folded: true)
+        XCTAssertEqual(RailNesting.drawOrderCrews(for: crews, groups: [group]).map(\.id), ["a", "b", "d", "c"])
+    }
+
+    // MARK: - foldedGroup(containing:) (selection opens a folded group)
+
+    func testFoldedGroupContainingReturnsTheGroupForAFoldedMember() {
+        let group = CrewGroup(name: "G", members: ["a", "b"], folded: true)
+        XCTAssertEqual(RailNesting.foldedGroup(containing: "a", in: [group]), group)
+    }
+
+    func testFoldedGroupContainingReturnsNilWhenTheGroupIsAlreadyOpen() {
+        let group = CrewGroup(name: "G", members: ["a"], folded: false)
+        XCTAssertNil(RailNesting.foldedGroup(containing: "a", in: [group]))
+    }
+
+    func testFoldedGroupContainingReturnsNilForANonMember() {
+        let group = CrewGroup(name: "G", members: ["a"], folded: true)
+        XCTAssertNil(RailNesting.foldedGroup(containing: "elsewhere", in: [group]))
+    }
+
+    /// A crew in two folded groups opens the first, the same group it
+    /// actually draws under.
+    func testFoldedGroupContainingPicksTheFirstGroupForADoubleMember() {
+        let first = CrewGroup(name: "First", members: ["a"], folded: true)
+        let second = CrewGroup(name: "Second", members: ["a"], folded: true)
+        XCTAssertEqual(RailNesting.foldedGroup(containing: "a", in: [first, second]), first)
+    }
+
+    // MARK: - group(containing:) (CQ·184's own menu)
+
+    func testGroupContainingReturnsTheGroupRegardlessOfFoldState() {
+        let group = CrewGroup(name: "G", members: ["a"], folded: false)
+        XCTAssertEqual(RailNesting.group(containing: "a", in: [group]), group)
+    }
+
+    func testGroupContainingReturnsNilForANonMember() {
+        let group = CrewGroup(name: "G", members: ["a"], folded: false)
+        XCTAssertNil(RailNesting.group(containing: "elsewhere", in: [group]))
+    }
+
+    func testGroupContainingPicksTheFirstGroupForADoubleMember() {
+        let first = CrewGroup(name: "First", members: ["a"], folded: false)
+        let second = CrewGroup(name: "Second", members: ["a"], folded: false)
+        XCTAssertEqual(RailNesting.group(containing: "a", in: [first, second]), first)
+    }
+
+    // MARK: - orderedGroups (Settings › Sessions' own listing order)
+
+    func testOrderedGroupsMatchesTheirDrawOrder() {
+        let crews = [
+            Crew(id: "a", displayName: "A"),
+            Crew(id: "b", displayName: "B"),
+            Crew(id: "c", displayName: "C"),
+        ]
+        let first = CrewGroup(name: "First", members: ["c"], folded: false)
+        let second = CrewGroup(name: "Second", members: ["a"], folded: false)
+        // `a` draws before `c`, so Second — drawn at a's position — should
+        // list before First, even though First sits earlier in `groups`.
+        XCTAssertEqual(
+            RailNesting.orderedGroups(for: crews, groups: [first, second]).map(\.name),
+            ["Second", "First"])
+    }
+
+    func testOrderedGroupsAppendsAGroupWithNoLiveMembers() {
+        let crews = [Crew(id: "a", displayName: "A")]
+        let drawn = CrewGroup(name: "Drawn", members: ["a"], folded: false)
+        let ghost = CrewGroup(name: "Ghosts", members: ["gone"], folded: false)
+        XCTAssertEqual(
+            RailNesting.orderedGroups(for: crews, groups: [drawn, ghost]).map(\.name),
+            ["Drawn", "Ghosts"])
+    }
+
+    // MARK: - movingGroup (Settings › Sessions' up/down reorder)
+
+    func testMovingGroupUpSwapsWithThePrecedingUngroupedCrew() {
+        let crews = [
+            Crew(id: "a", displayName: "A"),
+            Crew(id: "b", displayName: "B"),
+            Crew(id: "c", displayName: "C"),
+        ]
+        let group = CrewGroup(name: "G", members: ["b"], folded: false)
+        let moved = try! XCTUnwrap(RailNesting.movingGroup(group, up: true, in: crews, groups: [group]))
+        XCTAssertEqual(moved.map(\.id), ["b", "a", "c"])
+    }
+
+    func testMovingGroupDownSwapsWithTheFollowingUngroupedCrew() {
+        let crews = [
+            Crew(id: "a", displayName: "A"),
+            Crew(id: "b", displayName: "B"),
+            Crew(id: "c", displayName: "C"),
+        ]
+        let group = CrewGroup(name: "G", members: ["a"], folded: false)
+        let moved = try! XCTUnwrap(RailNesting.movingGroup(group, up: false, in: crews, groups: [group]))
+        XCTAssertEqual(moved.map(\.id), ["b", "a", "c"])
+    }
+
+    /// A group's members land contiguous at the new position, in their
+    /// existing relative order, when the move carries them past a crew that
+    /// used to sit between two of them.
+    func testMovingGroupMakesNonContiguousMembersContiguous() {
+        let crews = [
+            Crew(id: "a", displayName: "A"),
+            Crew(id: "b", displayName: "B"),
+            Crew(id: "c", displayName: "C"),
+        ]
+        let group = CrewGroup(name: "G", members: ["a", "c"], folded: false)
+        let moved = try! XCTUnwrap(RailNesting.movingGroup(group, up: false, in: crews, groups: [group]))
+        XCTAssertEqual(moved.map(\.id), ["b", "a", "c"], "a and c become contiguous, in their own order")
+    }
+
+    /// A nested crew's own array position is untouched by a reorder of its
+    /// unrelated top-level neighbors — nesting is derived from `parent`,
+    /// never from array order, so leaving it exactly where it was changes
+    /// nothing about what the rail draws.
+    func testMovingGroupLeavesANestedCrewsRowExactlyWhereItWas() {
+        let crews = [
+            Crew(id: "a", displayName: "A"),
+            Crew(id: "a-nested", displayName: "Nested", parent: "a"),
+            Crew(id: "b", displayName: "B"),
+        ]
+        let group = CrewGroup(name: "G", members: ["b"], folded: false)
+        let moved = try! XCTUnwrap(RailNesting.movingGroup(group, up: true, in: crews, groups: [group]))
+        XCTAssertEqual(moved.map(\.id), ["b", "a-nested", "a"])
+        XCTAssertEqual(moved[1].id, "a-nested", "the nested row's own index is untouched")
+    }
+
+    func testMovingGroupReturnsNilAtTheTop() {
+        let crews = [Crew(id: "a", displayName: "A"), Crew(id: "b", displayName: "B")]
+        let group = CrewGroup(name: "G", members: ["a"], folded: false)
+        XCTAssertNil(RailNesting.movingGroup(group, up: true, in: crews, groups: [group]))
+    }
+
+    func testMovingGroupReturnsNilAtTheBottom() {
+        let crews = [Crew(id: "a", displayName: "A"), Crew(id: "b", displayName: "B")]
+        let group = CrewGroup(name: "G", members: ["b"], folded: false)
+        XCTAssertNil(RailNesting.movingGroup(group, up: false, in: crews, groups: [group]))
+    }
+
+    func testMovingGroupReturnsNilWhenItDrawsNowhere() {
+        let crews = [Crew(id: "a", displayName: "A")]
+        let group = CrewGroup(name: "Ghosts", members: ["gone"], folded: false)
+        XCTAssertNil(RailNesting.movingGroup(group, up: true, in: crews, groups: [group]))
+    }
+
     /// A crew still naming a host removed from Settings runs on the default
     /// host, so it nests under its parent there and is offered that parent.
     func testACrewNamingARemovedHostNestsUnderItsParentOnTheDefaultHost() {
@@ -233,5 +503,24 @@ final class RailNestingTests: XCTestCase {
         XCTAssertEqual(
             RailNesting.eligibleParents(for: loose, in: [parent, loose], hosts: hosts, defaultHost: "mini").map(\.id),
             ["p"])
+    }
+
+    // MARK: - Sessions settings draws the rail's indents
+
+    func testRailIndentMatchesTheRailsOffsets() {
+        let parent = Crew(id: "parent", displayName: "Parent")
+        let nested = Crew(id: "nested", displayName: "Nested", parent: "parent")
+        let member = Crew(id: "member", displayName: "Member")
+        let nestedInMember = Crew(id: "inner", displayName: "Inner", parent: "member")
+        let crews = [parent, nested, member, nestedInMember]
+        let groups = [CrewGroup(name: "Group", members: ["member"], folded: false)]
+        func indent(_ crew: Crew) -> CGFloat {
+            RailNesting.railIndent(of: crew, in: crews, groups: groups)
+        }
+
+        XCTAssertEqual(indent(parent), 0)
+        XCTAssertEqual(indent(nested), RailChildRow.indent)
+        XCTAssertEqual(indent(member), RailGroupHeadingRow.memberIndent)
+        XCTAssertEqual(indent(nestedInMember), RailGroupHeadingRow.memberIndent + RailChildRow.indent)
     }
 }

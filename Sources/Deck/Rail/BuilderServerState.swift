@@ -36,6 +36,13 @@ enum BuilderServerTracker {
 enum BuilderServerInstall {
     static let command = "curl -fsSL https://convivybuilder.org/install.sh | sh"
 
+    /// `command` as the remote shell runs it: through the user's LOGIN
+    /// shell, for the reason `PreInstallCheck.claudeCommand` gives. The
+    /// installer refuses a server host where `command -v claude` fails, and
+    /// on a stock Debian account only `.profile` puts Claude Code's
+    /// `~/.local/bin` on PATH. `command` has no single quote to escape.
+    static let remoteCommand = #"exec "$SHELL" -lc '\#(command)'"#
+
     /// ssh argv for the install. `-t` because sudo, on a Linux host with
     /// password sudo, reads its password from a terminal (Shipwright, E22's
     /// thread). The remote command is `command`, fixed text, passed as one
@@ -58,7 +65,7 @@ enum BuilderServerInstall {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
             "\(user)@\(host)",
-            command,
+            remoteCommand,
         ], home: home)
     }
 

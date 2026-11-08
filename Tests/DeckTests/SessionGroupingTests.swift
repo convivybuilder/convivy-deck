@@ -36,12 +36,12 @@ final class SessionGroupingTests: XCTestCase {
     }
 
     /// The double-dash separator exists precisely because a single dash
-    /// already occurs inside a real fleet name — `sous-chef` must not
+    /// already occurs inside a real fleet name — `galley` must not
     /// register as a child of a crew called `sous`, and a lookalike
-    /// crew `sous-chef-other` must not be swallowed by `sous-chef`.
+    /// crew `galley-other` must not be swallowed by `galley`.
     func testSingleDashLookalikeDoesNotMatch() {
-        XCTAssertFalse(SessionGrouping.matchesByName("sous-chef-other", crewId: "sous-chef"))
-        XCTAssertFalse(SessionGrouping.matchesByName("sous-chef", crewId: "sous"))
+        XCTAssertFalse(SessionGrouping.matchesByName("galley-other", crewId: "galley"))
+        XCTAssertFalse(SessionGrouping.matchesByName("galley", crewId: "sous"))
     }
 
     func testBareContainsIsNotEnough() {
@@ -177,11 +177,11 @@ final class SessionGroupingTests: XCTestCase {
     func testANameMatchOnTheSameHostStillGroups() {
         let crews = [
             crew("ask", dir: "\(TestHost.homeRoot)/Convivy/ask", host: "mini"),
-            crew("vivy", dir: "\(TestHost.secondaryHomeRoot)/vivy", host: "laptop"),
+            crew("orchard", dir: "\(TestHost.secondaryHomeRoot)/orchard", host: "laptop"),
         ]
-        let discovered = session("vivy", host: laptop, path: "\(TestHost.secondaryHomeRoot)/vivy")
+        let discovered = session("orchard", host: laptop, path: "\(TestHost.secondaryHomeRoot)/orchard")
         XCTAssertEqual(SessionGrouping.owningCrewId(
-            for: discovered, crews: crews, hosts: hosts, defaultHost: "mini"), "vivy")
+            for: discovered, crews: crews, hosts: hosts, defaultHost: "mini"), "orchard")
     }
 
     /// A crew with no `host` field resolves to the configured default, and a
@@ -218,19 +218,19 @@ final class SessionGroupingTests: XCTestCase {
     }
 
     /// The two-hosts-same-name proof case, one level up: each host's own
-    /// `vivy` groups under its own crew, never the other's.
+    /// `orchard` groups under its own crew, never the other's.
     func testGroupKeepsTwoHostsWithTheSameSessionNameSeparate() {
         let crews = [
-            crew("vivy", dir: "\(TestHost.homeRoot)/Convivy/vivy", host: "mini"),
-            crew("vivy-laptop", dir: "\(TestHost.secondaryHomeRoot)/vivy", host: "laptop"),
+            crew("orchard", dir: "\(TestHost.homeRoot)/Convivy/orchard", host: "mini"),
+            crew("orchard-laptop", dir: "\(TestHost.secondaryHomeRoot)/orchard", host: "laptop"),
         ]
         let sessions = [
-            session("vivy", host: mini, path: "\(TestHost.homeRoot)/Convivy/vivy"),
-            session("vivy", host: laptop, path: "\(TestHost.secondaryHomeRoot)/vivy"),
+            session("orchard", host: mini, path: "\(TestHost.homeRoot)/Convivy/orchard"),
+            session("orchard", host: laptop, path: "\(TestHost.secondaryHomeRoot)/orchard"),
         ]
         let grouped = SessionGrouping.group(sessions, into: crews, hosts: hosts, defaultHost: "mini")
-        XCTAssertEqual(grouped["vivy"]?.map(\.host), [mini])
-        XCTAssertEqual(grouped["vivy-laptop"]?.map(\.host), [laptop])
+        XCTAssertEqual(grouped["orchard"]?.map(\.host), [mini])
+        XCTAssertEqual(grouped["orchard-laptop"]?.map(\.host), [laptop])
     }
 
     // MARK: - ungrouped(): the "OTHER SESSIONS" set
@@ -471,7 +471,7 @@ final class SessionGroupingTests: XCTestCase {
     func testAdoptionTargetsExcludesCrewsOnAnotherHost() {
         let crews = [
             crew("ask", host: "mini"),
-            crew("vivy", host: "laptop"),
+            crew("orchard", host: "laptop"),
         ]
         let discovered = session("comptroller", host: mini)
         XCTAssertEqual(
@@ -494,7 +494,7 @@ final class SessionGroupingTests: XCTestCase {
     }
 
     func testAdoptionTargetsIsEmptyWhenNoCrewSharesTheHost() {
-        let crews = [crew("vivy", host: "laptop")]
+        let crews = [crew("orchard", host: "laptop")]
         let discovered = session("comptroller", host: mini)
         XCTAssertTrue(SessionGrouping.adoptionTargets(
             for: discovered, crews: crews, hosts: hosts, defaultHost: "mini").isEmpty)

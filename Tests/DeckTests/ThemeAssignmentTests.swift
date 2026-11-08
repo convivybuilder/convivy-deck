@@ -10,9 +10,9 @@ final class ThemeAssignmentTests: XCTestCase {
     /// themes. If a future change swaps the hash, this fails loudly rather
     /// than shipping colors that quietly shuffle between runs.
     func testSessionAssignmentIsPinnedAndStable() {
-        let first = ThemeCatalog.defaultTheme(forSession: "vivy").name
+        let first = ThemeCatalog.defaultTheme(forSession: "orchard").name
         for _ in 0..<50 {
-            XCTAssertEqual(ThemeCatalog.defaultTheme(forSession: "vivy").name, first)
+            XCTAssertEqual(ThemeCatalog.defaultTheme(forSession: "orchard").name, first)
         }
     }
 
@@ -27,14 +27,14 @@ final class ThemeAssignmentTests: XCTestCase {
     /// Adding or removing sessions must not repaint the others — the failure
     /// mode of assigning by rail position.
     func testAssignmentDoesNotDependOnOtherSessions() {
-        let before = ["vivy", "deck", "hollis"].map { ThemeCatalog.defaultTheme(forSession: $0).name }
+        let before = ["orchard", "deck", "quarry"].map { ThemeCatalog.defaultTheme(forSession: $0).name }
         _ = ThemeCatalog.defaultTheme(forSession: "a-brand-new-session")
-        let after = ["vivy", "deck", "hollis"].map { ThemeCatalog.defaultTheme(forSession: $0).name }
+        let after = ["orchard", "deck", "quarry"].map { ThemeCatalog.defaultTheme(forSession: $0).name }
         XCTAssertEqual(before, after)
     }
 
     func testEverySessionNameResolvesToAShippedTheme() {
-        for name in ["vivy", "deck", "steward", "", "a", String(repeating: "z", count: 64)] {
+        for name in ["orchard", "deck", "steward", "", "a", String(repeating: "z", count: 64)] {
             let theme = ThemeCatalog.defaultTheme(forSession: name)
             XCTAssertNotNil(ThemeCatalog.named(theme.name), "\(name) resolved outside the catalog")
         }
@@ -43,19 +43,19 @@ final class ThemeAssignmentTests: XCTestCase {
     // MARK: - Configuration precedence
 
     func testExplicitMappingWinsOverHashedDefault() {
-        let config = ThemeConfiguration(sessions: [SessionRef(host: nil, name: "vivy"): "gold"], appearancePreference: .system, typography: .default)
-        XCTAssertEqual(config.theme(forSession: SessionRef(host: nil, name: "vivy")).name, "gold")
+        let config = ThemeConfiguration(sessions: [SessionRef(host: nil, name: "orchard"): "gold"], appearancePreference: .system, typography: .default)
+        XCTAssertEqual(config.theme(forSession: SessionRef(host: nil, name: "orchard")).name, "gold")
     }
 
     /// A typo should cost the intended color, never the terminal.
     func testUnknownThemeNameFallsBackToDefault() {
-        let config = ThemeConfiguration(sessions: [SessionRef(host: nil, name: "vivy"): "chartreuse"], appearancePreference: .system, typography: .default)
-        XCTAssertEqual(config.theme(forSession: SessionRef(host: nil, name: "vivy")).name,
-                       ThemeCatalog.defaultTheme(forSession: "vivy").name)
+        let config = ThemeConfiguration(sessions: [SessionRef(host: nil, name: "orchard"): "chartreuse"], appearancePreference: .system, typography: .default)
+        XCTAssertEqual(config.theme(forSession: SessionRef(host: nil, name: "orchard")).name,
+                       ThemeCatalog.defaultTheme(forSession: "orchard").name)
     }
 
     func testUnmappedSessionUsesHashedDefault() {
-        let config = ThemeConfiguration(sessions: [SessionRef(host: nil, name: "vivy"): "gold"], appearancePreference: .system, typography: .default)
+        let config = ThemeConfiguration(sessions: [SessionRef(host: nil, name: "orchard"): "gold"], appearancePreference: .system, typography: .default)
         XCTAssertEqual(config.theme(forSession: SessionRef(host: nil, name: "deck")).name,
                        ThemeCatalog.defaultTheme(forSession: "deck").name)
     }
@@ -89,9 +89,9 @@ final class ThemeAssignmentTests: XCTestCase {
     // MARK: - Config parsing
 
     func testParsesAWellFormedConfig() {
-        let json = #"{"sessions":{"vivy":"azure"},"appearance":"light"}"#
+        let json = #"{"sessions":{"orchard":"azure"},"appearance":"light"}"#
         let config = ThemeConfiguration.parse(Data(json.utf8))
-        XCTAssertEqual(config?.sessions, [SessionRef(host: nil, name: "vivy"): "azure"])
+        XCTAssertEqual(config?.sessions, [SessionRef(host: nil, name: "orchard"): "azure"])
         XCTAssertEqual(config?.appearancePreference, .light)
     }
 
@@ -109,9 +109,9 @@ final class ThemeAssignmentTests: XCTestCase {
     /// Each field degrades independently — a bad appearance value should not
     /// cost the user their session mapping.
     func testBadAppearanceValueKeepsSessionMapping() {
-        let json = #"{"sessions":{"vivy":"azure"},"appearance":"chartreuse"}"#
+        let json = #"{"sessions":{"orchard":"azure"},"appearance":"chartreuse"}"#
         let config = ThemeConfiguration.parse(Data(json.utf8))
-        XCTAssertEqual(config?.sessions, [SessionRef(host: nil, name: "vivy"): "azure"])
+        XCTAssertEqual(config?.sessions, [SessionRef(host: nil, name: "orchard"): "azure"])
         XCTAssertEqual(config?.appearancePreference, .system)
     }
 
@@ -119,13 +119,13 @@ final class ThemeAssignmentTests: XCTestCase {
 
     func testParsesARailInFileOrder() {
         let json = """
-        {"rail":[{"session":"hollis","name":"Hollis","workdir":"\(TestHost.secondaryHomeRoot)/hollis"},
+        {"rail":[{"session":"quarry","name":"Quarry","workdir":"\(TestHost.secondaryHomeRoot)/quarry"},
                  {"session":"ask"}]}
         """
         let rail = ThemeConfiguration.parse(Data(json.utf8))?.railSessions
-        XCTAssertEqual(rail?.map(\.id), ["hollis", "ask"])
-        XCTAssertEqual(rail?.first?.displayName, "Hollis")
-        XCTAssertEqual(rail?.first?.workingDirectory, "\(TestHost.secondaryHomeRoot)/hollis")
+        XCTAssertEqual(rail?.map(\.id), ["quarry", "ask"])
+        XCTAssertEqual(rail?.first?.displayName, "Quarry")
+        XCTAssertEqual(rail?.first?.workingDirectory, "\(TestHost.secondaryHomeRoot)/quarry")
         // A row with no name shows its session name rather than nothing.
         XCTAssertEqual(rail?.last?.displayName, "ask")
         XCTAssertNil(rail?.last?.workingDirectory)
@@ -171,7 +171,7 @@ final class ThemeAssignmentTests: XCTestCase {
         let url = writeTemp("{}")
         var config = ThemeConfiguration.empty
         config.railSessions = [
-            Crew(id: "hollis", displayName: "Hollis", workingDirectory: "\(TestHost.secondaryHomeRoot)/hollis"),
+            Crew(id: "quarry", displayName: "Quarry", workingDirectory: "\(TestHost.secondaryHomeRoot)/quarry"),
             Crew(id: "ask", displayName: "ask"),
         ]
         try config.save(to: url)

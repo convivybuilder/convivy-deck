@@ -192,7 +192,8 @@ extension KnowledgeBase {
         do {
             _ = try run(
                 applyArguments(target: target, id: document.id, baseSha: document.contentSha,
-                               contentFilePath: remotePath, controlPath: controlPath), proofJSON)
+                               contentFilePath: remotePath, holder: document.holder,
+                               controlPath: controlPath), proofJSON)
         } catch SessionAgent.AgentError.failed(let message) {
             return .refused(message)
         }
@@ -239,11 +240,20 @@ extension KnowledgeBase {
     /// `CheckedOutDocument` — but quoting it here too is the actual fix, not
     /// that upstream check: a charset assumption is a weaker guarantee than
     /// quoting. Found by `deck-security-reviewer` on #286.
+    /// `holder` is sent explicitly, as `--holder` — the same string
+    /// `KnowledgeBase.checkoutArguments` sent and the Library's own
+    /// `/reference/documents/{id}/checkout` recorded as `owner` (CQ·177).
+    /// `kb apply --provenance person` forwards this value to `POST
+    /// /reference/admission` as the write's own `owner`, which admission
+    /// refuses unless it matches the Library checkout's `owner` exactly —
+    /// so this is `document.holder`, never a value `kb apply` derives on its
+    /// own from the session it runs in.
     static func applyArguments(
         target: SSHTarget,
         id: String,
         baseSha: String,
         contentFilePath: String,
+        holder: String,
         controlPath: String = defaultControlPath(),
         home: String = NSHomeDirectory()
     ) -> [String] {
@@ -259,6 +269,7 @@ extension KnowledgeBase {
             "--provenance", "person",
             "--content-file", SessionAgent.shellQuotePath(contentFilePath),
             "--allow-overwrite",
+            "--holder", SessionAgent.shellQuotePath(holder),
         ], home: home)
     }
 

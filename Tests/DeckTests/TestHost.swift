@@ -13,6 +13,12 @@ enum TestHost {
     static let address = "192.0.2.1"
     static let target = SSHTarget(user: user, host: address)
 
+    /// The one holder every test that needs one for a KB checkout/apply/
+    /// release or a Library reference checkout should use — the same
+    /// `DeckOperator.label()` shape (`deck:<user>@<host>`), but a fixed
+    /// string so a test does not depend on the machine actually running it.
+    static let holder = "deck:\(user)@test-host"
+
     /// `user`'s macOS home directory, built from two literals rather than
     /// one so no single string in this file spells out a full `/Users/<account>`
     /// path.

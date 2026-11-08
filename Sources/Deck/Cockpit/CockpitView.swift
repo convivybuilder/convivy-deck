@@ -40,6 +40,21 @@ struct CockpitView: View {
     /// which run list this is. Drives the Dispatched panel's title; see
     /// `dispatchedPanelTitle`.
     var agentsAreFleetWide: Bool = false
+    /// Every session of the project this cockpit shows, straight off
+    /// `railState.states` — the same per-session reading `agentRuns` and
+    /// `WorkingStrip` already read, so this panel too costs no poller of
+    /// its own. `CockpitView.sessionsOfProject` is the pure filter that
+    /// decides which crews belong here; `ContentView` pairs each with its
+    /// live `SessionState`, or `nil` when the state could not be read —
+    /// that row still draws, marked "State unknown.", never dropped
+    /// (`.claude/CLAUDE.md`'s INFERRED/state-unknown rule). Empty is a real
+    /// answer: a project with no configured sessions.
+    var sessions: [SessionRow] = []
+    /// Selects a session the same way the rail does — a row's tap routes
+    /// straight to `ContentView`'s own `selection`, through this closure
+    /// rather than a second selection mechanism. `nil` draws the rows inert,
+    /// the same "no handler" posture `onSelectRun` takes.
+    var onSelectSession: ((SessionRef) -> Void)? = nil
     /// The shell's resolved appearance — needed here only to solve the
     /// panel index's queue count against the right surface
     /// (`indexSurface`), the same reason `SessionPaneView` and `RailRow`
@@ -66,6 +81,30 @@ struct CockpitView: View {
     /// queue row and proposal row. `ContentView` owns `columnOccupant`, so this view only
     /// names the id and lets the caller decide what that means.
     let onSelectCorrection: (String) -> Void
+    /// Opens the crew's project bead in the viewer as a right-column
+    /// occupant — the Course panel's own entry calls this, through the
+    /// SAME callback the rail's own bead button calls
+    /// (`ContentView.openSelectedCrewBead`), so the Course never resolves
+    /// `Crew.bead` a second way (`CockpitResolution.beadId`'s own "PICKED,
+    /// NOT DERIVED", issue_01M5CRQ3ETH6AMM5Y5M95RACDG). `nil` draws the
+    /// entry inert, reading `beadHelp` in place when `beadHelp` is also set
+    /// — a crew with no bead, no resolved host, or no selection.
+    var onOpenBead: (() -> Void)? = nil
+    /// The Course's bead entry text when `onOpenBead` is `nil`, and the
+    /// entry's tooltip when it is not. The exact value
+    /// `CockpitResolution.BeadAvailability.help` already gives the rail's
+    /// own bead button for the same crew, so the two surfaces never give a
+    /// different reason for the same crew.
+    ///
+    /// **BOTH `nil` DRAWS NO ENTRY AT ALL, not a fallback sentence.** A
+    /// caller that never set either one (every pre-existing `CockpitView`
+    /// construction, including this file's own render tests) gets exactly
+    /// the Course panel it drew before this item — no extra row, no shift
+    /// in the fixed-height render tests that count pixels against a
+    /// specific row's position (`CockpitRevealRenderTests`). Only
+    /// `ContentView`'s two production call sites set `beadHelp` at all, so
+    /// only a REAL crew context ever draws the entry.
+    var beadHelp: String? = nil
     /// Opens (or, on the open run, closes) the run pane for a Dispatched row.
     /// nil draws the rows inert.
     var onSelectRun: ((String) -> Void)? = nil
@@ -227,6 +266,17 @@ struct CockpitView: View {
         let onOpen: (String) -> Void
     }
 
+    /// One row of the Sessions panel — a session of the project, paired
+    /// with its live reading.
+    struct SessionRow: Equatable {
+        let ref: SessionRef
+        let displayName: String
+        /// `nil` when `railState.states` carries no entry for this
+        /// session — the state could not be read. `sessionsContent` still
+        /// draws the row, marked "State unknown.", rather than dropping it.
+        let state: SessionState?
+    }
+
     /// Whether the Course's collapsed LEADING run of closed epics is showing
     /// in full. View-level, in-memory state — not persisted, and not
     /// `model.expandedEntries`, which is the unrelated per-epic detail
@@ -267,6 +317,13 @@ struct CockpitView: View {
     /// The proposal row under the pointer, so its `Open` control reveals the
     /// way the Course and queue rows' do.
     @State private var hoveredProposalEpicID: String?
+    /// The proposal row whose Decline confirmation is open, if any — a
+    /// decline ends the proposal, so it confirms the way `Stop`/`Remove` do
+    /// elsewhere in Deck (see `ContentView.sessionToStop`).
+    @State private var declineConfirmationEpicID: String?
+    /// The one-line reason typed into the Decline confirmation. The Library
+    /// records it on the decline and on every child the decline closes.
+    @State private var declineReason = ""
     /// The `model.revealCount` this view last scrolled for, so one reveal
     /// scrolls once however many times the target's row appears and
     /// disappears under it (see `revealScrollTarget`).
@@ -275,6 +332,14 @@ struct CockpitView: View {
     /// "count, not id" guard `scrolledRevealCount` keeps, so a second click
     /// on an already-scrolled-to chip still re-centers its row.
     @State private var scrolledChipCount = 0
+
+    /// Whether `scrollToSavedAnchor` has already run for this mount of the
+    /// view — once per appearance, the same "count, not id" shape as
+    /// `scrolledRevealCount`, except there is no count to key off here: a
+    /// fresh mount is the one and only moment the restore should fire, and
+    /// re-running it on every later preference change would fight a
+    /// reader's own scrolling.
+    @State private var hasRestoredScrollAnchor = false
 
     /// Which top-level panels (`panelOrder`'s ids) are collapsed to just
     /// their header. View-level, in-memory state, deliberately not
@@ -316,7 +381,12 @@ struct CockpitView: View {
     private static let scrollCoordinateSpaceName = "cockpitScroll"
 
     static let dispatchedPanelID = "dispatched"
-    private static let proposalsPanelID = "proposals"
+    /// Every session of the project in the window, each with its own
+    /// working-on line (deck/bead/deck §1, "what each session is working
+    /// on" — CQ-169; who is in each session is CQ-172, which waits on a
+    /// source that does not exist yet).
+    static let sessionsPanelID = "sessions"
+    static let proposalsPanelID = "proposals"
     static let coursePanelID = "course"
     static let correctionsQueuePanelID = "correctionsQueue"
     /// The documents the selected session's checkout brought.
@@ -348,12 +418,13 @@ struct CockpitView: View {
     /// same way it reuses `rowTreatment` and `coursePartition` rather than
     /// reimplementing their logic.
     static let panelOrder = [
-        dispatchedPanelID, proposalsPanelID, coursePanelID, correctionsQueuePanelID,
+        dispatchedPanelID, sessionsPanelID, proposalsPanelID, coursePanelID, correctionsQueuePanelID,
         pullRequestsPanelID, checkoutPanelID,
     ]
 
     private static let panelTitles: [String: String] = [
         dispatchedPanelID: "Dispatched",
+        sessionsPanelID: "Sessions",
         proposalsPanelID: "Proposals",
         coursePanelID: "Course",
         correctionsQueuePanelID: "Corrections Queue",
@@ -415,8 +486,12 @@ struct CockpitView: View {
     /// viewport, not the whole pane.
     private struct ScrollViewportHeightPreferenceKey: PreferenceKey {
         static let defaultValue: CGFloat = 0
+        /// The larger value wins: a sibling that reports nothing still
+        /// arrives here as `defaultValue`, and taking the last value let
+        /// that 0 overwrite the measured height, so no panel ever counted
+        /// as visible.
         static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-            value = nextValue()
+            value = max(value, nextValue())
         }
     }
 
@@ -498,14 +573,29 @@ struct CockpitView: View {
                 // a reported frame actually changed, not on every poll tick
                 // that leaves layout untouched. See the PR body for the
                 // full per-update cost accounting.
-                .onPreferenceChange(PanelFramePreferenceKey.self) { panelFrames = $0 }
-                .onPreferenceChange(ScrollViewportHeightPreferenceKey.self) { scrollViewportHeight = $0 }
+                .onPreferenceChange(PanelFramePreferenceKey.self) { newFrames in
+                    panelFrames = newFrames
+                    noteScrollAnchor(frames: newFrames, viewportHeight: scrollViewportHeight)
+                }
+                // The viewport's height can arrive after the frames do; until
+                // it does no panel counts as visible, so the anchor is noted
+                // again here or a first render would never save one.
+                .onPreferenceChange(ScrollViewportHeightPreferenceKey.self) { newHeight in
+                    scrollViewportHeight = newHeight
+                    noteScrollAnchor(frames: panelFrames, viewportHeight: newHeight)
+                }
                 // `onAppear` covers a reveal that presented the cockpit
                 // (the column was showing another occupant, so this view
                 // was not mounted when the highlight was set); `onChange`
                 // covers one that arrived while it was, and the moment the
-                // epic's children finish loading.
-                .onAppear { scrollToRevealedItem(scrollProxy) }
+                // epic's children finish loading. `scrollToSavedAnchor` runs
+                // first and only when there is no reveal to chase (its own
+                // guard), so the two never fight over where `scrollProxy`
+                // lands on the same appearance.
+                .onAppear {
+                    scrollToSavedAnchor(scrollProxy)
+                    scrollToRevealedItem(scrollProxy)
+                }
                 .onChange(of: revealScrollTarget) { scrollToRevealedItem(scrollProxy) }
                 .onChange(of: chipScrollTarget) { scrollToChipTarget(scrollProxy) }
             }
@@ -580,6 +670,34 @@ struct CockpitView: View {
         }
     }
 
+    /// Saves the topmost panel to `model` on every layout pass, so a
+    /// `CockpitView` rebuilt from the same model — the column swapped to
+    /// another occupant and back, CQ·174 — knows where to scroll back to.
+    /// Written only when a panel is actually measured: while
+    /// `unresolvedReason` blanks the pane, `frames` is empty and the last
+    /// good anchor is left alone rather than cleared.
+    private func noteScrollAnchor(frames: [String: CGRect], viewportHeight: CGFloat) {
+        guard let here = CockpitView.topmostVisiblePanelID(
+            order: panelIDs, frames: frames, viewportHeight: viewportHeight
+        ) else { return }
+        model.noteScrollAnchor(here)
+    }
+
+    /// Scrolls back to the panel `model.scrollAnchorPanelID` last measured
+    /// as topmost, once per mount (`hasRestoredScrollAnchor`) and only when
+    /// there is no active reveal to chase instead — a reveal is a reader's
+    /// more recent, more specific intent than "where I was scrolled to
+    /// before this pane was swapped out."
+    private func scrollToSavedAnchor(_ scrollProxy: ScrollViewProxy) {
+        guard !hasRestoredScrollAnchor, revealScrollTarget == nil,
+              let anchor = model.scrollAnchorPanelID
+        else { return }
+        hasRestoredScrollAnchor = true
+        DispatchQueue.main.async {
+            scrollProxy.scrollTo(anchor, anchor: .top)
+        }
+    }
+
     /// One panel by id — the single place an id becomes a section, so
     /// `panelIDs` alone decides which panels draw and in what order.
     @ViewBuilder
@@ -588,6 +706,9 @@ struct CockpitView: View {
         case Self.dispatchedPanelID:
             panelSection(id: id, title: dispatchedPanelTitle,
                          trailing: { crewStatsTrailing }, content: { crewStatsContent })
+        case Self.sessionsPanelID:
+            panelSection(id: id, title: panelTitle(for: id),
+                         trailing: { EmptyView() }, content: { sessionsContent })
         case Self.proposalsPanelID:
             panelSection(id: id, title: "Proposals",
                          trailing: { EmptyView() }, content: { proposalsContent })
@@ -608,6 +729,162 @@ struct CockpitView: View {
                          trailing: { EmptyView() }, content: { checkoutContent })
         default:
             EmptyView()
+        }
+    }
+
+    // MARK: - Sessions
+
+    /// Every crew in `crews` naming `project`, in `crews`' own order — the
+    /// project's own sessions, which is what this panel lists. Pure, so
+    /// `CockpitViewTests` can check it without `railState`, which only
+    /// supplies each row's live reading (`SessionRow.state`), not which
+    /// rows exist.
+    nonisolated static func sessionsOfProject(_ crews: [Crew], project: String) -> [Crew] {
+        crews.filter { $0.project == project }
+    }
+
+    /// The project's sessions, or a named reason there are none. Empty is a
+    /// real answer — a project with no configured crew — rather than a
+    /// failure to word; `ContentView` is what could tell this panel its
+    /// source failed, and it reads only already-polled local rail state, so
+    /// there is no fetch of its own to fail (see the type's own doc on
+    /// `sessions`).
+    @ViewBuilder
+    private var sessionsContent: some View {
+        if sessions.isEmpty {
+            Text("This project names no sessions.")
+                .frameFont(.label).foregroundStyle(secondaryInk)
+        } else {
+            ForEach(sessions, id: \.ref.stringForm) { row in
+                sessionRow(row)
+            }
+        }
+    }
+
+    /// One session: its display name, and the same working-on line and
+    /// duration rules `PaneStatusBar.slot` draws in the status bar —
+    /// `WorkingStrip.presentation` is the one place that precedence is
+    /// decided, so the two surfaces can't disagree about what a session is
+    /// doing.
+    private func sessionRow(_ row: SessionRow) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(row.displayName).frameFont(.label).fontWeight(.semibold).lineLimit(1)
+            sessionWorkingOnLine(row.state)
+            sessionClientsLine(row.state?.clients)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { onSelectSession?(row.ref) }
+        // Opts out of the container's `.textSelection(.enabled)` for the
+        // same reason `documentRow` does: the row's own text is the tap
+        // target, so selection would compete with the click.
+        .textSelection(.disabled)
+    }
+
+    /// `row.state`'s working-on line, or "State unknown." when there is no
+    /// state to read at all — the never-dropped answer `.claude/CLAUDE.md`'s
+    /// INFERRED/state-unknown rule asks for, rather than an empty row that
+    /// would read as "nothing is happening here."
+    @ViewBuilder
+    private func sessionWorkingOnLine(_ state: SessionState?) -> some View {
+        if let state {
+            switch WorkingStrip.presentation(workingOn: state.workingOn, workingOnDerived: state.workingOnDerived) {
+            case .authored(let workingOn):
+                sessionAuthoredRow(workingOn)
+            case .dispatch(let derived):
+                sessionDispatchRow(derived)
+            case .none:
+                EmptyView()
+            }
+        } else {
+            Text("State unknown.").frameFont(.caption).foregroundStyle(secondaryInk)
+        }
+    }
+
+    /// The co's own line, `PaneStatusBar.workingOnRow`'s own shape at this
+    /// panel's smaller caption size: stale takes its age, never `since`, and
+    /// an older writer's recording with neither carries no duration at all
+    /// (`WorkingStrip.durationSuffix`'s own doc).
+    private func sessionAuthoredRow(_ workingOn: SessionState.WorkingOn) -> some View {
+        HStack(spacing: 4) {
+            Text(workingOn.text).frameFont(.caption).foregroundStyle(secondaryInk)
+                .lineLimit(1).truncationMode(.tail)
+            if let suffix = WorkingStrip.durationSuffix(for: workingOn) {
+                Text(suffix).frameFont(.caption)
+                    .foregroundStyle(workingOn.stale == true
+                                      ? AnyShapeStyle(Color(ThemeRecipe.warningInk(on: indexSurface)))
+                                      : secondaryInk)
+            }
+        }
+        .help(workingOn.text)
+    }
+
+    /// The dispatch fallback, labelled so it is never mistaken for the co's
+    /// own words — `PaneStatusBar.dispatchRow`'s own shape, drawn through
+    /// `WorkingStrip.dispatchDisplayText` since `derived.text` is the raw
+    /// dispatch task, unlike `WorkingOn.text`.
+    private func sessionDispatchRow(_ derived: SessionState.WorkingOnDerived) -> some View {
+        let text = WorkingStrip.dispatchDisplayText(derived.text)
+        return HStack(spacing: 4) {
+            Text("Last dispatch:").frameFont(.caption).foregroundStyle(secondaryInk)
+            Text(text).frameFont(.caption).foregroundStyle(secondaryInk)
+                .lineLimit(1).truncationMode(.tail)
+            if let suffix = WorkingStrip.dispatchDurationSuffix(for: derived) {
+                Text(suffix).frameFont(.caption).foregroundStyle(secondaryInk)
+            }
+        }
+        .help(text)
+    }
+
+    /// `row.state?.clients`'s line, or nothing when there is no reading at
+    /// all — a mini that predates the `clients` field, or a session whose
+    /// own state could not be read (already marked "State unknown." by
+    /// `sessionWorkingOnLine`, so this draws nothing rather than a second,
+    /// redundant unknown mark).
+    @ViewBuilder
+    private func sessionClientsLine(_ clients: SessionState.Clients?) -> some View {
+        if let text = Self.clientsLine(clients) {
+            Text(text).frameFont(.caption).foregroundStyle(secondaryInk)
+                .lineLimit(1).truncationMode(.tail)
+        } else {
+            EmptyView()
+        }
+    }
+
+    /// The Sessions panel's one line for who is attached to a session's
+    /// terminal, or nil when there is nothing to draw. A pure function of
+    /// `SessionState.clients`, so the wording is testable without hosting a
+    /// view — the same split `WorkingStrip.presentation` keeps for the line
+    /// above it.
+    ///
+    /// SUMMARISED TO A FIRST LABEL PLUS A COUNT, NEVER ONE LINE PER CLIENT,
+    /// to hold the row to its existing height budget at the panel's
+    /// narrower width (280pt): a second client becomes "+1 more" rather
+    /// than wrapping the row onto another line.
+    ///
+    /// `[]` NEVER READS AS "NOBODY IS WATCHING". Remote Control's own
+    /// viewers are invisible to `clients` regardless of what it says
+    /// ([[platform/contracts/session-agent-api]]), so an empty list draws
+    /// as "no terminal client", a fact about tmux alone, never as an empty
+    /// session. `null` draws as unknown, the contract's own distinction
+    /// between "answered empty" and "could not tell."
+    nonisolated static func clientsLine(_ clients: SessionState.Clients?) -> String? {
+        switch clients {
+        case nil:
+            return nil
+        case .unknown:
+            return "Attached: unknown"
+        case .attached(let list):
+            guard !list.isEmpty else { return "Attached: no terminal client" }
+            // A client whose label could not be built is still counted,
+            // never dropped — the contract's own rule for this field.
+            let named = list.compactMap(\.label)
+            let unnamedCount = list.count - named.count
+            guard let first = named.first else {
+                let word = unnamedCount == 1 ? "client" : "clients"
+                return "Attached: \(unnamedCount) unnamed \(word)"
+            }
+            let rest = (named.count - 1) + unnamedCount
+            return rest > 0 ? "Attached: \(first) +\(rest) more" : "Attached: \(first)"
         }
     }
 
@@ -1608,13 +1885,16 @@ struct CockpitView: View {
     // row (`proposalRow`) is a secondary cue; the placement above the Course,
     // in its own titled block, is the primary one.
     //
-    // ONE PRIMARY CONTROL, AND NO DECLINE. Approve writes `maturity: approved`
-    // and the row leaves on the refetch, with nothing to confirm. A proposed
-    // epic appears nowhere else in Deck (the Course carries approved epics and
-    // the corrections queue drops epics), so the row also carries the same
-    // `Open` control its neighbours have, and an operator who wants the text
-    // opens the epic in the Item pane. The text is never rendered in this
-    // region.
+    // TWO CONTROLS, APPROVE PRIMARY AND DECLINE SECONDARY. Approve writes
+    // `maturity: approved` and the row leaves on the refetch, with nothing to
+    // confirm. Decline ends the proposal — it closes every unfinished child
+    // work item as won't fix (library/decisions/0005) — so it sits behind a
+    // confirmation and draws as the visually quieter control of the two. A
+    // proposed epic appears nowhere else in Deck (the Course carries approved
+    // epics and the corrections queue drops epics), so the row also carries
+    // the same `Open` control its neighbours have, and an operator who wants
+    // the text opens the epic in the Item pane. The text is never rendered in
+    // this region.
 
     /// The id the row's `Open` control hands to `onSelectCorrection`. It is
     /// the epic's own id, the same one `CockpitModel.approve` writes, so a row
@@ -1644,10 +1924,14 @@ struct CockpitView: View {
 
     private func proposalRow(_ epic: LibraryClient.Epic) -> some View {
         let title = (epic.title ?? "").isEmpty ? "(untitled epic)" : epic.title ?? ""
+        let keyPrefix = (epic.key?.isEmpty == false) ? "\(epic.key!) " : ""
         let showsOpen = hoveredProposalEpicID == epic.id
+        // Either write disables both controls on every row, the same
+        // one-at-a-time discipline `CockpitModel.approve`/`decline` enforce.
+        let writeInFlight = model.approvingEpicID != nil || model.decliningEpicID != nil
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: 8) {
-                Text(title)
+                CockpitView.keyedTitle(epic.key, title)
                     .frameFont(.label)
                     .fontWeight(.medium)
                 Spacer(minLength: 0)
@@ -1664,11 +1948,53 @@ struct CockpitView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(model.approvingEpicID != nil)
-                .accessibilityLabel("Approve \(title)")
-                if model.approvingEpicID == epic.id { ProgressView().controlSize(.mini) }
+                .disabled(writeInFlight)
+                .accessibilityLabel("Approve \(keyPrefix)\(title)")
+                // SECONDARY TO APPROVE: `.plain` rather than `.bordered`, and
+                // tinted with the panel's own secondary ink, so Approve stays
+                // the one control the eye lands on first. Behind a
+                // confirmation because a decline ends the proposal — it
+                // closes every unfinished child as won't fix
+                // (library/decisions/0005) — the same reason `ContentView`
+                // confirms Stop and Remove.
+                Button("Decline") {
+                    declineReason = ""
+                    declineConfirmationEpicID = epic.id
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+                .foregroundStyle(secondaryInk)
+                .disabled(writeInFlight)
+                .accessibilityLabel("Decline \(keyPrefix)\(title)")
+                // An alert rather than a confirmation dialog, because only an
+                // alert can hold the reason's text field on macOS.
+                .alert(
+                    "Decline \(keyPrefix)\(title)?",
+                    isPresented: Binding(
+                        get: { declineConfirmationEpicID == epic.id },
+                        set: { if !$0 { declineConfirmationEpicID = nil } })
+                ) {
+                    TextField("Reason (optional)", text: $declineReason)
+                    Button("Decline", role: .destructive) {
+                        declineConfirmationEpicID = nil
+                        let reason = declineReason
+                        Task { await model.decline(epic, reason: reason) }
+                    }
+                    Button("Cancel", role: .cancel) { declineConfirmationEpicID = nil }
+                } message: {
+                    Text("This ends the proposal. Any unfinished work under it closes as won't fix.")
+                }
+                if model.approvingEpicID == epic.id || model.decliningEpicID == epic.id {
+                    ProgressView().controlSize(.mini)
+                }
             }
             if let refusal = model.approvalRefusal, refusal.epicID == epic.id {
+                Text(refusal.message)
+                    .frameFont(.label)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let refusal = model.declineRefusal, refusal.epicID == epic.id {
                 Text(refusal.message)
                     .frameFont(.label)
                     .foregroundStyle(.red)
@@ -1696,35 +2022,93 @@ struct CockpitView: View {
 
     @ViewBuilder
     private var coursePanel: some View {
-        Group {
-            // Checked FIRST: with no project resolved, `model` has been
-            // cleared (`CockpitModel.refresh`), and this reason is the only
-            // honest thing the panel can say.
-            if let courseUnresolvedReason {
-                Text(courseUnresolvedReason)
-                    .frameFont(.label).foregroundStyle(secondaryInk)
-            } else if let courseError = model.courseError {
-                unreachableLine("Could not reach the Course", detail: courseError)
-            } else if let course = model.course {
-                if course.entries.isEmpty {
-                    Text("Nothing on the Course yet.")
+        // SPACING 0 ON THE OUTER STACK, NOT 6 — `VStack` inserts its
+        // `spacing` between its two child SLOTS regardless of what either
+        // one draws, so a non-zero spacing here would add a gap below
+        // `courseBeadEntry` even on the EmptyView branch an unconfigured
+        // caller gets, shifting every Course row down and breaking
+        // `CockpitRevealRenderTests`'s fixed-position scroll assertion
+        // for a render that never asked for the bead entry at all. The gap
+        // lives on `courseBeadEntry`'s own non-empty branches instead,
+        // where it costs nothing when there is nothing to draw.
+        VStack(alignment: .leading, spacing: 0) {
+            // FIRST, ahead of the project resolution below — the bead and
+            // the project are independently set on `Crew`
+            // (`CockpitResolution`'s own "orthogonal by design"), so a crew
+            // with a bead and no resolved project still gets the entry
+            // rather than it waiting behind `courseUnresolvedReason`.
+            courseBeadEntry
+            Group {
+                // Checked FIRST: with no project resolved, `model` has been
+                // cleared (`CockpitModel.refresh`), and this reason is the only
+                // honest thing the panel can say.
+                if let courseUnresolvedReason {
+                    Text(courseUnresolvedReason)
                         .frameFont(.label).foregroundStyle(secondaryInk)
-                } else {
-                    courseEntryList(course.entries)
+                } else if let courseError = model.courseError {
+                    unreachableLine("Could not reach the Course", detail: courseError)
+                } else if let course = model.course {
+                    if course.entries.isEmpty {
+                        Text("Nothing on the Course yet.")
+                            .frameFont(.label).foregroundStyle(secondaryInk)
+                    } else {
+                        courseEntryList(course.entries)
+                    }
+                    // The same words-in-red shape the proposals row uses for a
+                    // refused Approve. Shown beside the rows it concerns, so a
+                    // move that did not land never passes without a word.
+                    if let refusal = model.courseReorderRefusal {
+                        Text(refusal)
+                            .frameFont(.label)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else if !model.isLoading {
+                    Text("No Course found for this project.")
+                        .frameFont(.label).foregroundStyle(secondaryInk)
                 }
-                // The same words-in-red shape the proposals row uses for a
-                // refused Approve. Shown beside the rows it concerns, so a
-                // move that did not land never passes without a word.
-                if let refusal = model.courseReorderRefusal {
-                    Text(refusal)
-                        .frameFont(.label)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } else if !model.isLoading {
-                Text("No Course found for this project.")
-                    .frameFont(.label).foregroundStyle(secondaryInk)
             }
+        }
+    }
+
+    /// The Course panel's own entry for the project's bead — opened in the
+    /// right-hand column through `onOpenBead`, never guessed from the
+    /// project name (`CockpitResolution.beadId` reads `Crew.bead` alone).
+    /// `onOpenBead == nil` draws the row inert and shows `beadHelp` as the
+    /// row's own text instead of a title, the same reason text the rail's
+    /// bead button gives for the same crew — so a reader who already read
+    /// "names no bead" on the rail reads the identical words here.
+    ///
+    /// **Both `onOpenBead` and `beadHelp` `nil` draws `EmptyView()`** — see
+    /// `beadHelp`'s own doc for why that has to be the fallback rather than
+    /// a sentence.
+    @ViewBuilder
+    private var courseBeadEntry: some View {
+        if let onOpenBead {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text")
+                    .frameFont(.icon)
+                    .foregroundStyle(secondaryInk)
+                    .frame(width: 14, alignment: .center)
+                Text("Project bead")
+                    .frameFont(.label)
+                    .lineLimit(1)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onOpenBead)
+            .help(beadHelp ?? "Open this project's bead")
+            .textSelection(.disabled)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Project bead")
+            .accessibilityHint(beadHelp ?? "Open this project's bead")
+            .accessibilityAddTraits(.isButton)
+            .padding(.bottom, 6)
+        } else if let beadHelp {
+            Text(beadHelp)
+                .frameFont(.label)
+                .foregroundStyle(secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 6)
         }
     }
 
@@ -1875,7 +2259,7 @@ struct CockpitView: View {
                 .frameFont(.icon)
                 .foregroundStyle(glyphInk(treatment))
                 .frame(width: 14, alignment: .center)
-            Text(entry.title)
+            CockpitView.keyedTitle(entry.key, entry.title)
                 .frameFont(.body)
                 .strikethrough(treatment.strikethrough)
                 .foregroundStyle(CockpitView.titleInk(treatment, ground: statusGround))
@@ -1973,7 +2357,7 @@ struct CockpitView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(CockpitView.accessibilityLabel(
-            title: entry.title, treatment: treatment,
+            title: entry.title, treatment: treatment, key: entry.key,
             progress: progress.map { (done: $0.done, total: $0.total) },
             blocked: entry.blocked))
     }
@@ -2199,17 +2583,20 @@ struct CockpitView: View {
         }
     }
 
-    /// The full VoiceOver label for a row — state prefix, title, and (an
-    /// epic row only) the progress count, composed into one coherent
-    /// sentence rather than left for VoiceOver to stitch together from
-    /// separate elements. Pure and testable, the same reason `rowTreatment`
-    /// is pulled out rather than inlined.
+    /// The full VoiceOver label for a row — state prefix, reference key,
+    /// title, and (an epic row only) the progress count, composed into one
+    /// coherent sentence rather than left for VoiceOver to stitch together
+    /// from separate elements. `key` degrades like `keyedTitle`'s own: an
+    /// absent or empty one leaves the title as the label's whole second
+    /// clause, never a placeholder. Pure and testable, the same reason
+    /// `rowTreatment` is pulled out rather than inlined.
     nonisolated static func accessibilityLabel(
-        title: String, treatment: RowTreatment,
+        title: String, treatment: RowTreatment, key: String? = nil,
         progress: (done: Int, total: Int)? = nil, blocked: Bool = false
     ) -> String {
         let prefix = treatment.accessibilityPrefix
-        var label = "\(prefix), \(title)"
+        let keyPrefix = (key?.isEmpty == false) ? "\(key!), " : ""
+        var label = "\(prefix), \(keyPrefix)\(title)"
         if let progress {
             label += ", \(progress.done) of \(progress.total) settled"
         }
@@ -2281,6 +2668,11 @@ struct CockpitView: View {
 
     private func epicInterior(_ entry: LibraryClient.CourseEntry) -> some View {
         HStack(spacing: 4) {
+            // The operator's own handle for this epic, read back to them
+            // once the row they clicked to expand has scrolled out of view —
+            // the same key `courseEntryRow`'s title already carries, repeated
+            // here rather than assumed still on screen.
+            if let key = entry.key, !key.isEmpty { Text(key).monospaced() }
             Text(entry.state?.capitalized ?? "Open")
             if let type = entry.type { Text("· \(type)") }
             // The reverse of the PR row's own chip (issue_01M2P5D0D4EQEQX7BSRNFT5QGJ):
@@ -3251,6 +3643,28 @@ struct CockpitView: View {
     nonisolated static func libraryTooltip(_ value: String) -> String {
         WaypointRibbon.condense(SessionPaneView.displayable(value),
                                 to: WaypointRibbon.tooltipCharacterLimit)
+    }
+
+    /// A title prefixed with the stable reference key a PR row's chip
+    /// already carries (`"E39"` for an epic, `"E9·4"` for a work item under
+    /// one — `CourseEntry.key`'s doc has the full vocabulary), so an operator
+    /// told "approve E39" in another surface can find it here.
+    ///
+    /// Returned as one `Text` rather than two views so every caller's own
+    /// font role, line limit and strikethrough apply to the whole thing at
+    /// once — the shape `ClampedCaption`'s styled-run composition already
+    /// relies on. The key draws monospaced and in secondary ink, set as an
+    /// explicit per-run attribute on its own segment, which SwiftUI keeps
+    /// even when a caller applies its OWN `.foregroundStyle` to the combined
+    /// `Text` afterward — that later call only fills the title's run, which
+    /// carries no colour of its own yet.
+    ///
+    /// **Degrades to the title alone** for an absent or empty key — never a
+    /// placeholder — which covers both a response predating the field and an
+    /// item type the Library never assigns one to.
+    nonisolated static func keyedTitle(_ key: String?, _ title: String) -> Text {
+        guard let key, !key.isEmpty else { return Text(title) }
+        return Text(key).monospaced().foregroundStyle(.secondary) + Text(" ") + Text(title)
     }
 
     /// Sanitises a raw `AgentRun` field for display, and bounds it to 500

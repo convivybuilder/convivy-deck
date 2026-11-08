@@ -151,6 +151,15 @@ struct EditorPane: View {
             + "retry it in Settings › Signing."
     }
 
+    /// The banner text for `.refused` — the fixed sentence, then the
+    /// refusal `kb apply` actually gave, which `KnowledgeBase.submit` carries
+    /// in `.refused(message)` (CQ·177: this used to be discarded, so a
+    /// refused save said nothing about why).
+    static func refusedExplanation(_ message: String) -> String {
+        "The knowledge base refused this save. Your draft is kept on this Mac; "
+            + "nothing there has changed.\n\n\(message)"
+    }
+
     @ViewBuilder
     private var content: some View {
         switch model.page {
@@ -245,9 +254,8 @@ struct EditorStatusBanner: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.secondary.opacity(0.12))
                 .textSelection(.enabled)
-        } else if case .refused = status {
-            Text("The knowledge base refused this save. Your draft is kept on this Mac; "
-                 + "nothing there has changed.")
+        } else if case .refused(let message) = status {
+            Text(EditorPane.refusedExplanation(message))
                 .frameFont(.body)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -406,6 +414,18 @@ final class EditorModel: ObservableObject {
         case ready(URL)
     }
 
+    /// What `load`'s `.kb` branch shows when the Library's own checkout
+    /// (`LibraryClient.checkoutReferenceDocument`) is refused — held by
+    /// someone else, or the Library unreachable — before the page is ever
+    /// built, so the reader sees why rather than being let in to edit and
+    /// fail only at save (CQ·177). Pulled out as a pure function, the same
+    /// seam `EditorRoundTrip.gate` uses, so the decision is testable without
+    /// ssh: `load` never reaches `.ready` on this path, which is what keeps
+    /// the editor from letting the reader type before this resolves.
+    nonisolated static func kbCheckoutFailurePage(_ error: Error) -> Page {
+        .failed(LibraryClient.referenceCheckoutRefusalMessage(error))
+    }
+
     enum Status: Equatable {
         case clean
         case edited
@@ -474,8 +494,11 @@ final class EditorModel: ObservableObject {
     /// Held for its content, its `sourceRef` and its sha — what `submit`
     /// signs a save's envelope over — and so a save is addressed to the
     /// document the pane actually holds rather than to whatever the message
-    /// claims.
-    private var checkedOut: KnowledgeBase.CheckedOutDocument?
+    /// claims. Not `private`: `EditorPaneTests` assigns it directly to put a
+    /// model into the state `load`'s `.kb` branch would have left it in,
+    /// without an ssh call, the same reason `heartbeatInterval` is not
+    /// `private` either.
+    var checkedOut: KnowledgeBase.CheckedOutDocument?
 
     /// The file currently loaded. The model outlives a change of `ref` — it is
     /// a `@StateObject` on a view whose identity does not change — so a save
@@ -488,6 +511,46 @@ final class EditorModel: ObservableObject {
     /// for the same document follows. Cancelled with the model.
     nonisolated(unsafe) private var heldObserver: Task<Void, Never>?
 
+    /// Keeps the Library's own checkout alive for as long as `checkedOut` is
+    /// held (CQ·177 finding 1) — started in `load`'s `.kb` branch once the
+    /// checkout lands, stopped in `releaseLease` and whenever `load` replaces
+    /// the checkout. `nil` whenever no `.kb` document is open.
+    nonisolated(unsafe) private var heartbeatTask: Task<Void, Never>?
+
+    /// How often the heartbeat ticks — comfortably inside the Library's own
+    /// four-hour grace (`lease.py`'s `DEFAULT_GRACE`), so a tick that lands
+    /// late still arrives long before the checkout taken at `load` could
+    /// lapse on its own.
+    static let defaultHeartbeatInterval = Duration.seconds(1800)
+
+    /// The seam `EditorModelTests` shortens so a test sees the loop in
+    /// `startHeartbeat` fire without waiting thirty minutes for real.
+    var heartbeatInterval = EditorModel.defaultHeartbeatInterval
+
+    /// The seam `EditorModelTests` replaces so a test can see a heartbeat's
+    /// arguments without ssh, and drive a refusal or a transport failure on
+    /// demand.
+    var heartbeatReferenceDocument: @Sendable (SSHTarget, String, String) throws -> Void = {
+        target, docId, holder in
+        try LibraryClient.heartbeatReferenceDocument(target: target, docId: docId, holder: holder)
+    }
+
+    /// The seam `EditorPaneTests` replaces so a test can see whether
+    /// `releaseLease` checked a reference-document checkout back in, without
+    /// ssh — the same pattern `heartbeatReferenceDocument` is.
+    var checkinReferenceDocument: @Sendable (SSHTarget, String, String) throws -> Void = {
+        target, docId, holder in
+        try LibraryClient.checkinReferenceDocument(target: target, docId: docId, holder: holder)
+    }
+
+    /// The banner `report` shows when a heartbeat comes back refused with a
+    /// 404: the Library holds no live checkout under this holder any more,
+    /// so the next save would be refused by the same admission check `load`
+    /// passed at open. Pulled out as a constant so `EditorModelTests` can
+    /// pin it without ssh, the same seam `kbCheckoutFailurePage` is.
+    static let checkoutLapsedMessage =
+        "your checkout of this document lapsed. Close and reopen it before saving."
+
     init() {
         heldObserver = Task { [weak self] in
             for await _ in NotificationCenter.default.notifications(named: .heldKBSavesDidChange) {
@@ -498,6 +561,7 @@ final class EditorModel: ObservableObject {
 
     deinit {
         heldObserver?.cancel()
+        heartbeatTask?.cancel()
     }
 
     func load(ref: DeckOpenRef.Origin, appearance: Appearance,
@@ -528,6 +592,27 @@ final class EditorModel: ObservableObject {
                         html, forAbsolutePath: remotePath)
                 }.value
             case .kb(let id):
+                // THE LIBRARY'S OWN CHECKOUT, FIRST, BEFORE THE READER CAN TYPE
+                // A WORD. `kb apply --provenance person`'s admission check
+                // (CQ·177) refuses a save unless the write's `owner` holds a
+                // live checkout on `/reference/documents/{id}`, so a refusal
+                // here — held by someone else, or the Library unreachable —
+                // has to stop the pane before editing starts rather than let
+                // the reader edit for nothing and fail only at save. One
+                // holder for the whole round trip: the same string goes to
+                // this call, to `KnowledgeBase.checkout`'s `--holder` below,
+                // and (via `document.holder`) to `kb apply --holder` at save.
+                let holder = DeckOperator.label()
+                do {
+                    try await Task.detached {
+                        try LibraryClient.checkoutReferenceDocument(
+                            target: target, docId: id, holder: holder)
+                    }.value
+                } catch {
+                    page = Self.kbCheckoutFailurePage(error)
+                    return
+                }
+
                 // CHECKOUT FIRST, AND RECORD IT BEFORE ANYTHING ELSE CAN THROW.
                 // Checkout takes a lease; the render that follows can fail. When
                 // both lived in one detached closure, a render failure threw
@@ -537,10 +622,28 @@ final class EditorModel: ObservableObject {
                 // Found by `deck-reviewer`; the two steps are separated so the
                 // thing that tracks the lease cannot be skipped by the step
                 // after it.
-                let document = try await Task.detached {
-                    try KnowledgeBase.checkout(target: target, id: id)
-                }.value
+                let document: KnowledgeBase.CheckedOutDocument
+                do {
+                    document = try await Task.detached {
+                        try KnowledgeBase.checkout(target: target, id: id, holder: holder)
+                    }.value
+                } catch {
+                    // The Library checkout above landed, but agentctl's own
+                    // lease could not be taken — hand the Library checkout
+                    // back rather than leave it held against a document this
+                    // pane never actually opened. Best-effort, the same
+                    // discipline `releaseLease` applies below.
+                    Task.detached {
+                        _ = try? LibraryClient.checkinReferenceDocument(
+                            target: target, docId: id, holder: holder)
+                    }
+                    page = .failed("Could not open the editor: \(error)")
+                    return
+                }
                 checkedOut = document
+                LibraryCheckoutRegistry.shared.register(
+                    documentId: document.id, target: document.target, holder: document.holder)
+                startHeartbeat(target: target, docId: id, holder: holder)
                 // A save held by an earlier launch still waits on this document; say so on open.
                 do {
                     if let held = try heldSave(id: id, target: document.target) {
@@ -720,10 +823,85 @@ final class EditorModel: ObservableObject {
     /// signed save that lands does not drop it either, because the lease is
     /// advisory dedup rather than a gate `submit` needs to clear (see
     /// `KnowledgeBase.releaseArguments`).
+    ///
+    /// Drops the Library's own checkout alongside it — the lock
+    /// `load`'s `.kb` branch took before agentctl's own lease, under the same
+    /// holder. A checkin failure must not lose the draft or block closing,
+    /// the same best-effort discipline `KnowledgeBase.release` already
+    /// applies to the agentctl lease.
+    ///
+    /// Checked in only when this pane was the last one claiming the key:
+    /// `Deck`'s windows are a plain `WindowGroup`, so the same document can be
+    /// open in two panes under the same holder, and a plain unregister used
+    /// to hand the checkout back the moment either one closed, leaving the
+    /// other with no live checkout at its next heartbeat or save (CQ·193).
     func releaseLease() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        let lapsed = libraryCheckoutLapsed
+        libraryCheckoutLapsed = false
         guard let document = checkedOut else { return }
         checkedOut = nil
-        Task.detached { KnowledgeBase.release(target: document.target, id: document.id) }
+        // A lapsed pane already dropped its claim when the 404 arrived
+        // (`startHeartbeat`), so unregistering again here would take a second
+        // pane's claim on the same key with it.
+        let wasLastClaim = lapsed ? false : LibraryCheckoutRegistry.shared.unregister(
+            documentId: document.id, target: document.target, holder: document.holder)
+        let checkin = checkinReferenceDocument
+        Task.detached {
+            KnowledgeBase.release(target: document.target, id: document.id, holder: document.holder)
+            // A lapsed checkout is no longer this pane's, and a checkin under
+            // the same holder would release one a held save's resend took.
+            // Likewise, a pane that was not the last claim on this key must
+            // not check in a checkout another open pane still depends on.
+            guard !lapsed, wasLastClaim else { return }
+            _ = try? checkin(document.target, document.id, document.holder)
+        }
+    }
+
+    /// Set when a heartbeat finds the Library holds no checkout for this pane
+    /// (a 404), and cleared by `releaseLease`.
+    var libraryCheckoutLapsed = false
+
+    /// Keeps the Library's own checkout alive for as long as `checkedOut`
+    /// stays this document (CQ·177 finding 1). Cancels any heartbeat already
+    /// running first — `load` calls `releaseLease` before this, so in
+    /// practice there is none, but a second call here would otherwise leave
+    /// two loops ticking against the same document.
+    ///
+    /// A refusal with a 404 means the checkout lapsed before this tick
+    /// reached it — the Library holds no live checkout under `holder` any
+    /// more — and is shown on the banner so the reader knows to reopen
+    /// before saving. Any other error is a transport failure (ssh, the
+    /// network), not a lapse: the banner is left alone and the next tick
+    /// tries again, because treating "could not reach the Library this
+    /// time" the same as "the checkout is gone" would flash the lapsed
+    /// banner on a reader who never lost it.
+    func startHeartbeat(target: SSHTarget, docId: String, holder: String) {
+        heartbeatTask?.cancel()
+        let interval = heartbeatInterval
+        let heartbeat = heartbeatReferenceDocument
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled else { return }
+                do {
+                    try await Task.detached { try heartbeat(target, docId, holder) }.value
+                } catch LibraryClient.FetchError.libraryRefused(let status, _) where status == 404 {
+                    guard !Task.isCancelled else { return }
+                    // The Library holds no checkout for this pane any more, so the
+                    // pane stops claiming one. Left registered, a held save resent
+                    // for the same document read the stale entry, skipped checking
+                    // in the checkout it took, and this loop then kept renewing
+                    // that checkout for a pane that never took it (CQ·187 review).
+                    LibraryCheckoutRegistry.shared.unregister(documentId: docId, target: target, holder: holder)
+                    self?.libraryCheckoutLapsed = true
+                    self?.report(.refused(EditorModel.checkoutLapsedMessage), for: .kb(id: docId))
+                    return
+                } catch {
+                }
+            }
+        }
     }
 
     /// Publishes a save's outcome, but only while the pane still holds the file

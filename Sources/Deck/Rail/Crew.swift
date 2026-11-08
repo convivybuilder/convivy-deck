@@ -78,7 +78,7 @@ struct Crew: Identifiable, Equatable {
     /// otherwise, and that misreading is why the default was opt-in.
     ///
     /// It was opt-in and three rows named it, so the five that did not —
-    /// `steward`, `vivy`, `constance`, `hollis`, `sous-chef` — started against
+    /// `steward`, `orchard`, `meridian`, `quarry`, `galley` — started against
     /// whatever the KB looked like the last time something else pulled it. A
     /// default the rail inherits is the version of this that a sixth row cannot
     /// forget.
@@ -131,7 +131,7 @@ struct Crew: Identifiable, Equatable {
     var host: String?
 
     /// The Library product this crew's cockpit reads — `convivy-deck`,
-    /// `bosun`, `library`, `convivy-orient`, `selector`. Not derivable from
+    /// `bosun`, `library`, `convivy-orient`, `lantern`. Not derivable from
     /// `id` or `displayName`: a crew id and a Library product are two
     /// different naming spaces (`keel` names the crew whose product is
     /// `bosun`), so guessing one from the other is exactly as unsafe as
@@ -163,8 +163,8 @@ struct Crew: Identifiable, Equatable {
     /// spaces that do not reliably agree (the Keel crew's project is
     /// `bosun`; its repo is `convivy/agent-platform`), so a guessed repo
     /// name is exactly as unsafe as a guessed host or bead would be. Several
-    /// real crews genuinely span more than one repo — Selector
-    /// (`selector`, `selector-backend`), Constance (four repos), Vivy
+    /// real crews genuinely span more than one repo — Lantern
+    /// (`lantern`, `lantern-backend`), Meridian (four repos), Orchard
     /// (three) and the Library crew (`library`, `knowledge`) — which is
     /// what issue_01M2P5JHM1G8XCMKM4HEHVJB2P is about.
     ///
@@ -258,8 +258,8 @@ struct Crew: Identifiable, Equatable {
 enum CrewCatalog {
     /// The rail's fallback when a config carries no `rail` array of its own.
     ///
-    /// USED TO BE CONVIVY'S OWN ORG CHART — steward, vivy, constance, selector,
-    /// hollis, sous-chef, svc, deck, vivy-commercial — nine rows nobody
+    /// USED TO BE CONVIVY'S OWN ORG CHART — steward, orchard, meridian, lantern,
+    /// quarry, galley, kit, deck, orchard-commercial — nine rows nobody
     /// running Deck outside Convivy would recognise, let alone want pinned on
     /// first launch. `deck/specs/running-deck-as-someone-else` §"The defaults
     /// name Convivy" removed it: rule 1 is that Deck ships mechanisms and

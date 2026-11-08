@@ -34,7 +34,7 @@ final class RailStateModelRefreshTests: XCTestCase {
     func testAFastHostsReadingLandsWithoutWaitingOnASlowHost() async {
         let model = RailStateModel()
         let fastRef = SessionRef(host: "fast", name: "ask")
-        let slowRef = SessionRef(host: "slow", name: "vivy")
+        let slowRef = SessionRef(host: "slow", name: "orchard")
         model.sessions = [fastRef, slowRef]
         model.resolveHost = { [fast, slow] ref in ref.host == "slow" ? slow : fast }
 
@@ -178,7 +178,7 @@ final class RailStateModelRefreshTests: XCTestCase {
     func testOneHostsFailureDoesNotMarkAReachableHostUnreachable() async {
         let model = RailStateModel()
         let fastRef = SessionRef(host: "fast", name: "ask")
-        let slowRef = SessionRef(host: "slow", name: "vivy")
+        let slowRef = SessionRef(host: "slow", name: "orchard")
         model.sessions = [fastRef, slowRef]
         model.resolveHost = { [fast, slow] ref in ref.host == "slow" ? slow : fast }
         model.fetchDiscovered = { _ in [] }

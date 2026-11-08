@@ -86,23 +86,35 @@ extension ColumnOccupant {
         current == .run(runId: runId) ? .cockpit : .run(runId: runId)
     }
 
-    /// What the viewer's close button reveals. A document opened from a
-    /// run's pane returns to that pane, but only while the column still
-    /// shows the document opened from it: once the reader has moved the
-    /// column anywhere else, `back.opened` no longer matches and closing
-    /// reveals the cockpit as it always has.
-    static func revealedOnClose(_ current: ColumnOccupant, back: ColumnBack?) -> ColumnOccupant {
-        guard let back, back.opened == current else { return .cockpit }
-        return back.previous
+    /// The column's new occupant and back trail after opening `occupant`
+    /// from whatever `current` is — `current` joins the end of `trail`, so
+    /// closing can retrace it however many opens deep. Generalizes the
+    /// single-level back step a run's own document used to get
+    /// (`ColumnBack`, `revealedOnClose`) to every occupant CQ·174 names:
+    /// a document, an item, a run, a pull request's reviews, and the
+    /// Slate — and to a nested open of any of them, an item opened from an
+    /// item being the one the issue tests by name.
+    ///
+    /// Opening what is already showing leaves the trail as it was. The
+    /// rail's Slate badge stays clickable while its Slate is open, and
+    /// pushing the Slate behind itself made the next close reveal the same
+    /// Slate again.
+    static func opening(
+        _ occupant: ColumnOccupant, from current: ColumnOccupant, trail: [ColumnOccupant]
+    ) -> (occupant: ColumnOccupant, trail: [ColumnOccupant]) {
+        guard occupant != current else { return (occupant, trail) }
+        return (occupant, trail + [current])
     }
-}
 
-/// The pane a document was opened from, paired with the occupant that
-/// opening produced, so `ColumnOccupant.revealedOnClose` can tell whether
-/// the column is still on that document.
-struct ColumnBack: Hashable, Sendable {
-    let opened: ColumnOccupant
-    let previous: ColumnOccupant
+    /// The column's new occupant and back trail after closing — the
+    /// trail's last entry, with the rest left behind it for a further
+    /// close, or the cockpit with an empty trail when there is nothing to
+    /// return to.
+    static func closing(trail: [ColumnOccupant]) -> (occupant: ColumnOccupant, trail: [ColumnOccupant]) {
+        var remaining = trail
+        let occupant = remaining.popLast() ?? .cockpit
+        return (occupant, remaining)
+    }
 }
 
 extension ColumnOccupant {
@@ -213,6 +225,22 @@ struct ContentView: View {
     /// that method's doc.
     @State private var stewardLaunchEvaluated = false
 
+    /// `crews`'s own memo — see `RailDerivedCache`'s doc. Recomputes
+    /// `CrewMerge.merge` only when configured rail sessions, served crews,
+    /// the catalog, or the host table actually changes, never merely
+    /// because `railState.states` (a per-session poll) invalidated this
+    /// view's body.
+    @State private var crewsCache = RailDerivedCache<ContentView.CrewsCacheInput, [Crew]>()
+    /// `childParentByRef`'s own memo, keyed on `crews` alone — it is the
+    /// only thing that function derives from.
+    @State private var childParentCache = RailDerivedCache<[Crew], [SessionRef: Crew]>()
+    /// `discoveredParentByRef`'s own memo — see `RailDerivedCache`'s doc.
+    @State private var discoveredParentCache = RailDerivedCache<ContentView.DiscoveredParentCacheInput, [SessionRef: Crew]>()
+    /// `themeForSession`'s own memo — see that function's doc.
+    @State private var themeMapCache = RailDerivedCache<ContentView.ThemeMapCacheInput, ContentView.ThemeMemo>()
+    /// `railSessionRefs`'s own memo — see that property's doc.
+    @State private var railSessionRefsCache = RailDerivedCache<ContentView.RailSessionRefsCacheInput, [SessionRef]>()
+
     /// A session's typed-but-unsent composer text, surviving the `.id()`
     /// teardown `mainPane` forces on every session switch. Owned here,
     /// above that boundary, and handed to `SessionPaneView` as a reference
@@ -312,19 +340,62 @@ struct ContentView: View {
     /// Sets the right column's content and, in the narrow layout, summons
     /// the sheet that shows it. A harmless extra write in the wide layout,
     /// where `isColumnSheetPresented` is never consulted.
+    ///
+    /// A FRESH JUMP, NOT A NESTED OPEN: the back trail is discarded, because
+    /// this is what the toolbar's segmented control means by selecting a
+    /// segment — "show me this" outright, not "opened from where I am
+    /// now." `openNestedColumnOccupant` below is the nested counterpart
+    /// every other call site uses.
     private func presentColumnOccupant(_ occupant: ColumnOccupant) {
         columnOccupant = occupant
-        columnBack = nil
+        columnOccupantStack = []
         isColumnSheetPresented = true
+    }
+
+    /// Opens `occupant` as a step nested under whatever the column
+    /// currently shows, remembering that occupant — and whatever is behind
+    /// it — so `closeNestedColumnOccupant` can retrace the trail however
+    /// many opens deep (`ColumnOccupant.opening`). This is the generalized
+    /// form of `openRunDocument`'s old one-level back step, now shared by
+    /// every occupant CQ·174 names: a document, an item, a run, a pull
+    /// request's reviews, and the Slate.
+    ///
+    /// Goes through `presentColumnOccupant` for the occupant-and-sheet
+    /// mechanics, then restores the trail that call clears — rather than
+    /// repeating that mechanics here — so the sheet is summoned exactly the
+    /// one way the column ever summons it.
+    private func openNestedColumnOccupant(_ occupant: ColumnOccupant) {
+        let opened = ColumnOccupant.opening(occupant, from: columnOccupant, trail: columnOccupantStack)
+        presentColumnOccupant(opened.occupant)
+        columnOccupantStack = opened.trail
     }
 
     /// Returns the right column to its cockpit rest state and, in the
     /// narrow layout, dismisses the sheet entirely — see
-    /// `isColumnSheetPresented`'s doc.
+    /// `isColumnSheetPresented`'s doc. Unconditional: used where closing
+    /// has never meant anything but the cockpit (the Shell and Local tabs),
+    /// and as `closeNestedColumnOccupant`'s own floor once its back trail
+    /// runs out.
     private func closeColumnOccupant() {
         columnOccupant = .cockpit
-        columnBack = nil
+        columnOccupantStack = []
         isColumnSheetPresented = false
+    }
+
+    /// Closes to the occupant this one was opened from, or the cockpit when
+    /// the back trail is empty (`ColumnOccupant.closing`) — the generalized
+    /// close every occupant `openNestedColumnOccupant` opened now uses,
+    /// in place of the unconditional `closeColumnOccupant` that used to send
+    /// every one of them straight to the cockpit.
+    private func closeNestedColumnOccupant() {
+        let next = ColumnOccupant.closing(trail: columnOccupantStack)
+        guard next.occupant != .cockpit else {
+            closeColumnOccupant()
+            return
+        }
+        columnOccupant = next.occupant
+        columnOccupantStack = next.trail
+        isColumnSheetPresented = true
     }
 
     /// The sheet's fixed width — `design/redesign/04-narrow.html`'s
@@ -342,16 +413,38 @@ struct ContentView: View {
 
     private var configuration: ThemeConfiguration { store.configuration }
 
+    /// `crews`'s recompute inputs — see `RailDerivedCache`'s doc.
+    struct CrewsCacheInput: Equatable {
+        var configured: [Crew]
+        var served: [ServedCrew]
+        var catalog: [LaunchableSession]
+        var hosts: [HostEntry]
+        var defaultHost: String?
+    }
+
     /// The rail's rows: config's own rail (or `CrewCatalog.known` when the
     /// user has none — empty today, see that fallback's doc comment) merged
     /// with whatever the steward has served since the last poll landed. See
     /// `CrewMerge` for the match-and-fill rule — this is what lets a crew
     /// made through `new-crew`, with no local config at all, reach the rail.
+    ///
+    /// MEMOIZED THROUGH `crewsCache` (CQ·196): `CrewMerge.merge` re-ran on
+    /// every access to this property — once per row, once per render,
+    /// including a render triggered by nothing but one session's poll
+    /// result — even though its own inputs rarely change. The cache below
+    /// recomputes only when `CrewsCacheInput` actually differs from last
+    /// time.
     private var crews: [Crew] {
-        CrewMerge.merge(
+        let input = CrewsCacheInput(
             configured: configuration.railSessions ?? CrewCatalog.known,
-            served: Array(railState.servedCrews.values),
+            served: RailPoll.orderedServedCrews(railState.servedCrews),
+            catalog: configuration.catalog,
             hosts: configuration.hosts, defaultHost: configuration.defaultHost)
+        return crewsCache.value(for: input) {
+            CrewMerge.merge(
+                configured: input.configured, served: input.served, catalog: input.catalog,
+                hosts: input.hosts, defaultHost: input.defaultHost)
+        }
     }
 
     /// Maps a pinned sibling session to the crew row that owns it — a
@@ -363,12 +456,29 @@ struct ContentView: View {
     /// on the grounds that resolving the wrong crew there cost a colour
     /// rather than a box; theme storage is host-scoped now, so the colour has
     /// the same answer as everything else and one map serves both.
+    ///
+    /// MEMOIZED THROUGH `childParentCache` (CQ·196), keyed on `crews` alone
+    /// — the only thing this derives from — so a single session's poll
+    /// result, which never changes `crews`, cannot force this map to be
+    /// rebuilt.
     private var childParentByRef: [SessionRef: Crew] {
-        var map: [SessionRef: Crew] = [:]
-        for crew in crews {
-            for child in crew.sessions { map[SessionRef.owned(by: crew, name: child.name)] = crew }
+        let crews = self.crews
+        return childParentCache.value(for: crews) {
+            var map: [SessionRef: Crew] = [:]
+            for crew in crews {
+                for child in crew.sessions { map[SessionRef.owned(by: crew, name: child.name)] = crew }
+            }
+            return map
         }
-        return map
+    }
+
+    /// `discoveredParentByRef`'s recompute inputs — see `RailDerivedCache`'s
+    /// doc.
+    struct DiscoveredParentCacheInput: Equatable {
+        var discovered: [DiscoveredSession]
+        var crews: [Crew]
+        var hosts: [HostEntry]
+        var defaultHost: String?
     }
 
     /// `childParentByRef` for sessions `session-agent sessions` found rather
@@ -377,17 +487,41 @@ struct ContentView: View {
     /// (`SessionGrouping`), which already enforces the host boundary, so a
     /// discovered session grouped under a crew here is grouped under the
     /// RIGHT crew regardless of what its name also matches on another host.
+    ///
+    /// MEMOIZED THROUGH `discoveredParentCache` (CQ·196):
+    /// `SessionGrouping.group` walks every discovered session against
+    /// every crew (name match, then path expansion and prefix compares),
+    /// which is the single largest frame in CQ·196's trace
+    /// (`SessionGrouping.owningCrewId`/`group`, 488 of 7732 samples). This
+    /// property used to re-run that walk on every access; the cache below
+    /// only re-runs it when the discovered set, the crews, or the host
+    /// table actually changes.
     private var discoveredParentByRef: [SessionRef: Crew] {
-        let groups = SessionGrouping.group(
-            Array(railState.discovered.values), into: crews,
+        let crews = self.crews
+        let input = DiscoveredParentCacheInput(
+            discovered: Array(railState.discovered.values), crews: crews,
             hosts: configuration.hosts, defaultHost: configuration.defaultHost)
-        var map: [SessionRef: Crew] = [:]
-        for crew in crews {
-            for discovered in groups[crew.id] ?? [] where discovered.name != crew.id {
-                map[SessionRef.owned(by: crew, name: discovered.name)] = crew
+        return ContentView.discoveredParents(input, cache: discoveredParentCache)
+    }
+
+    /// `discoveredParentByRef`'s cached walk, static so a test can drive it
+    /// through the same cache with no view.
+    static func discoveredParents(
+        _ input: DiscoveredParentCacheInput,
+        cache: RailDerivedCache<DiscoveredParentCacheInput, [SessionRef: Crew]>
+    ) -> [SessionRef: Crew] {
+        cache.value(for: input) {
+            let groups = SessionGrouping.group(
+                input.discovered, into: input.crews,
+                hosts: input.hosts, defaultHost: input.defaultHost)
+            var map: [SessionRef: Crew] = [:]
+            for crew in input.crews {
+                for discovered in groups[crew.id] ?? [] where discovered.name != crew.id {
+                    map[SessionRef.owned(by: crew, name: discovered.name)] = crew
+                }
             }
+            return map
         }
-        return map
     }
 
     /// The crew that owns `ref` — itself, a pinned child, or a discovered
@@ -420,19 +554,39 @@ struct ContentView: View {
     /// session discovered this tick is simply not yet in this list, and picks
     /// up its liveness mark on the next one, per
     /// `deck/specs/multiple-sessions-per-project`.
+    ///
+    /// MEMOIZED THROUGH `railSessionRefsCache` (CQ·196): the
+    /// `SessionGrouping.ungrouped` walk below re-ran on every read, and the
+    /// body reads this on every render, a poll-triggered one included.
     private var railSessionRefs: [SessionRef] {
-        var seen = Set<SessionRef>()
-        let ownRefs = crews.map { SessionRef.owned(by: $0, name: $0.id) }
-        let childRefs = crews.flatMap { crew in crew.sessions.map { SessionRef.owned(by: crew, name: $0.name) } }
-        let catalogRefs = configuration.catalog.map { SessionRef(host: $0.host, name: $0.id) }
-        let discoveredSessions = Array(railState.discovered.values)
-        let ownedDiscoveredRefs = Array(discoveredParentByRef.keys)
-        let orphanedRefs = SessionGrouping.ungrouped(
-            discoveredSessions, crews: crews,
-            hosts: configuration.hosts, defaultHost: configuration.defaultHost
-        ).map { SessionRef.orphaned($0, hosts: configuration.hosts) }
-        return (ownRefs + childRefs + catalogRefs + ownedDiscoveredRefs + orphanedRefs)
-            .filter { seen.insert($0).inserted }
+        let crews = self.crews
+        let input = RailSessionRefsCacheInput(
+            crews: crews, catalog: configuration.catalog,
+            discovered: Array(railState.discovered.values),
+            ownedDiscoveredRefs: Array(discoveredParentByRef.keys),
+            hosts: configuration.hosts, defaultHost: configuration.defaultHost)
+        return railSessionRefsCache.value(for: input) {
+            var seen = Set<SessionRef>()
+            let ownRefs = input.crews.map { SessionRef.owned(by: $0, name: $0.id) }
+            let childRefs = input.crews.flatMap { crew in crew.sessions.map { SessionRef.owned(by: crew, name: $0.name) } }
+            let catalogRefs = input.catalog.map { SessionRef(host: $0.host, name: $0.id) }
+            let orphanedRefs = SessionGrouping.ungrouped(
+                input.discovered, crews: input.crews,
+                hosts: input.hosts, defaultHost: input.defaultHost
+            ).map { SessionRef.orphaned($0, hosts: input.hosts) }
+            return (ownRefs + childRefs + catalogRefs + input.ownedDiscoveredRefs + orphanedRefs)
+                .filter { seen.insert($0).inserted }
+        }
+    }
+
+    /// `railSessionRefs`'s recompute inputs — see `RailDerivedCache`'s doc.
+    struct RailSessionRefsCacheInput: Equatable {
+        var crews: [Crew]
+        var catalog: [LaunchableSession]
+        var discovered: [DiscoveredSession]
+        var ownedDiscoveredRefs: [SessionRef]
+        var hosts: [HostEntry]
+        var defaultHost: String?
     }
 
     /// Every session name already in play: crew ids, their pinned children,
@@ -542,12 +696,74 @@ struct ContentView: View {
     /// whichever crew it happened to find first. Theme storage is keyed by
     /// `SessionRef` now, so the `ByRef` maps the rest of `ContentView`
     /// already used answer it exactly.
+    ///
+    /// MEMOIZED PER REF THROUGH `themeMapCache` (CQ·196). Every accent,
+    /// theme-menu label and rail row calls this on every render, so the
+    /// memo is keyed on the resolution's own inputs and nothing else: a
+    /// ref resolves once, and the memo empties when the crews, either
+    /// parent map, the host table or the per-session theme names change.
+    /// `sessionThemes` carries only `configuration.sessions`, the one field
+    /// `ThemeConfiguration.theme(forSession:)` reads, so an unrelated
+    /// configuration edit (typography, the rail's order) keeps the memo.
+    /// The key deliberately leaves out the set of refs the rail draws:
+    /// building that list walks `SessionGrouping`, and doing it once per
+    /// call here cost more than the resolution it was meant to save.
     private func themeForSession(_ ref: SessionRef) -> TerminalTheme {
         let key = SessionRef(host: ref.host, name: WindowLeaf.parse(ref.name)?.session ?? ref.name)
+        let crews = self.crews
+        let input = ThemeMapCacheInput(
+            crews: crews, childParentByRef: childParentByRef,
+            discoveredParentByRef: discoveredParentByRef, hosts: configuration.hosts,
+            defaultHost: configuration.defaultHost, sessionThemes: configuration.sessions)
+        return ContentView.theme(for: key, input: input, cache: themeMapCache, configuration: configuration)
+    }
+
+    /// `themeForSession`'s memoized lookup, static so a test can drive it
+    /// through the same cache with no view. `input.sessionThemes` must be
+    /// `configuration.sessions`, which is the only field the resolution
+    /// reads from `configuration`.
+    static func theme(
+        for key: SessionRef, input: ThemeMapCacheInput,
+        cache: RailDerivedCache<ThemeMapCacheInput, ThemeMemo>, configuration: ThemeConfiguration
+    ) -> TerminalTheme {
+        let memo = cache.value(for: input) { ThemeMemo() }
+        if let cached = memo.themes[key] { return cached }
+        let theme = resolvedTheme(
+            for: key, crews: input.crews, childParentByRef: input.childParentByRef,
+            discoveredParentByRef: input.discoveredParentByRef, hosts: input.hosts,
+            defaultHost: input.defaultHost, configuration: configuration)
+        memo.themes[key] = theme
+        return theme
+    }
+
+    /// `themeForSession`'s memo key — see `RailDerivedCache`'s doc.
+    struct ThemeMapCacheInput: Equatable {
+        var crews: [Crew]
+        var childParentByRef: [SessionRef: Crew]
+        var discoveredParentByRef: [SessionRef: Crew]
+        var hosts: [HostEntry]
+        var defaultHost: String?
+        var sessionThemes: [SessionRef: String]
+    }
+
+    /// The per-ref themes for one `ThemeMapCacheInput`. `themeMapCache`
+    /// hands back a fresh, empty one whenever that input changes, and
+    /// `themeForSession` fills it one ref at a time, on each ref's first
+    /// lookup.
+    final class ThemeMemo {
+        var themes: [SessionRef: TerminalTheme] = [:]
+    }
+
+    /// `themeForSession`'s resolution step, kept pure so the memo above
+    /// stores exactly what the uncached rule would return.
+    private static func resolvedTheme(
+        for key: SessionRef, crews: [Crew], childParentByRef: [SessionRef: Crew],
+        discoveredParentByRef: [SessionRef: Crew], hosts: [HostEntry], defaultHost: String?,
+        configuration: ThemeConfiguration
+    ) -> TerminalTheme {
         let parent = childParentByRef[key] ?? discoveredParentByRef[key]
             ?? crews.first { $0.ref == key }.flatMap {
-                RailNesting.nestingParent(of: $0, in: crews, hosts: configuration.hosts,
-                                          defaultHost: configuration.defaultHost)
+                RailNesting.nestingParent(of: $0, in: crews, hosts: hosts, defaultHost: defaultHost)
             }
         return configuration.theme(forSession: key, fallbackParent: parent?.ref)
     }
@@ -613,7 +829,7 @@ struct ContentView: View {
     /// declined rather than opening a pane with no host to poll.
     private func openSlate(for ref: SessionRef) {
         guard let target = hostTarget(for: ref) else { return }
-        presentColumnOccupant(.slate(session: ref.name, target: target, crew: ref))
+        openNestedColumnOccupant(.slate(session: ref.name, target: target, crew: ref))
     }
 
     /// The other half of `StewardCrew.shouldCreate`'s self-healing besides
@@ -713,6 +929,8 @@ struct ContentView: View {
     private var rail: some View {
         RailView(
             crews: crews,
+            groups: configuration.groups,
+            onSetGroupFolded: { group, folded in store.setGroupFolded(group, folded: folded) },
             accent: { themeForSession($0).palette(for: appearance(for: .rail)).cursor },
             mark: { railState.mark(for: $0) },
             isStopped: { railState.isStopped($0) },
@@ -749,6 +967,9 @@ struct ContentView: View {
             onRequestRemoveCrew: { crewToRemove = $0 },
             onRequestRemoveChild: { crew, session in childToRemove = (crew, session) },
             onSetCrewParent: { crew, parentId in store.setParent(parentId, forCrew: crew.ref) },
+            onMoveCrewToGroup: { crew, groupName in store.moveCrew(crew.ref, toGroup: groupName) },
+            onRemoveCrewFromGroup: { crew in store.removeCrewFromGroup(crew.ref) },
+            onCreateGroupForCrew: { crew, name in store.createGroup(named: name, firstMember: crew.ref) },
             onStopDiscoveredSession: { sessionToStop = $0 },
             onAdoptSession: adoptSession,
             onRequestPromoteSession: { sessionToPromote = $0 },
@@ -1360,9 +1581,13 @@ struct ContentView: View {
     /// chrome.
     @State private var columnOccupant: ColumnOccupant
 
-    /// Set when a run's pane opens a document, so the viewer's close button
-    /// returns to that run (`ColumnOccupant.revealedOnClose`).
-    @State private var columnBack: ColumnBack?
+    /// The occupants the column passed through, oldest first, to reach
+    /// `columnOccupant` by nested opens — `[.cockpit, .item(id: "i1", ...)]`
+    /// while an item opened from that item is showing. `openNestedColumnOccupant`
+    /// appends to it; `closeNestedColumnOccupant` pops it
+    /// (`ColumnOccupant.opening`/`.closing`). Empty whenever the current
+    /// occupant was reached by a fresh jump instead (`presentColumnOccupant`).
+    @State private var columnOccupantStack: [ColumnOccupant] = []
 
     /// Drives the cockpit column's Library reads. One instance for the
     /// window's life — `refresh` is a no-op when the (target, product) pair
@@ -1400,6 +1625,14 @@ struct ContentView: View {
     /// cached cwd. Nil while unresolved or for a session with no reported
     /// cwd, which opens the shell in the remote home.
     @State private var sessionCwd: [SessionRef: String] = [:]
+
+    /// The document viewer's refresh button (CQ·185): bumped on each
+    /// press so `FileViewerPane`'s `.task(id:)` refires for the same ref,
+    /// and the loading state that button shows while the refetch is in
+    /// flight. One pair for the window's life — only one viewer pane is
+    /// ever on screen at a time (`ColumnOccupant`).
+    @State private var viewerRefreshToken = 0
+    @State private var viewerIsRefreshing = false
 
     /// Runs `ThemeStore.reconcilePinnedSessions` on every rail poll tick
     /// (`.onChange(of: railState.generation)`, folded in there rather than
@@ -1746,7 +1979,7 @@ struct ContentView: View {
 
     /// How much the theme's own hue is strengthened. On a near-white or
     /// near-black background a lightness step alone reads as "slightly grey";
-    /// the chroma is what makes deck read warm and vivy read green.
+    /// the chroma is what makes deck read warm and orchard read green.
     /// Internal rather than private so the tests guard the SHIPPED value. They
     /// hardcoded a strength before, so they would have passed just as happily
     /// with a canvas set to white — which is the bug they exist to catch.
@@ -2195,7 +2428,7 @@ struct ContentView: View {
     /// ever match this one row.
     private func removeCatalogEntry(_ entry: LaunchableSession) {
         var roster = SessionRoster(configuration: configuration,
-                                   servedCrews: Array(railState.servedCrews.values))
+                                   servedCrews: RailPoll.orderedServedCrews(railState.servedCrews))
         roster.remove(entry.ref)
         store.setRoster(roster)
     }
@@ -2560,11 +2793,12 @@ struct ContentView: View {
             },
             set: { presentColumnOccupant($0) }
         ), fittingWidth: fittingWidth) { iconOnly in
+            // THE ORDER IS COCKPIT, SLATE, SHELL, LOCAL (the operator,
+            // 2026-10-20). The Slate sits beside the Cockpit or Board because
+            // both are about the project's work, and the two terminals follow.
             columnSegment(restStateLabel, "square.grid.2x2.fill", iconOnly: iconOnly, tag: .cockpit)
-            columnSegment("Shell", "terminal.fill", iconOnly: iconOnly, tag: .remoteShell)
-            columnSegment("Local", "laptopcomputer", iconOnly: iconOnly, tag: .localTerminal)
             // ALWAYS OFFERED FOR A REACHABLE SELECTION, the same footing as
-            // Shell and Local above, rather than appearing only once already
+            // Shell and Local below, rather than appearing only once already
             // open the way the viewer/editor/item/run segments below do —
             // this is the "clear way to open the Slate sheet for a crew"
             // issue_01M3WPYD8M0P8PD20Y3ZBNGBWG asks for, ahead of the rail
@@ -2574,6 +2808,23 @@ struct ContentView: View {
             if let slateOccupant = selectedSlateOccupant {
                 columnSegment("Slate", "list.bullet.clipboard.fill", iconOnly: iconOnly, tag: slateOccupant)
             }
+            // A Slate already open for a session OTHER than the current
+            // selection — the future rail badge's case
+            // (issue_01M3WPYSH0S1FZVZ6P3YMNJGXW) — needs its own segment too,
+            // the same way `.item`/`.run` below cover an occupant the
+            // always-on branch could not have offered. Guarded by crew, not
+            // by the whole value: a Slate opened before its host was edited
+            // carries the old target, and the always-on segment already
+            // stands for that crew. The segment keeps the glyph and icon-only
+            // fallback of the other segments, and sits beside the always-on
+            // Slate so the two never land apart.
+            if case .slate(let session, let target, let crew) = columnOccupant,
+               ColumnOccupant.selectionSlateCovering(columnOccupant, selectionSlate: selectedSlateOccupant) == nil {
+                columnSegment("Slate", "list.bullet.clipboard.fill", iconOnly: iconOnly,
+                              tag: ColumnOccupant.slate(session: session, target: target, crew: crew))
+            }
+            columnSegment("Shell", "terminal.fill", iconOnly: iconOnly, tag: .remoteShell)
+            columnSegment("Local", "laptopcomputer", iconOnly: iconOnly, tag: .localTerminal)
             if case .viewer(let ref, let target) = columnOccupant {
                 columnSegment("Viewer", "doc.text", iconOnly: iconOnly,
                               tag: .viewer(ref: ref, target: target))
@@ -2590,20 +2841,6 @@ struct ContentView: View {
                 columnSegment("Run", "text.alignleft", iconOnly: iconOnly,
                               tag: .run(runId: runId))
             }
-            // A Slate already open for a session OTHER than the current
-            // selection — the future rail badge's case
-            // (issue_01M3WPYSH0S1FZVZ6P3YMNJGXW) — needs its own segment too,
-            // the same way `.item`/`.run` above cover an occupant the
-            // always-on branch could not have offered. Guarded by crew, not
-            // by the whole value: a Slate opened before its host was edited
-            // carries the old target, and the always-on segment already
-            // stands for that crew. The segment keeps the glyph and icon-only
-            // fallback of the other segments.
-            if case .slate(let session, let target, let crew) = columnOccupant,
-               ColumnOccupant.selectionSlateCovering(columnOccupant, selectionSlate: selectedSlateOccupant) == nil {
-                columnSegment("Slate", "list.bullet.clipboard.fill", iconOnly: iconOnly,
-                              tag: ColumnOccupant.slate(session: session, target: target, crew: crew))
-            }
         }
         .onChange(of: columnOccupant) { old, new in
             if new == .remoteShell, old != .remoteShell { resolveShellCwd() }
@@ -2619,6 +2856,10 @@ struct ContentView: View {
                 entering: slateKey(for: new),
                 newSelectionSlate: slateOccupant(for: new))
             guard next != columnOccupant else { return }
+            // A crew switch invalidates whatever the old crew's occupant was
+            // opened from, the same reason `CockpitModel.refresh` drops its
+            // own per-project state on a project change.
+            columnOccupantStack = []
             if next == .cockpit { closeColumnOccupant() } else { columnOccupant = next }
         }
         // A host edit changes the Slate the column's crew has now, even while
@@ -2630,6 +2871,7 @@ struct ContentView: View {
             let next = ColumnOccupant.repointingToCrewSlate(
                 columnOccupant, currentSlate: slateOccupant(for:))
             guard next != columnOccupant else { return }
+            columnOccupantStack = []
             if next == .cockpit { closeColumnOccupant() } else { columnOccupant = next }
         }
     }
@@ -2858,23 +3100,6 @@ struct ContentView: View {
         openViewer(.kb(id: validated), target: target)
     }
 
-    /// Opens a document from a run's pane and remembers that pane, so
-    /// closing the document returns to the run rather than the cockpit.
-    private func openRunDocument(_ id: String, fromRun runId: String) {
-        openCheckoutDocument(id)
-        if case .viewer = columnOccupant {
-            columnBack = ColumnBack(opened: columnOccupant, previous: .run(runId: runId))
-        }
-    }
-
-    /// The viewer's close button: back to the pane the document was opened
-    /// from when there is one, otherwise the cockpit.
-    private func closeViewer() {
-        let next = ColumnOccupant.revealedOnClose(columnOccupant, back: columnBack)
-        columnBack = nil
-        if next == .cockpit { closeColumnOccupant() } else { presentColumnOccupant(next) }
-    }
-
     private func reloadCheckoutDocuments() {
         Task { await checkoutDocumentsModel.reload() }
     }
@@ -2995,6 +3220,20 @@ struct ContentView: View {
         selection.flatMap { railState.states[$0]?.agentsAreFleetWide } ?? false
     }
 
+    /// The Sessions panel's rows: every crew `CockpitView.sessionsOfProject`
+    /// finds for the selected session's project, each paired with its own
+    /// `railState.states` reading — `nil` when that session has no entry
+    /// there, which the panel draws as "State unknown." rather than
+    /// dropping the row. Empty whenever no project resolves, the same
+    /// "nothing to follow" answer `selectedAgentRuns` gives for its own
+    /// field.
+    private var selectedSessionsPanel: [CockpitView.SessionRow] {
+        guard let project = cockpitProjectAndTarget?.project else { return [] }
+        return CockpitView.sessionsOfProject(crews, project: project).map {
+            CockpitView.SessionRow(ref: $0.ref, displayName: $0.displayName, state: railState.states[$0.ref])
+        }
+    }
+
     /// The selected crew's own hue — the same expression `SessionPaneView`'s
     /// own `accent` argument below uses, so `CockpitView` and
     /// `WaypointRibbon` draw an in-progress mark in provably the same colour
@@ -3073,9 +3312,19 @@ struct ContentView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
+            if viewerIsRefreshing { ProgressView().controlSize(.small) }
+            Button {
+                viewerRefreshToken += 1
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(viewerIsRefreshing)
+            .help("Refresh this file")
             if EditorPane.canEdit(ref) {
                 Button {
-                    presentColumnOccupant(.editor(ref: ref, target: target))
+                    openNestedColumnOccupant(.editor(ref: ref, target: target))
                 } label: {
                     Image(systemName: "square.and.pencil")
                 }
@@ -3092,16 +3341,39 @@ struct ContentView: View {
             .controlSize(.small)
             .help("Save a copy to your Mac")
             Button {
-                closeViewer()
+                closeNestedColumnOccupant()
             } label: {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .help(ColumnOccupant.revealedOnClose(columnOccupant, back: columnBack) == .cockpit
-                  ? "Close and return to the cockpit" : "Close and return to the run")
+            .help(ColumnOccupant.closing(trail: columnOccupantStack).occupant == .cockpit
+                  ? "Close and return to the cockpit" : "Close and return to where this was opened from")
         }
         .padding(.horizontal, 10).padding(.vertical, 4)
+    }
+
+    /// `ItemDetailPane`'s Approve, going through
+    /// `CockpitModel.writeApprovalFromItemPane` — the same core the
+    /// cockpit's own Proposals region writes through (CQ·186), so no
+    /// second approval path is built here.
+    ///
+    /// **`host` IS THE ITEM PANE'S OWN `target`, NEVER THE COCKPIT'S
+    /// `lastFetched`.** `lastFetched` follows whichever crew is selected on
+    /// the rail, not the item open in the nested column — the gap
+    /// `deck-reviewer` found on PR #399: approving or declining an epic
+    /// opened from another product silently wrote nothing while reading
+    /// back as success. `writeApprovalFromItemPane` writes to the host the
+    /// caller names, so it needs no fix here beyond passing the pane's own
+    /// host through.
+    private func approveEpicFromItemPane(_ epicID: String, host: SSHTarget) async -> CockpitModel.ApprovalWriteOutcome {
+        await cockpitModel.writeApprovalFromItemPane(.approve, epicID: epicID, host: host)
+    }
+
+    /// The Decline counterpart to `approveEpicFromItemPane`, for the same
+    /// reason.
+    private func declineEpicFromItemPane(_ epicID: String, host: SSHTarget) async -> CockpitModel.ApprovalWriteOutcome {
+        await cockpitModel.writeApprovalFromItemPane(.decline, epicID: epicID, host: host)
     }
 
     /// Opens the item detail pane for one corrections-queue row —
@@ -3112,14 +3384,14 @@ struct ContentView: View {
     /// host to reach.
     private func openItem(id: String) {
         guard let target = cockpitProjectAndTarget?.target else { return }
-        presentColumnOccupant(.item(id: id, target: target))
+        openNestedColumnOccupant(.item(id: id, target: target))
     }
 
     /// A Dispatched row's click: open that run's pane, close it when it is
     /// already open, follow the selection otherwise (`togglingRun`).
     private func toggleRunPane(runId: String) {
         let next = ColumnOccupant.togglingRun(runId, from: columnOccupant)
-        if next == .cockpit { closeColumnOccupant() } else { presentColumnOccupant(next) }
+        if next == .cockpit { closeNestedColumnOccupant() } else { openNestedColumnOccupant(next) }
     }
 
     /// The run id whose pane is open, for the Dispatched rows' highlight.
@@ -3135,7 +3407,7 @@ struct ContentView: View {
     /// once that pair resolved.
     private func openReviewRecords(_ row: PRLadder.LadderResult) {
         guard let target = cockpitProjectAndTarget?.target else { return }
-        presentColumnOccupant(.reviewRecords(repo: row.repo, pr: row.number, headSha: row.headSha, target: target))
+        openNestedColumnOccupant(.reviewRecords(repo: row.repo, pr: row.number, headSha: row.headSha, target: target))
     }
 
     /// Fetches the working copy (or re-fetches if missing) then presents a save
@@ -3183,7 +3455,7 @@ struct ContentView: View {
         case .revealed:
             presentColumnOccupant(.cockpit)
         case .notInCockpit:
-            presentColumnOccupant(.item(id: id, target: target))
+            openNestedColumnOccupant(.item(id: id, target: target))
         }
     }
 
@@ -3212,7 +3484,7 @@ struct ContentView: View {
         }
         switch FileViewerRouter.route(for: ref) {
         case .pane:
-            presentColumnOccupant(.viewer(ref: ref, target: target))
+            openNestedColumnOccupant(.viewer(ref: ref, target: target))
         case .browser:
             Task { await openInBrowser(ref, target: target) }
         case .handOff:
@@ -3531,8 +3803,10 @@ struct ContentView: View {
             case .course:
                 CockpitView(model: cockpitModel, unresolvedReason: cockpitUnresolvedReason,
                            agentRuns: selectedAgentRuns, agentsAreFleetWide: selectedAgentsAreFleetWide,
+                           sessions: selectedSessionsPanel, onSelectSession: { selection = $0 },
                            appearance: appearance(for: .cockpit), accent: selectedAccent(for: .cockpit),
                            onSelectCorrection: openItem,
+                           onOpenBead: openSelectedCrewBead(), beadHelp: beadAvailability.help,
                            onSelectRun: toggleRunPane, openRunId: openRunId,
                            placeLine: restStatePlaceLine,
                            checkoutDocuments: checkoutDocumentsPanel, pullRequests: pullRequestsPanel,
@@ -3553,6 +3827,7 @@ struct ContentView: View {
                            agentRuns: selectedAgentRuns, agentsAreFleetWide: selectedAgentsAreFleetWide,
                            appearance: appearance(for: .cockpit), accent: selectedAccent(for: .cockpit),
                            onSelectCorrection: openItem,
+                           onOpenBead: openSelectedCrewBead(), beadHelp: beadAvailability.help,
                            onSelectRun: toggleRunPane, openRunId: openRunId,
                            title: "Board", placeLine: restStatePlaceLine,
                            panelIDs: CockpitView.boardPanelIDs,
@@ -3581,7 +3856,9 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 viewerColumnHeader(for: ref, target: target)
                 Divider()
-                FileViewerPane(ref: ref, appearance: appearance(for: .document), target: target)
+                FileViewerPane(ref: ref, appearance: appearance(for: .document), target: target,
+                               refreshToken: viewerRefreshToken,
+                               onLoadingChanged: { viewerIsRefreshing = $0 })
             }
         case .editor(let ref, let target):
             EditorPane(
@@ -3590,22 +3867,24 @@ struct ContentView: View {
                 server: server,
                 target: target,
                 hosts: configuration.hosts,
-                onDone: { presentColumnOccupant(.viewer(ref: ref, target: target)) },
-                onClose: closeColumnOccupant,
+                onDone: closeNestedColumnOccupant,
+                onClose: closeNestedColumnOccupant,
                 onOpenRef: { r in openViewer(r, target: target) })
         case .item(let id, let target):
             ItemDetailPane(
                 id: id, target: target, appearance: appearance(for: .document),
-                onClose: closeColumnOccupant,
-                onOpenItem: { newId in presentColumnOccupant(.item(id: newId, target: target)) })
+                onClose: closeNestedColumnOccupant,
+                onOpenItem: { newId in openNestedColumnOccupant(.item(id: newId, target: target)) },
+                onApprove: { epicID in await approveEpicFromItemPane(epicID, host: target) },
+                onDecline: { epicID in await declineEpicFromItemPane(epicID, host: target) })
         case .run(let runId):
             RunDetailPane(
                 detail: RunDetail.make(runId: runId, runs: selectedAgentRuns,
                                        last: lastListedRunDetails[runId]),
                 given: runGivenDocumentsModel.state,
                 fetched: runFetchedDocumentsModel.state,
-                onOpenDocument: { id in openRunDocument(id, fromRun: runId) },
-                onClose: closeColumnOccupant)
+                onOpenDocument: openCheckoutDocument,
+                onClose: closeNestedColumnOccupant)
                 // Remember each listed run's detail, so the pane still has
                 // it after the run leaves the list (see `RunDetail.make`).
                 .onChange(of: selectedAgentRuns, initial: true) { _, runs in
@@ -3620,14 +3899,14 @@ struct ContentView: View {
         case .reviewRecords(let repo, let pr, let headSha, let target):
             ReviewRecordsPane(
                 repo: repo, pr: pr, headSha: headSha, target: target,
-                appearance: appearance(for: .document), onClose: closeColumnOccupant)
+                appearance: appearance(for: .document), onClose: closeNestedColumnOccupant)
         case .slate(let session, let target, _):
             // The sheet's identity is the session it was opened for, not the
             // selection, so a Slate open for another crew keeps that crew's colour.
             let palette = slatePalette(session: session, target: target)
             let slateAppearance = appearance(for: .slate)
             let canvas = ContentView.paneCanvas(for: palette, appearance: slateAppearance)
-            SlatePane(session: session, target: target, onClose: closeColumnOccupant,
+            SlatePane(session: session, target: target, onClose: closeNestedColumnOccupant,
                       canvas: canvas,
                       bandColours: .identity(canvas: canvas, accent: palette.cursor, slateAppearance),
                       place: "\(session) on \(target.host)",
@@ -3718,6 +3997,7 @@ struct ContentView: View {
             dotAccent: themeForSession(selection).palette(for: appearance(for: .terminal)).cursor,
             dotSurface: ink,
             workingOn: state?.workingOn,
+            workingOnDerived: state?.workingOnDerived,
             vitals: state?.vitals,
             agentsAreFleetWide: state?.agentsAreFleetWide ?? false,
             isLaunching: launching.contains(selection),
@@ -3845,6 +4125,7 @@ struct ContentView: View {
                         // which already carries `working_on` — no second poll
                         // for one line of text.
                         workingOn: railState.states[selection]?.workingOn,
+                        workingOnDerived: railState.states[selection]?.workingOnDerived,
                         findBarState: findBarState,
                         sharedPRLadder: prLadderModel,
                         fallbackPRLadder: sessionReviewChipLadder

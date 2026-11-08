@@ -17,7 +17,7 @@ final class ThemePersistenceTests: XCTestCase {
     func testSaveThenLoadRoundTrips() throws {
         let url = tempURL()
         let config = ThemeConfiguration(
-            sessions: [SessionRef(host: nil, name: "vivy"): "azure", SessionRef(host: nil, name: "deck"): "gold"], appearancePreference: .light, typography: .default)
+            sessions: [SessionRef(host: nil, name: "orchard"): "azure", SessionRef(host: nil, name: "deck"): "gold"], appearancePreference: .light, typography: .default)
         try config.save(to: url)
         XCTAssertEqual(ThemeConfiguration.load(from: url), config)
     }
@@ -34,11 +34,11 @@ final class ThemePersistenceTests: XCTestCase {
     /// the whole reason the file remains the escape hatch.
     func testSavedFileIsHumanEditable() throws {
         let url = tempURL()
-        try ThemeConfiguration(sessions: [SessionRef(host: nil, name: "vivy"): "azure"], appearancePreference: .system, typography: .default)
+        try ThemeConfiguration(sessions: [SessionRef(host: nil, name: "orchard"): "azure"], appearancePreference: .system, typography: .default)
             .save(to: url)
         let text = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(text.contains("\n"), "should be pretty-printed, not one line")
-        XCTAssertTrue(text.contains("vivy"))
+        XCTAssertTrue(text.contains("orchard"))
         XCTAssertTrue(text.contains("azure"))
     }
 

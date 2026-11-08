@@ -18,7 +18,7 @@ final class CrewBeadTests: XCTestCase {
     }
 
     func testAFileWithNoBeadKeyDecodesToNil() throws {
-        let file = try write(#"{"rail": [{"session": "vivy"}]}"#)
+        let file = try write(#"{"rail": [{"session": "orchard"}]}"#)
         XCTAssertNil(ThemeConfiguration.load(from: file).railSessions?.first?.bead)
     }
 
@@ -28,8 +28,8 @@ final class CrewBeadTests: XCTestCase {
     }
 
     func testACatalogRowsBeadDecodes() throws {
-        let file = try write(#"{"catalog": [{"session": "nyh", "bead": "selector/bead/selector"}]}"#)
-        XCTAssertEqual(ThemeConfiguration.load(from: file).catalog.first?.bead, "selector/bead/selector")
+        let file = try write(#"{"catalog": [{"session": "lakeside", "bead": "lantern/bead/lantern"}]}"#)
+        XCTAssertEqual(ThemeConfiguration.load(from: file).catalog.first?.bead, "lantern/bead/lantern")
     }
 
     /// A bead id shaped like shell injection costs the row its bead link, not
@@ -38,9 +38,9 @@ final class CrewBeadTests: XCTestCase {
     /// a bead id reaches the viewer's `.kb(id:)` origin and, downstream, an
     /// unquoted remote URL (`WorkingCopyStore.libraryDocumentRemoteCommand`).
     func testARailRowWithAnInjectionShapedBeadKeepsTheRowButDropsTheBead() throws {
-        let file = try write(#"{"rail": [{"session": "vivy", "bead": "$(rm -rf ~)"}]}"#)
+        let file = try write(#"{"rail": [{"session": "orchard", "bead": "$(rm -rf ~)"}]}"#)
         let row = try XCTUnwrap(ThemeConfiguration.load(from: file).railSessions?.first)
-        XCTAssertEqual(row.id, "vivy")
+        XCTAssertEqual(row.id, "orchard")
         XCTAssertNil(row.bead)
     }
 
@@ -48,9 +48,9 @@ final class CrewBeadTests: XCTestCase {
     /// `DeckOpenRef.validateKBId` requires — is rejected the same way, even
     /// with no injection-shaped characters in it.
     func testARailRowWithAMalformedBeadShapeKeepsTheRowButDropsTheBead() throws {
-        let file = try write(#"{"rail": [{"session": "vivy", "bead": "not-three-segments"}]}"#)
+        let file = try write(#"{"rail": [{"session": "orchard", "bead": "not-three-segments"}]}"#)
         let row = try XCTUnwrap(ThemeConfiguration.load(from: file).railSessions?.first)
-        XCTAssertEqual(row.id, "vivy")
+        XCTAssertEqual(row.id, "orchard")
         XCTAssertNil(row.bead)
     }
 

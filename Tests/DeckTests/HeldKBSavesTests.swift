@@ -72,6 +72,25 @@ private final class FakeTransport {
     }
 }
 
+/// Records calls to `HeldKBSaves.attempt`'s own Library-checkout seam
+/// (CQ·187) — `checkout` throws `checkoutError` when it is set, exactly once
+/// per call, the same single-shot shape `FakeTransport`'s queue gives `run`.
+private final class FakeLibraryCheckout {
+    struct Call: Equatable { let target: SSHTarget; let docId: String; let holder: String }
+    private(set) var checkoutCalls: [Call] = []
+    private(set) var checkinCalls: [Call] = []
+    var checkoutError: Error?
+
+    func checkout(_ target: SSHTarget, _ docId: String, _ holder: String) throws {
+        checkoutCalls.append(Call(target: target, docId: docId, holder: holder))
+        if let checkoutError { throw checkoutError }
+    }
+
+    func checkin(_ target: SSHTarget, _ docId: String, _ holder: String) throws {
+        checkinCalls.append(Call(target: target, docId: docId, holder: holder))
+    }
+}
+
 final class HeldKBSavesTests: XCTestCase {
     private var directory: URL!
     /// Stands in for `WorkingCopyStore.directory(forKBId:)`, the directory every
@@ -86,7 +105,7 @@ final class HeldKBSavesTests: XCTestCase {
 
     private let document = KnowledgeBase.CheckedOutDocument(
         id: "deck/specs/session-pane", content: "# Held\n", contentSha: "3acf9780aa451c2f0d0e",
-        sourceRef: "projects/deck/specs/session-pane.md", target: TestHost.target)
+        sourceRef: "projects/deck/specs/session-pane.md", target: TestHost.target, holder: TestHost.holder)
 
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory
@@ -120,18 +139,27 @@ final class HeldKBSavesTests: XCTestCase {
     }
 
     /// Sends `saves` against the fixture certificate, at a moment inside its window
-    /// unless the test says otherwise, to the configured host.
+    /// unless the test says otherwise, to the configured host. `checkout` defaults
+    /// to a fresh `FakeLibraryCheckout` that just records, standing in for a
+    /// Library checkout that is always granted, since most of these tests have
+    /// nothing to do with CQ·187's own checkout step.
     private func send(
         _ saves: [HeldKBSave], store: HeldKBSaveStore, key: SigningKey,
         certificatePEM: String? = nil, now: Date? = nil,
         configured: [SSHTarget] = [TestHost.target],
+        checkoutRegistry: LibraryCheckoutRegistry = LibraryCheckoutRegistry(),
+        checkout: FakeLibraryCheckout = FakeLibraryCheckout(),
         run: ([String], String?) throws -> Data
     ) -> HeldKBSaves.SendBatch {
         HeldKBSaves.send(
             saves, store: store, signingKey: key,
             certificatePEM: certificatePEM ?? self.certificatePEM,
             configuredTargets: configured, now: now ?? inWindow,
-            draftDirectory: { _ in self.workingCopy }, run: run)
+            draftDirectory: { _ in self.workingCopy },
+            checkoutRegistry: checkoutRegistry,
+            checkoutReferenceDocument: checkout.checkout,
+            checkinReferenceDocument: checkout.checkin,
+            run: run)
     }
 
     func testExpiredHoldIsRecordedAndSurvivesAReload() throws {
@@ -217,7 +245,7 @@ final class HeldKBSavesTests: XCTestCase {
     func testEachSendAsksOnceAndThePromptNamesTheDocument() throws {
         let other = KnowledgeBase.CheckedOutDocument(
             id: "deck/specs/other", content: "# Other\n", contentSha: "bbbb", sourceRef: "projects/deck/specs/other.md",
-            target: TestHost.target)
+            target: TestHost.target, holder: TestHost.holder)
         let draftA = try writeDraft("# Held\n")
         let draftB = try writeDraft("# Other\n", named: "other.draft.md")
         let store = HeldKBSaveStore(fileURL: storeURL)
@@ -465,7 +493,7 @@ final class HeldKBSavesTests: XCTestCase {
         let store = HeldKBSaveStore(fileURL: storeURL)
         let invalid = KnowledgeBase.CheckedOutDocument(
             id: "deck/specs/Session Pane", content: "# Held\n", contentSha: document.contentSha,
-            sourceRef: document.sourceRef, target: TestHost.target)
+            sourceRef: document.sourceRef, target: TestHost.target, holder: TestHost.holder)
         try store.record(HeldKBSave(document: invalid, draftSha256: hash("# Held\n"),
                                     draftPath: draft, heldAt: heldAt))
         let key = SoftwareKey()
@@ -491,7 +519,7 @@ final class HeldKBSavesTests: XCTestCase {
         for lineBreak in ["\n", "\r", "\r\n"] {
             let tampered = KnowledgeBase.CheckedOutDocument(
                 id: document.id, content: document.content, contentSha: document.contentSha,
-                sourceRef: path + lineBreak + "rm -rf /", target: TestHost.target)
+                sourceRef: path + lineBreak + "rm -rf /", target: TestHost.target, holder: TestHost.holder)
             try store.record(HeldKBSave(document: tampered, draftSha256: hash("# Held\n"),
                                         draftPath: draft, heldAt: heldAt))
             let key = SoftwareKey()
@@ -540,7 +568,7 @@ final class HeldKBSavesTests: XCTestCase {
             let store = HeldKBSaveStore(fileURL: directory.appendingPathComponent("\(UUID().uuidString).json"))
             let other = KnowledgeBase.CheckedOutDocument(
                 id: document.id, content: document.content, contentSha: document.contentSha,
-                sourceRef: document.sourceRef, target: target)
+                sourceRef: document.sourceRef, target: target, holder: TestHost.holder)
             try store.record(HeldKBSave(document: other, draftSha256: hash("# Held\n"),
                                         draftPath: draft, heldAt: heldAt))
             let key = SoftwareKey()
@@ -613,7 +641,7 @@ final class HeldKBSavesTests: XCTestCase {
     private func newerHold(draftPath: String) -> HeldKBSave {
         let newerDocument = KnowledgeBase.CheckedOutDocument(
             id: document.id, content: "# Edited\n", contentSha: "9f1e0c2d7a6b5a4f3e2d1c0b9a8f7e6d",
-            sourceRef: document.sourceRef, target: TestHost.target)
+            sourceRef: document.sourceRef, target: TestHost.target, holder: TestHost.holder)
         return HeldKBSave(document: newerDocument, draftSha256: hash("# Edited\n"),
                           draftPath: draftPath, heldAt: heldAt)
     }
@@ -668,10 +696,10 @@ final class HeldKBSavesTests: XCTestCase {
         let draftB = try writeDraft("# B\n", named: "b.draft.md")
         let docA = KnowledgeBase.CheckedOutDocument(
             id: "deck/specs/a", content: "# A\n", contentSha: "aaaa", sourceRef: "projects/deck/specs/a.md",
-            target: TestHost.target)
+            target: TestHost.target, holder: TestHost.holder)
         let docB = KnowledgeBase.CheckedOutDocument(
             id: "deck/specs/b", content: "# B\n", contentSha: "bbbb", sourceRef: "projects/deck/specs/b.md",
-            target: TestHost.target)
+            target: TestHost.target, holder: TestHost.holder)
         let store = HeldKBSaveStore(fileURL: storeURL)
         try store.record(HeldKBSave(document: docA, draftSha256: hash("# A\n"), draftPath: draftA, heldAt: heldAt))
         try store.record(HeldKBSave(document: docB, draftSha256: hash("# B\n"), draftPath: draftB, heldAt: heldAt))
@@ -709,5 +737,163 @@ final class HeldKBSavesTests: XCTestCase {
                 return XCTFail("expected a storage error, got \(error)")
             }
         }
+    }
+
+    // MARK: - The Library's own checkout around a resend (CQ·187)
+
+    /// By the time a held save is resent, the editor that held it has usually
+    /// already checked its own Library checkout back in, so the resend must
+    /// take its own before signing anything, under the holder the save was
+    /// recorded against, and hand it back once the send has gone out.
+    func testTheResendTakesTheLibraryCheckoutBeforeASuccessfulSendAndChecksItInAfter() throws {
+        let draft = try writeDraft("# Held\n")
+        let store = HeldKBSaveStore(fileURL: storeURL)
+        try store.record(held(draftPath: draft))
+        let checkout = FakeLibraryCheckout()
+        let transport = FakeTransport(responses: [
+            .success(Data("/remote/deck-save.1\n".utf8)), // write content file
+            .success(Data()),                             // kb apply
+            .success(Data()),                             // cleanup
+        ])
+
+        let batch = send(try store.all(), store: store, key: SoftwareKey(),
+                         checkout: checkout, run: transport.run)
+
+        XCTAssertEqual(batch.results.map(\.outcome), [.sent])
+        let expected = FakeLibraryCheckout.Call(
+            target: TestHost.target, docId: document.id, holder: TestHost.holder)
+        XCTAssertEqual(checkout.checkoutCalls, [expected])
+        XCTAssertEqual(checkout.checkinCalls, [expected])
+    }
+
+    /// The checkout is handed back after a refused `kb apply` exactly as it is
+    /// after a sent one — this resend took it, so this resend gives it back,
+    /// whatever the send settled to.
+    func testTheResendTakesTheLibraryCheckoutBeforeARefusedApplyAndChecksItInAfter() throws {
+        let draft = try writeDraft("# Held\n")
+        let store = HeldKBSaveStore(fileURL: storeURL)
+        try store.record(held(draftPath: draft))
+        let checkout = FakeLibraryCheckout()
+        let stderr = "kb apply: base-sha 3acf9780aa451c2f0d0e is stale; the document moved"
+        let transport = FakeTransport(responses: [
+            .success(Data("/remote/deck-save.1\n".utf8)),
+            .failure(SessionAgent.AgentError.failed(stderr)),
+            .success(Data()),
+        ])
+
+        let batch = send(try store.all(), store: store, key: SoftwareKey(),
+                         checkout: checkout, run: transport.run)
+
+        XCTAssertEqual(batch.results.map(\.outcome), [.refused(stderr)])
+        let expected = FakeLibraryCheckout.Call(
+            target: TestHost.target, docId: document.id, holder: TestHost.holder)
+        XCTAssertEqual(checkout.checkoutCalls, [expected])
+        XCTAssertEqual(checkout.checkinCalls, [expected], "a refused apply still hands the checkout back")
+    }
+
+    /// A refused checkout — held by someone else, or the Library unreachable —
+    /// is the held save's own failure, in the Library's words, and nothing is
+    /// signed or sent: `kb apply`'s own admission refusal would say the same
+    /// thing anyway, so there is nothing to gain by reaching it.
+    func testARefusedLibraryCheckoutFailsTheHeldSaveAndSendsNothing() throws {
+        let draft = try writeDraft("# Held\n")
+        let store = HeldKBSaveStore(fileURL: storeURL)
+        try store.record(held(draftPath: draft))
+        let checkout = FakeLibraryCheckout()
+        checkout.checkoutError = LibraryClient.FetchError.libraryRefused(status: 409, body: """
+            {"error": "already checked out: deck/specs/session-pane is held by \
+            session:other until 2026-10-24T23:00:00Z"}
+            """)
+        let key = SoftwareKey()
+        let transport = FakeTransport(responses: [])
+
+        let batch = send(try store.all(), store: store, key: key, checkout: checkout, run: transport.run)
+
+        guard case .refused(let why) = batch.results.first?.outcome else {
+            return XCTFail("expected a refusal, got \(String(describing: batch.results.first?.outcome))")
+        }
+        XCTAssertTrue(why.contains("held by session:other"), why)
+        XCTAssertTrue(transport.calls.isEmpty, "a refused checkout must not reach kb apply")
+        XCTAssertTrue(key.log.reasons.isEmpty, "a refused checkout must not reach the key")
+        XCTAssertTrue(checkout.checkinCalls.isEmpty, "a checkout that was never granted is never checked in")
+        XCTAssertEqual(try store.all().map(\.reason), [why])
+    }
+
+    /// A hold recorded before CQ·177 added `holder`, or any other record with
+    /// none, takes its checkout under `DeckOperator.label()` — the same
+    /// fallback `attempt` already applies when it builds the document it signs.
+    func testAHoldWithNoHolderTakesTheLibraryCheckoutUnderDeckOperatorLabel() throws {
+        let draft = try writeDraft("# Held\n")
+        let store = HeldKBSaveStore(fileURL: storeURL)
+        var noHolder = held(draftPath: draft)
+        noHolder.holder = nil
+        try store.record(noHolder)
+        let checkout = FakeLibraryCheckout()
+        let transport = FakeTransport(responses: [
+            .success(Data("/remote/deck-save.1\n".utf8)),
+            .success(Data()),
+            .success(Data()),
+        ])
+
+        let batch = send(try store.all(), store: store, key: SoftwareKey(),
+                         checkout: checkout, run: transport.run)
+
+        XCTAssertEqual(batch.results.map(\.outcome), [.sent])
+        XCTAssertEqual(checkout.checkoutCalls.map(\.holder), [DeckOperator.label()])
+        XCTAssertEqual(checkout.checkinCalls.map(\.holder), [DeckOperator.label()])
+    }
+
+    /// The reader reopened the document while its earlier hold still waited on
+    /// a renewed certificate: the editor pane now holds its own live checkout
+    /// under the same holder, and the resend must not hand that one back.
+    func testTheEditorsOwnLiveCheckoutIsNotCheckedInByTheResend() throws {
+        let draft = try writeDraft("# Held\n")
+        let store = HeldKBSaveStore(fileURL: storeURL)
+        try store.record(held(draftPath: draft))
+        let registry = LibraryCheckoutRegistry()
+        registry.register(documentId: document.id, target: TestHost.target, holder: TestHost.holder)
+        let checkout = FakeLibraryCheckout()
+        let transport = FakeTransport(responses: [
+            .success(Data("/remote/deck-save.1\n".utf8)),
+            .success(Data()),
+            .success(Data()),
+        ])
+
+        let batch = send(try store.all(), store: store, key: SoftwareKey(),
+                         checkoutRegistry: registry, checkout: checkout, run: transport.run)
+
+        XCTAssertEqual(batch.results.map(\.outcome), [.sent])
+        XCTAssertEqual(checkout.checkoutCalls.count, 1, "the resend still takes its own checkout")
+        XCTAssertTrue(checkout.checkinCalls.isEmpty,
+                      "the editor's own live checkout must not be checked in by the resend")
+    }
+
+    /// `Deck`'s windows are a plain `WindowGroup`, so the same document can be
+    /// open in two editor panes under the same holder at once, each
+    /// registering its own claim on the shared key. The first pane closing
+    /// and dropping its own claim must not be mistaken for the key having no
+    /// claim left: the second pane's claim, still registered, must keep the
+    /// resend from checking the checkout in (CQ·193).
+    func testASecondPanesClaimKeepsTheCheckoutHeldAfterTheFirstPaneReleases() throws {
+        let draft = try writeDraft("# Held\n")
+        let store = HeldKBSaveStore(fileURL: storeURL)
+        try store.record(held(draftPath: draft))
+        let registry = LibraryCheckoutRegistry()
+        registry.register(documentId: document.id, target: TestHost.target, holder: TestHost.holder)
+        registry.register(documentId: document.id, target: TestHost.target, holder: TestHost.holder)
+        registry.unregister(documentId: document.id, target: TestHost.target, holder: TestHost.holder)
+        let checkout = FakeLibraryCheckout()
+        let transport = FakeTransport(responses: [
+            .success(Data("/remote/deck-save.1\n".utf8)),
+            .success(Data()),
+            .success(Data()),
+        ])
+
+        let batch = send(try store.all(), store: store, key: SoftwareKey(),
+                         checkoutRegistry: registry, checkout: checkout, run: transport.run)
+
+        XCTAssertEqual(batch.results.map(\.outcome), [.sent])
+        XCTAssertTrue(checkout.checkinCalls.isEmpty,
+                      "a second pane's still-registered claim must keep the checkout held")
     }
 }

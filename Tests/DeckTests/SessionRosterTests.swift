@@ -16,7 +16,7 @@ final class SessionRosterTests: XCTestCase {
     // MARK: - What `nil` means depends on which list a row is in
 
     func testAPinnedRowWithoutACommandRefreshes() {
-        let entry = RosterEntry(id: "vivy", displayName: "Vivy", isPinned: true)
+        let entry = RosterEntry(id: "orchard", displayName: "Orchard", isPinned: true)
         XCTAssertEqual(entry.resolvedCommand, "co -r")
         XCTAssertTrue(entry.refreshes)
     }
@@ -30,7 +30,7 @@ final class SessionRosterTests: XCTestCase {
     func testTheLongFormFlagCounts() {
         // Someone who hand-wrote `--refresh` should not find the checkbox
         // disagreeing with their config file.
-        var entry = RosterEntry(id: "nyh", displayName: "NYH", isPinned: false)
+        var entry = RosterEntry(id: "lakeside", displayName: "Lakeside", isPinned: false)
         entry.command = "co --refresh"
         XCTAssertTrue(entry.refreshes)
     }
@@ -41,7 +41,7 @@ final class SessionRosterTests: XCTestCase {
     /// in the catalog, so flipping the flag alone would silently switch the
     /// refresh off for a row that had it on.
     func testUnpinningKeepsTheRefreshOn() {
-        var entry = RosterEntry(id: "vivy", displayName: "Vivy", isPinned: true)
+        var entry = RosterEntry(id: "orchard", displayName: "Orchard", isPinned: true)
         XCTAssertTrue(entry.refreshes)
 
         entry.setPinned(false)
@@ -63,7 +63,7 @@ final class SessionRosterTests: XCTestCase {
     func testPinningDropsAnOverrideThatMatchesTheNewDefault() {
         // `co -r` stored explicitly in the catalog becomes the rail's default,
         // so it goes back to nil rather than being written into the file.
-        var entry = RosterEntry(id: "svc", displayName: "Kit",
+        var entry = RosterEntry(id: "kit", displayName: "Kit",
                                 command: "co -r", isPinned: false)
         entry.setPinned(true)
         XCTAssertNil(entry.command)
@@ -80,14 +80,14 @@ final class SessionRosterTests: XCTestCase {
     // MARK: - The checkbox
 
     func testTheCheckboxStoresNilWhenItMatchesTheDefault() {
-        var entry = RosterEntry(id: "vivy", displayName: "Vivy",
+        var entry = RosterEntry(id: "orchard", displayName: "Orchard",
                                 command: "co", isPinned: true)
         entry.setRefreshes(true)
         XCTAssertNil(entry.command, "the rail default was written into the file")
     }
 
     func testTheCheckboxWritesTheOptOutExplicitly() {
-        var entry = RosterEntry(id: "vivy", displayName: "Vivy", isPinned: true)
+        var entry = RosterEntry(id: "orchard", displayName: "Orchard", isPinned: true)
         entry.setRefreshes(false)
         XCTAssertEqual(entry.command, "co")
         XCTAssertFalse(entry.refreshes)
@@ -107,7 +107,7 @@ final class SessionRosterTests: XCTestCase {
     /// this it drew itself checked — `refreshes` reads the flag correctly — and
     /// then refused to be clicked.
     func testTheLongFormFlagIsStillExpressibleByTheCheckbox() {
-        var entry = RosterEntry(id: "nyh", displayName: "NYH",
+        var entry = RosterEntry(id: "lakeside", displayName: "Lakeside",
                                 command: "co --refresh", isPinned: false)
         XCTAssertFalse(entry.isCustomCommand)
         XCTAssertTrue(entry.refreshes)
@@ -119,7 +119,7 @@ final class SessionRosterTests: XCTestCase {
     }
 
     func testAnUnusableCommandClearsTheOverrideRatherThanStoringIt() {
-        var entry = RosterEntry(id: "vivy", displayName: "Vivy", isPinned: true)
+        var entry = RosterEntry(id: "orchard", displayName: "Orchard", isPinned: true)
         entry.setCommand("co\nrm -rf /")
         XCTAssertNil(entry.command)
     }
@@ -127,9 +127,9 @@ final class SessionRosterTests: XCTestCase {
     // MARK: - The list
 
     func testTheRosterPutsPinnedRowsFirst() {
-        let list = roster(rail: [Crew(id: "vivy", displayName: "Vivy")],
+        let list = roster(rail: [Crew(id: "orchard", displayName: "Orchard")],
                           catalog: [LaunchableSession(id: "ask", displayName: "Ask")])
-        XCTAssertEqual(list.entries.map(\.id), ["vivy", "ask"])
+        XCTAssertEqual(list.entries.map(\.id), ["orchard", "ask"])
         XCTAssertEqual(list.pinnedCount, 1)
     }
 
@@ -143,20 +143,20 @@ final class SessionRosterTests: XCTestCase {
     }
 
     func testUnpinningMovesTheRowBelowTheRail() {
-        var list = roster(rail: [Crew(id: "vivy", displayName: "Vivy"),
+        var list = roster(rail: [Crew(id: "orchard", displayName: "Orchard"),
                                  Crew(id: "deck", displayName: "Deck")])
-        list.update("vivy") { $0.setPinned(false) }
-        XCTAssertEqual(list.entries.map(\.id), ["deck", "vivy"])
+        list.update("orchard") { $0.setPinned(false) }
+        XCTAssertEqual(list.entries.map(\.id), ["deck", "orchard"])
         XCTAssertEqual(list.pinnedCount, 1)
     }
 
     func testAMoveThatWouldCrossTheBoundaryIsRefused() {
         // Dragging a catalog row up into the rail would pin it as a side effect
         // of a gesture that says nothing about pinning.
-        var list = roster(rail: [Crew(id: "vivy", displayName: "Vivy")],
+        var list = roster(rail: [Crew(id: "orchard", displayName: "Orchard")],
                           catalog: [LaunchableSession(id: "ask", displayName: "Ask")])
         list.moveRail(from: IndexSet(integer: 1), to: 0)
-        XCTAssertEqual(list.entries.map(\.id), ["vivy", "ask"])
+        XCTAssertEqual(list.entries.map(\.id), ["orchard", "ask"])
         XCTAssertFalse(list[ "ask" ]?.isPinned ?? true)
     }
 
@@ -171,12 +171,12 @@ final class SessionRosterTests: XCTestCase {
     // MARK: - Writing back
 
     func testTheRosterRoundTripsThroughAConfiguration() {
-        var list = roster(rail: [Crew(id: "vivy", displayName: "Vivy")],
+        var list = roster(rail: [Crew(id: "orchard", displayName: "Orchard")],
                           catalog: [LaunchableSession(id: "ask", displayName: "Ask")])
         list.update("ask") { $0.setPinned(true) }
         let updated = list.applied(to: .empty)
 
-        XCTAssertEqual(updated.railSessions?.map(\.id), ["vivy", "ask"])
+        XCTAssertEqual(updated.railSessions?.map(\.id), ["orchard", "ask"])
         XCTAssertTrue(updated.catalog.isEmpty)
         XCTAssertEqual(updated.railSessions?.last?.command, "co",
                        "Ask kept its no-refresh behaviour across the move")
@@ -194,9 +194,9 @@ final class SessionRosterTests: XCTestCase {
     }
 
     func testAnEditedRailIsWrittenOut() {
-        var list = roster(rail: [Crew(id: "vivy", displayName: "Vivy"),
+        var list = roster(rail: [Crew(id: "orchard", displayName: "Orchard"),
                                  Crew(id: "deck", displayName: "Deck")])
-        list.update("vivy") { $0.setPinned(false) }
+        list.update("orchard") { $0.setPinned(false) }
         let updated = list.applied(to: .empty)
         XCTAssertEqual(updated.railSessions?.count, 1)
     }
@@ -335,12 +335,182 @@ final class SessionRosterTests: XCTestCase {
     /// yet, and Settings must not be a second place that quietly drops it.
     func testAParentFieldSurvivesAnUnrelatedEdit() {
         var list = roster(rail: [
-            Crew(id: "vivy", displayName: "Vivy"),
-            Crew(id: "vivy-commercial", displayName: "Vivy Commercial", parent: "vivy"),
+            Crew(id: "orchard", displayName: "Orchard"),
+            Crew(id: "orchard-commercial", displayName: "Orchard Commercial", parent: "orchard"),
         ])
-        list.update("vivy") { $0.displayName = "Vivy (renamed)" }
+        list.update("orchard") { $0.displayName = "Orchard (renamed)" }
         let updated = list.applied(to: .empty)
-        XCTAssertEqual(updated.railSessions?.first { $0.id == "vivy-commercial" }?.parent, "vivy")
+        XCTAssertEqual(updated.railSessions?.first { $0.id == "orchard-commercial" }?.parent, "orchard")
+    }
+
+    // MARK: - A position is an edit (dragging a served-only crew)
+
+    /// THE BUG THIS GUARDS. A served-only crew (one with no local config at
+    /// all, like Atlas on crews.d) draws pinned via `CrewMerge.merge`, so
+    /// moving it in Settings only reorders `entries` — nothing about the
+    /// row itself changed. The old `applied(to:)` dropped it anyway because
+    /// `CrewMerge.isUnedited` only looks at the row's own fields, and
+    /// `CrewMerge.merge` always re-appends a dropped served crew at the very
+    /// END, in `servedCrews`' own order — so the drag silently undid itself
+    /// on the next save.
+    func testDraggingAServedOnlyCrewAboveAConfiguredOneSticks() {
+        let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas")
+        var list = SessionRoster(configuration: configuration(rail: [Crew(id: "orchard", displayName: "Orchard")]),
+                                 servedCrews: [atlas])
+        XCTAssertEqual(list.entries.map(\.id), ["orchard", "atlas"], "atlas arrives after orchard, unmerged")
+
+        list.moveRail(from: IndexSet(integer: 1), to: 0)
+        XCTAssertEqual(list.entries.map(\.id), ["atlas", "orchard"])
+
+        let updated = list.applied(to: configuration(rail: nil))
+        XCTAssertEqual(updated.railSessions?.map(\.id), ["atlas", "orchard"],
+                       "the drag must survive the write, even though atlas changed nothing but its spot")
+
+        // Rebuilding from the written configuration, against the same served
+        // crews, must reproduce the moved order rather than snapping atlas
+        // back to the end.
+        let rebuilt = SessionRoster(configuration: updated, servedCrews: [atlas])
+        XCTAssertEqual(rebuilt.entries.map(\.id), ["atlas", "orchard"])
+    }
+
+    /// The companion case: a served-only crew left exactly where `merge`
+    /// would put it (at the end, untouched) still drops out of
+    /// `railSessions` entirely, exactly as before this fix.
+    func testAnUntouchedServedOnlyCrewAtTheEndStillDoesNotWrite() {
+        let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas")
+        let list = SessionRoster(configuration: configuration(rail: [Crew(id: "orchard", displayName: "Orchard")]),
+                                 servedCrews: [atlas])
+        XCTAssertEqual(list.entries.map(\.id), ["orchard", "atlas"])
+
+        let updated = list.applied(to: configuration(rail: nil))
+        XCTAssertEqual(updated.railSessions?.map(\.id), ["orchard"],
+                       "atlas was never touched, so it must stay out of local config")
+    }
+
+    /// The same drag, but the served-only crew is on a NON-default host — the
+    /// case the host strip in `CrewMerge.sparse` touches. `match` must still
+    /// find the same spec after the row round-trips through `asCrew`, and
+    /// the host must still strip back to unset so a later rename on that
+    /// host keeps reaching this row.
+    func testDraggingAServedOnlyCrewOnANonDefaultHostSticks() {
+        let guest = TestHost.secondaryTarget
+        let hosts = [HostEntry(name: "mini", user: TestHost.user, address: TestHost.address),
+                    HostEntry(name: "guest", user: TestHost.secondaryUser, address: TestHost.secondaryAddress)]
+        let atlas = ServedCrew(crewId: "atlas", host: guest, displayName: "Atlas")
+
+        var configuration = ThemeConfiguration.empty
+        configuration.hosts = hosts
+        configuration.defaultHost = "mini"
+        configuration.railSessions = [Crew(id: "orchard", displayName: "Orchard")]
+
+        let atlasRef = SessionRef(host: "guest", name: "atlas")
+        var list = SessionRoster(configuration: configuration, servedCrews: [atlas])
+        XCTAssertEqual(list.entries.map(\.id), ["orchard", "atlas"])
+        XCTAssertEqual(list[atlasRef]?.host, "guest")
+
+        list.moveRail(from: IndexSet(integer: 1), to: 0)
+        XCTAssertEqual(list.entries.map(\.id), ["atlas", "orchard"])
+
+        let updated = list.applied(to: configuration)
+        XCTAssertEqual(updated.railSessions?.map(\.id), ["atlas", "orchard"])
+        XCTAssertEqual(updated.railSessions?.first { $0.id == "atlas" }?.host, "guest",
+                       "nil would mean the DEFAULT host on the next read, not guest — "
+                       + "losing this would strand the row with no spec to match on reload")
+
+        let rebuilt = SessionRoster(configuration: updated, servedCrews: [atlas])
+        XCTAssertEqual(rebuilt.entries.map(\.id), ["atlas", "orchard"])
+        XCTAssertEqual(rebuilt[atlasRef]?.host, "guest", "still resolves to the host it's actually served from")
+    }
+
+    // MARK: - Unpinning a served-only crew, and pinning it back
+
+    /// THE BUG THIS GUARDS (issue_01M5MMDY7W78BNEH53R2SKGHXG). Unpinning a
+    /// served-only crew used to write it into `catalog` while
+    /// `CrewMerge.merge` kept drawing it pinned anyway, so a rebuilt roster
+    /// showed the crew twice, sharing one `ref` — and each further unpin
+    /// appended another catalog copy. Rebuilding after one unpin must show
+    /// it unpinned exactly once.
+    func testUnpinningAServedOnlyCrewLeavesItUnpinnedExactlyOnceAfterRebuild() {
+        let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas")
+        var list = SessionRoster(configuration: configuration(rail: nil), servedCrews: [atlas])
+        XCTAssertEqual(list.entries.map(\.id), ["atlas"])
+        XCTAssertEqual(list.entries.map(\.isPinned), [true])
+
+        list.update("atlas") { $0.setPinned(false) }
+        let updated = list.applied(to: configuration(rail: nil))
+        XCTAssertEqual(updated.catalog.count, 1, "the unpin writes exactly one catalog row")
+        XCTAssertNil(updated.railSessions, "nothing pinned survives to the rail")
+
+        let rebuilt = SessionRoster(configuration: updated, servedCrews: [atlas])
+        XCTAssertEqual(rebuilt.entries.map(\.id), ["atlas"],
+                       "one row — not a pinned copy beside the catalog's")
+        XCTAssertEqual(rebuilt.entries.map(\.isPinned), [false])
+    }
+
+    /// The companion half: pinning that same row again moves it back to the
+    /// rail with no catalog copy left behind.
+    func testPinningAnUnpinnedServedOnlyCrewAgainLeavesItOnTheRailExactlyOnce() {
+        let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas")
+        var list = SessionRoster(configuration: configuration(rail: nil), servedCrews: [atlas])
+        list.update("atlas") { $0.setPinned(false) }
+        let unpinned = list.applied(to: configuration(rail: nil))
+
+        var rebuilt = SessionRoster(configuration: unpinned, servedCrews: [atlas])
+        rebuilt.update("atlas") { $0.setPinned(true) }
+        let repinned = rebuilt.applied(to: unpinned)
+        XCTAssertTrue(repinned.catalog.isEmpty, "no catalog copy left behind")
+
+        let rebuiltAgain = SessionRoster(configuration: repinned, servedCrews: [atlas])
+        XCTAssertEqual(rebuiltAgain.entries.map(\.id), ["atlas"],
+                       "one row — the pin must not leave a second, unpinned copy")
+        XCTAssertEqual(rebuiltAgain.entries.map(\.isPinned), [true])
+    }
+
+    /// Writing an unpinned served crew out whole froze the spec's fill into
+    /// the catalog row, so a later spec change never reached it. Unpin and
+    /// save, change the spec, and the rebuilt row follows the new spec, both
+    /// after the unpin's own save and after an unrelated save that rewrites
+    /// the catalog again.
+    func testASpecChangeStillReachesAnUnpinnedServedCrewAfterSaving() {
+        let before = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas",
+                                workingDirectory: "\(TestHost.homeRoot)/old", project: "old-project")
+        let after = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas Renamed",
+                               workingDirectory: "\(TestHost.homeRoot)/new", project: "new-project")
+        var list = SessionRoster(configuration: configuration(rail: nil), servedCrews: [before])
+        list.update("atlas") { $0.setPinned(false) }
+        let unpinned = list.applied(to: configuration(rail: nil))
+        XCTAssertNil(unpinned.catalog.first?.workingDirectory, "the spec's directory is not frozen locally")
+
+        let resaved = SessionRoster(configuration: unpinned, servedCrews: [before]).applied(to: unpinned)
+        XCTAssertEqual(resaved.catalog, unpinned.catalog, "an unrelated save writes the same sparse row")
+
+        let rebuilt = SessionRoster(configuration: resaved, servedCrews: [after])
+        XCTAssertEqual(rebuilt.entries.map(\.isPinned), [false])
+        XCTAssertEqual(rebuilt.entries.first?.workingDirectory, "\(TestHost.homeRoot)/new")
+        XCTAssertEqual(rebuilt.entries.first?.project, "new-project")
+        XCTAssertEqual(rebuilt.entries.first?.displayName, "Atlas Renamed")
+    }
+
+    /// The operator's own edit to an unpinned served crew still persists.
+    func testAnEditToAnUnpinnedServedCrewPersists() {
+        let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas",
+                               workingDirectory: "\(TestHost.homeRoot)/spec")
+        var list = SessionRoster(configuration: configuration(rail: nil), servedCrews: [atlas])
+        list.update("atlas") { $0.setPinned(false) }
+        list.update("atlas") { $0.workingDirectory = "\(TestHost.homeRoot)/mine" }
+        let saved = list.applied(to: configuration(rail: nil))
+        XCTAssertEqual(saved.catalog.first?.workingDirectory, "\(TestHost.homeRoot)/mine")
+    }
+
+    /// `RosterEntry`'s own `subscript` is keyed by `ref`, not bare `id` — this
+    /// is the one place in this file that needs it, since every fixture
+    /// above is single-host.
+    private var mini: SSHTarget { TestHost.target }
+
+    private func configuration(rail: [Crew]?) -> ThemeConfiguration {
+        var configuration = ThemeConfiguration.empty
+        configuration.railSessions = rail
+        return configuration
     }
 
     /// THE GAP `RosterEntry.sessions`'s doc comment used to disclose:
@@ -374,5 +544,74 @@ final class SessionRosterTests: XCTestCase {
                        [PinnedSession(name: "ask--research", displayName: "research"),
                         PinnedSession(name: "ask--drafts", displayName: "drafts")],
                        "re-pinning did not recover the children the catalog row lost")
+    }
+
+    // MARK: - The pinned list in rail draw order (CQ·188)
+
+    /// The bug this exists to prevent: Settings › Sessions used to list the
+    /// pinned block in whatever order `railSessions` happened to store it,
+    /// so a group's members could land apart even though the rail always
+    /// draws them as one contiguous block. `pinnedInRailOrder` must fold a
+    /// group's members together exactly the way `RailNesting.drawOrderCrews`
+    /// does, regardless of where storage interleaves an ungrouped crew
+    /// between them.
+    func testPinnedInRailOrderGroupsAGroupsMembersEvenWhenStorageInterleavesAnUngroupedCrew() {
+        let group = CrewGroup(name: "Pair", members: ["alpha", "beta"], folded: false)
+        let list = roster(rail: [Crew(id: "alpha", displayName: "Alpha"),
+                                 Crew(id: "gamma", displayName: "Gamma"),
+                                 Crew(id: "beta", displayName: "Beta")])
+        let ordered = list.pinnedInRailOrder(groups: [group], hosts: [], defaultHost: nil)
+        XCTAssertEqual(ordered.map(\.id), ["alpha", "beta", "gamma"],
+                       "alpha and beta, the group's own members, should list together even though gamma "
+                       + "sat between them in storage")
+    }
+
+    /// With no groups at all, the order is unchanged from storage — the
+    /// common case, and the one every existing roster relies on.
+    func testPinnedInRailOrderMatchesStorageWithNoGroups() {
+        let list = roster(rail: [Crew(id: "c", displayName: "C"),
+                                 Crew(id: "a", displayName: "A"),
+                                 Crew(id: "b", displayName: "B")])
+        XCTAssertEqual(list.pinnedInRailOrder(groups: [], hosts: [], defaultHost: nil).map(\.id),
+                       ["c", "a", "b"])
+    }
+
+    /// A nested crew still lists, immediately after its own top-level
+    /// parent — the same position `RailView.rowsContent` draws it in —
+    /// rather than dropping out of the list entirely.
+    func testPinnedInRailOrderKeepsANestedCrewAfterItsParent() {
+        let list = roster(rail: [Crew(id: "child", displayName: "Child", parent: "parent"),
+                                 Crew(id: "other", displayName: "Other"),
+                                 Crew(id: "parent", displayName: "Parent")])
+        XCTAssertEqual(list.pinnedInRailOrder(groups: [], hosts: [], defaultHost: nil).map(\.id),
+                       ["other", "parent", "child"],
+                       "parent is a top-level crew drawn where it sits; child, nested under it, "
+                       + "follows immediately rather than staying at its own stored position")
+    }
+
+    /// A drag in Settings › Sessions reads its `source`/`destination` against
+    /// the rail-draw-order list it shows, not `entries`' own storage order —
+    /// dragging the group's block earlier must move BOTH members together.
+    func testMoveRailAgainstADisplayOrderGroupsAGroupsMembers() {
+        let group = CrewGroup(name: "Pair", members: ["alpha", "beta"], folded: false)
+        var list = roster(rail: [Crew(id: "alpha", displayName: "Alpha"),
+                                 Crew(id: "gamma", displayName: "Gamma"),
+                                 Crew(id: "beta", displayName: "Beta")])
+        let displayed = list.pinnedInRailOrder(groups: [group], hosts: [], defaultHost: nil)
+        XCTAssertEqual(displayed.map(\.id), ["alpha", "beta", "gamma"], "precondition")
+
+        // Drag gamma (display index 2) to the front (display index 0).
+        list.moveRail(displayed, from: IndexSet(integer: 2), to: 0)
+        XCTAssertEqual(list.entries.map(\.id), ["gamma", "alpha", "beta"])
+    }
+
+    /// An ungrouped crew still reorders normally through the same call.
+    func testMoveRailAgainstADisplayOrderStillReordersAnUngroupedCrew() {
+        var list = roster(rail: [Crew(id: "a", displayName: "A"),
+                                 Crew(id: "b", displayName: "B"),
+                                 Crew(id: "c", displayName: "C")])
+        let displayed = list.pinnedInRailOrder(groups: [], hosts: [], defaultHost: nil)
+        list.moveRail(displayed, from: IndexSet(integer: 2), to: 0)
+        XCTAssertEqual(list.entries.map(\.id), ["c", "a", "b"])
     }
 }

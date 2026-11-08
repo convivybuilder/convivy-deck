@@ -48,9 +48,9 @@ final class SessionReviewChipTests: XCTestCase {
         // unescaped URL path characters, so these reach the charset check
         // rather than failing to parse as a URL at all.
         XCTAssertNil(SessionReviewChip.parsePullRequestURL(
-            "https://github.com/convivy/con~vivy-deck/pull/92"))
+            "https://github.com/convivy/con~orchard-deck/pull/92"))
         XCTAssertNil(SessionReviewChip.parsePullRequestURL(
-            "https://github.com/con!vivy/convivy-deck/pull/92"))
+            "https://github.com/con!orchard/convivy-deck/pull/92"))
     }
 
     func testWWWGitHubHostParsesTheSameAsBareGitHub() {
@@ -94,7 +94,7 @@ final class SessionReviewChipTests: XCTestCase {
     func testFallsBackToItsOwnFetchWhenTheSharedLadderCoversADifferentRepo() {
         let presentation = SessionReviewChip.presentation(
             for: pr(),
-            sharedReadings: [reading(repoName: "vivy",
+            sharedReadings: [reading(repoName: "orchard",
                 result: .ladder([ladderResult(number: 92, position: .failedCI)], truncated: false))],
             fallbackResult: .ladder([ladderResult(number: 92, position: .inCI)], truncated: false))
         XCTAssertEqual(presentation, PRLadderRow.present(.inCI))
@@ -152,7 +152,7 @@ final class SessionReviewChipTests: XCTestCase {
         let presentation = SessionReviewChip.presentation(
             for: pr(),
             sharedReadings: [
-                reading(repoName: "vivy", result: .ladder([ladderResult(number: 92, position: .failedCI)], truncated: false)),
+                reading(repoName: "orchard", result: .ladder([ladderResult(number: 92, position: .failedCI)], truncated: false)),
                 reading(repoName: "convivy-deck", result: .ladder([ladderResult(number: 92, position: .readyToMerge)], truncated: false)),
             ],
             fallbackResult: nil)

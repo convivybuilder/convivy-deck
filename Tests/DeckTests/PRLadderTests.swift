@@ -276,6 +276,47 @@ final class PRLadderTests: XCTestCase {
             PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .passed), .readyToMerge)
     }
 
+    // MARK: - End-to-end rendering: a null conclusion, captured, and the stale flag
+
+    /// A null conclusion with `ci_captured: true` and `ci_capture_stale`
+    /// false or absent is still "checks have not run yet" — drawn as "In
+    /// CI", unaffected by the new field at its default.
+    func testRenderingNullConclusionCapturedAndNotStaleDrawsInCI() {
+        let row = ciRow(conclusion: nil, captured: true, captureStale: false)
+        let records = [makeReview(role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha)]
+        let position = PRLadder.derivePosition(
+            stateRow: row, reviewRecords: records, ciStatus: PRLadder.ciStatus(row: row))
+        XCTAssertEqual(position, .inCI)
+        XCTAssertEqual(PRLadderRow.present(position).label, "In CI")
+    }
+
+    /// The bug this change fixes: the same null conclusion with `ci_capture_stale:
+    /// true` must draw the ladder's existing "state unknown" treatment, not
+    /// "In CI" — the platform job that captures CI results stopped, so
+    /// there is no live signal behind the null conclusion to call "running".
+    func testRenderingNullConclusionCapturedAndStaleDrawsStateUnknown() {
+        let row = ciRow(conclusion: nil, captured: true, captureStale: true, lastCapturedAt: "2026-10-20T00:00:00Z")
+        let records = [makeReview(role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha)]
+        let position = PRLadder.derivePosition(
+            stateRow: row, reviewRecords: records, ciStatus: PRLadder.ciStatus(row: row))
+        guard case .stateUnknown = position else {
+            return XCTFail("expected .stateUnknown, got \(position)")
+        }
+        XCTAssertTrue(PRLadderRow.present(position).label.hasPrefix("State unknown"))
+    }
+
+    /// A real conclusion draws exactly as before, whether or not
+    /// `ci_capture_stale` is set — staleness is only ever meaningful
+    /// alongside a null conclusion.
+    func testRenderingARealConclusionIsUnaffectedByCaptureStale() {
+        let row = ciRow(conclusion: "success", captured: true, captureStale: true)
+        let records = [makeReview(role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha)]
+        let position = PRLadder.derivePosition(
+            stateRow: row, reviewRecords: records, ciStatus: PRLadder.ciStatus(row: row))
+        XCTAssertEqual(position, .readyToMerge)
+        XCTAssertEqual(PRLadderRow.present(position).label, "Ready to merge")
+    }
+
     // MARK: - derivePosition: degrade-per-field on review records
 
     /// A record with no `reviewedRef` cannot be classified fresh or stale,
@@ -361,12 +402,12 @@ final class PRLadderTests: XCTestCase {
     func testRepoConsistencyNamesEveryDistinctForeignRepoSorted() {
         let rows = [
             makeRow(state: "OPEN", draft: false),
-            makeRow(state: "OPEN", draft: false, number: 1, repo: "convivy/vivy"),
+            makeRow(state: "OPEN", draft: false, number: 1, repo: "convivy/orchard"),
             makeRow(state: "OPEN", draft: false, number: 1, repo: "convivy/agent-platform"),
         ]
         XCTAssertEqual(
             PRLadder.repoConsistency(of: rows, expectedRepos: ["convivy/convivy-deck"]),
-            .foreignRowsPresent(repos: ["convivy/agent-platform", "convivy/vivy"]))
+            .foreignRowsPresent(repos: ["convivy/agent-platform", "convivy/orchard"]))
     }
 
     /// The widening `issue_01M2P5JHM1G8XCMKM4HEHVJB2P` asks for: a row
@@ -473,13 +514,52 @@ final class PRLadderTests: XCTestCase {
         XCTAssertNil(row.ciCaptured)
     }
 
+    /// The two fields library#330 adds alongside the CI pair above (contract
+    /// text knowledge#1043): a stale capture reported true, and the same row
+    /// absent both fields still decodes (a Library predating the change).
+    func testDecodeLatestPRStatesPageDecodesTheCaptureStaleFields() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"prs":[\
+        {"repo":"convivy/convivy-deck","number":350,"state":"OPEN","head_sha":"108c32a",\
+        "ci_conclusion":null,"ci_captured":true,\
+        "ci_last_captured_at":"2026-10-20T00:00:00Z","ci_capture_stale":true},\
+        {"repo":"convivy/convivy-deck","number":233,"state":"OPEN","head_sha":"78ee302"}\
+        ],"truncated":false}
+        """)
+        let rows = try PRLadder.decodeLatestPRStatesPage(raw).rows
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0].ciLastCapturedAt, "2026-10-20T00:00:00Z")
+        XCTAssertEqual(rows[0].ciCaptureStale, true)
+        XCTAssertNil(rows[1].ciLastCapturedAt)
+        XCTAssertNil(rows[1].ciCaptureStale)
+    }
+
+    /// `ci_last_captured_at` is `null` whenever `ci_captured` is `false` —
+    /// the contract's own stated case — and must decode to `nil` rather
+    /// than a wrongly-typed-value degrade.
+    func testDecodeLatestPRStatesPageDecodesNullCiLastCapturedAtWhenNotCaptured() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"prs":[\
+        {"repo":"convivy/convivy-deck","number":351,"state":"OPEN","head_sha":"abcd123",\
+        "ci_captured":false,"ci_last_captured_at":null,"ci_capture_stale":false}\
+        ],"truncated":false}
+        """)
+        let row = try XCTUnwrap(PRLadder.decodeLatestPRStatesPage(raw).rows.first)
+        XCTAssertEqual(row.ciCaptured, false)
+        XCTAssertNil(row.ciLastCapturedAt)
+        XCTAssertEqual(row.ciCaptureStale, false)
+    }
+
     // MARK: - ciStatus(row:)
 
-    private func ciRow(conclusion: String?, captured: Bool?) -> PRLadder.StateRow {
+    private func ciRow(
+        conclusion: String?, captured: Bool?, captureStale: Bool? = nil, lastCapturedAt: String? = nil
+    ) -> PRLadder.StateRow {
         PRLadder.StateRow(
             repo: "convivy/convivy-deck", number: 1, title: nil, author: nil, draft: false,
             headSha: "abc1234", state: "OPEN", producedAt: nil, ingestedAt: nil,
-            ciConclusion: conclusion, ciCaptured: captured)
+            ciConclusion: conclusion, ciCaptured: captured,
+            ciLastCapturedAt: lastCapturedAt, ciCaptureStale: captureStale)
     }
 
     func testCIStatusSuccessIsPassed() {
@@ -495,6 +575,39 @@ final class PRLadderTests: XCTestCase {
 
     func testCIStatusNoConclusionOnACapturedRepoIsRunning() {
         XCTAssertEqual(PRLadder.ciStatus(row: ciRow(conclusion: nil, captured: true)), .running)
+    }
+
+    /// `ci_capture_stale: false` or absent must not change today's "checks
+    /// have not run yet" reading — only `true` does (library#330,
+    /// contract text knowledge#1043).
+    func testCIStatusNoConclusionNotStaleIsStillRunning() {
+        XCTAssertEqual(
+            PRLadder.ciStatus(row: ciRow(conclusion: nil, captured: true, captureStale: false)), .running)
+        XCTAssertEqual(
+            PRLadder.ciStatus(row: ciRow(conclusion: nil, captured: true, captureStale: nil)), .running)
+    }
+
+    /// The bug this change fixes: the platform job that captures CI results
+    /// stopped on 2026-10-22, so the Library now reports `ci_capture_stale:
+    /// true` for a null conclusion instead of leaving it to read as "checks
+    /// have not run". That must resolve to `.unavailable`, never `.running`.
+    func testCIStatusNoConclusionAndStaleCaptureIsUnavailable() {
+        guard case .unavailable = PRLadder.ciStatus(
+            row: ciRow(conclusion: nil, captured: true, captureStale: true, lastCapturedAt: "2026-10-20T00:00:00Z")
+        ) else {
+            return XCTFail("expected .unavailable")
+        }
+    }
+
+    /// A real conclusion is never second-guessed by staleness — the
+    /// contract only ever sets `ci_capture_stale: true` alongside a `nil`
+    /// conclusion, but this pins that even a client handed both together
+    /// trusts the conclusion.
+    func testCIStatusARealConclusionIsUnaffectedByCaptureStale() {
+        XCTAssertEqual(
+            PRLadder.ciStatus(row: ciRow(conclusion: "success", captured: true, captureStale: true)), .passed)
+        XCTAssertEqual(
+            PRLadder.ciStatus(row: ciRow(conclusion: "failure", captured: true, captureStale: true)), .failed)
     }
 
     /// An uncaptured repository is unknown even when a conclusion is present,
@@ -1020,14 +1133,14 @@ final class PRLadderTests: XCTestCase {
     func testMergeReadingsConcatenatesRowsFromEverySucceedingRepo() {
         let readings = [
             PRLadder.RepoReading(
-                owner: "convivy", repoName: "selector",
-                result: .ladder([mergeLadderRow("convivy/selector", number: 1)], truncated: false), fetchError: nil),
+                owner: "convivy", repoName: "lantern",
+                result: .ladder([mergeLadderRow("convivy/lantern", number: 1)], truncated: false), fetchError: nil),
             PRLadder.RepoReading(
-                owner: "convivy", repoName: "selector-backend",
-                result: .ladder([mergeLadderRow("convivy/selector-backend", number: 1)], truncated: false), fetchError: nil),
+                owner: "convivy", repoName: "lantern-backend",
+                result: .ladder([mergeLadderRow("convivy/lantern-backend", number: 1)], truncated: false), fetchError: nil),
         ]
         let merged = PRLadder.mergeReadings(readings)
-        XCTAssertEqual(Set(merged.results.map(\.repo)), ["convivy/selector", "convivy/selector-backend"])
+        XCTAssertEqual(Set(merged.results.map(\.repo)), ["convivy/lantern", "convivy/lantern-backend"])
         XCTAssertFalse(merged.truncated)
         XCTAssertTrue(merged.failures.isEmpty)
     }
@@ -1037,15 +1150,15 @@ final class PRLadderTests: XCTestCase {
     func testMergeReadingsKeepsASucceedingReposRowsWhenAnotherRepoFails() {
         let readings = [
             PRLadder.RepoReading(
-                owner: "convivy", repoName: "selector",
-                result: .ladder([mergeLadderRow("convivy/selector", number: 1)], truncated: false), fetchError: nil),
+                owner: "convivy", repoName: "lantern",
+                result: .ladder([mergeLadderRow("convivy/lantern", number: 1)], truncated: false), fetchError: nil),
             PRLadder.RepoReading(
-                owner: "convivy", repoName: "selector-backend", result: nil, fetchError: "connection reset"),
+                owner: "convivy", repoName: "lantern-backend", result: nil, fetchError: "connection reset"),
         ]
         let merged = PRLadder.mergeReadings(readings)
-        XCTAssertEqual(merged.results.map(\.repo), ["convivy/selector"])
+        XCTAssertEqual(merged.results.map(\.repo), ["convivy/lantern"])
         XCTAssertEqual(merged.failures, [
-            PRLadder.RepoFailure(owner: "convivy", repoName: "selector-backend", reason: "connection reset"),
+            PRLadder.RepoFailure(owner: "convivy", repoName: "lantern-backend", reason: "connection reset"),
         ])
     }
 
@@ -1053,14 +1166,14 @@ final class PRLadderTests: XCTestCase {
     func testMergeReadingsReportsAStructuralDegradeAsAFailure() {
         let readings = [
             PRLadder.RepoReading(
-                owner: "convivy", repoName: "selector",
+                owner: "convivy", repoName: "lantern",
                 result: .degraded(reason: "the Library returned another repository's rows"), fetchError: nil),
         ]
         let merged = PRLadder.mergeReadings(readings)
         XCTAssertTrue(merged.results.isEmpty)
         XCTAssertEqual(merged.failures, [
             PRLadder.RepoFailure(
-                owner: "convivy", repoName: "selector",
+                owner: "convivy", repoName: "lantern",
                 reason: "the Library returned another repository's rows"),
         ])
     }
@@ -1072,14 +1185,14 @@ final class PRLadderTests: XCTestCase {
     func testMergeReadingsReportsBothRowsAndAFailureForAStaleRefresh() {
         let readings = [
             PRLadder.RepoReading(
-                owner: "convivy", repoName: "selector",
-                result: .ladder([mergeLadderRow("convivy/selector", number: 1)], truncated: false),
+                owner: "convivy", repoName: "lantern",
+                result: .ladder([mergeLadderRow("convivy/lantern", number: 1)], truncated: false),
                 fetchError: "timed out"),
         ]
         let merged = PRLadder.mergeReadings(readings)
-        XCTAssertEqual(merged.results.map(\.repo), ["convivy/selector"])
+        XCTAssertEqual(merged.results.map(\.repo), ["convivy/lantern"])
         XCTAssertEqual(merged.failures, [
-            PRLadder.RepoFailure(owner: "convivy", repoName: "selector", reason: "timed out"),
+            PRLadder.RepoFailure(owner: "convivy", repoName: "lantern", reason: "timed out"),
         ])
     }
 
@@ -1088,11 +1201,11 @@ final class PRLadderTests: XCTestCase {
     func testMergeReadingsTruncatedIsTrueIfAnyRepoTruncated() {
         let readings = [
             PRLadder.RepoReading(
-                owner: "convivy", repoName: "selector",
-                result: .ladder([mergeLadderRow("convivy/selector", number: 1)], truncated: false), fetchError: nil),
+                owner: "convivy", repoName: "lantern",
+                result: .ladder([mergeLadderRow("convivy/lantern", number: 1)], truncated: false), fetchError: nil),
             PRLadder.RepoReading(
-                owner: "convivy", repoName: "selector-backend",
-                result: .ladder([mergeLadderRow("convivy/selector-backend", number: 1)], truncated: true), fetchError: nil),
+                owner: "convivy", repoName: "lantern-backend",
+                result: .ladder([mergeLadderRow("convivy/lantern-backend", number: 1)], truncated: true), fetchError: nil),
         ]
         XCTAssertTrue(PRLadder.mergeReadings(readings).truncated)
     }
@@ -1102,7 +1215,7 @@ final class PRLadderTests: XCTestCase {
     /// own `isLoading` is what a panel reads instead.
     func testMergeReadingsIgnoresARepoWithNoResultAndNoError() {
         let readings = [
-            PRLadder.RepoReading(owner: "convivy", repoName: "selector", result: nil, fetchError: nil),
+            PRLadder.RepoReading(owner: "convivy", repoName: "lantern", result: nil, fetchError: nil),
         ]
         let merged = PRLadder.mergeReadings(readings)
         XCTAssertTrue(merged.results.isEmpty)

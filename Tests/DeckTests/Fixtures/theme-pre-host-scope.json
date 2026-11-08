@@ -2,48 +2,48 @@
   "appearance" : "system",
   "catalog" : [
     {
-      "bead" : "placard\/bead\/placard",
+      "bead" : "signpost\/bead\/signpost",
       "command" : "co -r",
-      "name" : "Placard",
-      "project" : "placard",
-      "session" : "placard",
-      "workdir" : "\/srv\/operator\/Convivy\/placard"
+      "name" : "Signpost",
+      "project" : "signpost",
+      "session" : "signpost",
+      "workdir" : "\/srv\/operator\/Convivy\/signpost"
     },
     {
       "command" : "co -r",
       "host" : "macstudio",
-      "name" : "constance-commercial",
-      "session" : "constance-commercial",
-      "workdir" : "\/srv\/operator\/Convivy\/constance-commercial"
+      "name" : "meridian-commercial",
+      "session" : "meridian-commercial",
+      "workdir" : "\/srv\/operator\/Convivy\/meridian-commercial"
     },
     {
-      "bead" : "sous-chef\/bead\/sous-chef",
+      "bead" : "galley\/bead\/galley",
       "command" : "co -r",
-      "name" : "Sous Chef",
-      "project" : "sous-chef",
+      "name" : "Galley",
+      "project" : "galley",
       "repos" : [
-        "convivy\/sous-chef"
+        "convivy\/galley"
       ],
-      "session" : "sous-chef",
-      "workdir" : "~\/Convivy\/sous-chef"
+      "session" : "galley",
+      "workdir" : "~\/Convivy\/galley"
     },
     {
       "command" : "co -r",
-      "name" : "Hollis",
-      "session" : "hollis",
-      "workdir" : "~\/Convivy\/hollis"
+      "name" : "Quarry",
+      "session" : "quarry",
+      "workdir" : "~\/Convivy\/quarry"
     },
     {
       "command" : "co -r",
-      "name" : "Park Villa",
-      "session" : "nyh-park-villa",
-      "workdir" : "~\/Convivy\/nyh-architecture\/nyh-park-villa"
+      "name" : "Lake Villa",
+      "session" : "lakeside-villa",
+      "workdir" : "~\/Convivy\/lakeside-architecture\/lakeside-villa"
     },
     {
       "command" : "co -r",
-      "name" : "East Texas Circle",
-      "session" : "nyh-etc",
-      "workdir" : "~\/Convivy\/nyh-architecture\/nyh-etc"
+      "name" : "North Loop",
+      "session" : "lakeside-etc",
+      "workdir" : "~\/Convivy\/lakeside-architecture\/lakeside-etc"
     },
     {
       "command" : "co -r",
@@ -136,34 +136,34 @@
       "session" : "shipwright"
     },
     {
-      "name" : "Vivy",
-      "project" : "vivy",
+      "name" : "Orchard",
+      "project" : "orchard",
       "repos" : [
-        "convivy\/vivy"
+        "convivy\/orchard"
       ],
-      "session" : "vivy",
-      "workdir" : "~\/Convivy\/vivy"
+      "session" : "orchard",
+      "workdir" : "~\/Convivy\/orchard"
     },
     {
-      "name" : "Vivy Commercial",
-      "session" : "vivy-commercial",
-      "workdir" : "~\/Convivy\/vivy-commercial"
+      "name" : "Orchard Commercial",
+      "session" : "orchard-commercial",
+      "workdir" : "~\/Convivy\/orchard-commercial"
     },
     {
-      "bead" : "selector\/bead\/selector",
+      "bead" : "lantern\/bead\/lantern",
       "command" : "co -r",
-      "name" : "Selector",
-      "project" : "selector",
+      "name" : "Lantern",
+      "project" : "lantern",
       "repos" : [
-        "convivy\/selector"
+        "convivy\/lantern"
       ],
-      "session" : "selector",
-      "workdir" : "~\/Convivy\/selector"
+      "session" : "lantern",
+      "workdir" : "~\/Convivy\/lantern"
     },
     {
       "host" : "macstudio",
-      "session" : "ea",
-      "workdir" : "\/srv\/operator\/Convivy\/EA"
+      "session" : "aide",
+      "workdir" : "\/srv\/operator\/Convivy\/Aide"
     },
     {
       "name" : "Ask",
@@ -176,28 +176,28 @@
       "workdir" : "\/srv\/operator\/Convivy\/operator"
     },
     {
-      "name" : "CFO",
-      "session" : "cfo",
-      "workdir" : "~\/Convivy\/CFO"
+      "name" : "Ledger",
+      "session" : "ledger",
+      "workdir" : "~\/Convivy\/Ledger"
     },
     {
       "name" : "Convivy Kit",
-      "session" : "svc",
+      "session" : "kit",
       "workdir" : "~\/Convivy\/convivy-app-kit"
     },
     {
-      "name" : "Convivy Commercial",
-      "session" : "convivy-commercial",
-      "workdir" : "~\/Convivy\/convivy-commercial"
+      "name" : "Acme Commercial",
+      "session" : "acme-commercial",
+      "workdir" : "~\/Convivy\/acme-commercial"
     },
     {
-      "name" : "Constance",
-      "project" : "constance",
+      "name" : "Meridian",
+      "project" : "meridian",
       "repos" : [
-        "convivy\/constance"
+        "convivy\/meridian"
       ],
-      "session" : "constance",
-      "workdir" : "~\/Convivy\/constance"
+      "session" : "meridian",
+      "workdir" : "~\/Convivy\/meridian"
     }
   ],
   "sendKey" : "returnKey",
@@ -207,20 +207,20 @@
   },
   "sessions" : {
     "ask" : "indigo",
-    "constance" : "indigo",
-    "constance-commercial" : "indigo",
-    "convivy-commercial" : "amber",
+    "meridian" : "indigo",
+    "meridian-commercial" : "indigo",
+    "acme-commercial" : "amber",
     "deck" : "gold",
-    "ea" : "rose",
-    "hollis" : "rose",
-    "nyh-etc" : "teal",
-    "nyh-park-villa" : "ember",
-    "selector" : "sage",
-    "sous-chef" : "amber",
+    "aide" : "rose",
+    "quarry" : "rose",
+    "lakeside-etc" : "teal",
+    "lakeside-villa" : "ember",
+    "lantern" : "sage",
+    "galley" : "amber",
     "steward" : "ember",
-    "svc" : "cyan",
-    "vivy" : "azure",
-    "vivy-commercial" : "azure",
+    "kit" : "cyan",
+    "orchard" : "azure",
+    "orchard-commercial" : "azure",
     "write-better" : "teal"
   },
   "terminal" : {

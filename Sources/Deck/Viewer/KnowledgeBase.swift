@@ -80,6 +80,14 @@ enum KnowledgeBase {
         /// The host `checkout` ran against — carried so `release` can send its
         /// own ssh call to the same host without re-resolving it.
         let target: SSHTarget
+        /// The identity this document was checked out under — the same string
+        /// passed as `--holder` to `agentctl kb checkout`, as `owner` to the
+        /// Library's own `POST /reference/documents/{id}/checkout`, and
+        /// carried here so `release` and `submit`/`applyArguments` send that
+        /// same string back rather than re-deriving it (CQ·177): admission's
+        /// checkout clause refuses unless a write's `owner` matches the
+        /// Library checkout's `owner` exactly.
+        let holder: String
     }
 
     enum KBError: Error, Equatable {
@@ -94,9 +102,17 @@ enum KnowledgeBase {
     /// `DeckOpenRef.validateKBId`, so it carries no shell metacharacter. It is
     /// quoted anyway, for the reason every other path here is: a charset
     /// assumption is a weaker guarantee than quoting.
+    ///
+    /// `holder` is sent explicitly, as `--holder`, rather than left for
+    /// `agentctl` to derive from its own session environment (CQ·177):
+    /// `kb apply`'s admission check compares its own holder against the
+    /// Library's checkout, so every verb in this round trip — this, `kb
+    /// apply`, and the Library's own `/checkout` route — has to agree on one
+    /// string, which only holds if none of them is left to guess it.
     static func checkoutArguments(
         target: SSHTarget,
         id: String,
+        holder: String,
         note: String = "opened in Deck's editor",
         controlPath: String = defaultControlPath(),
         home: String = NSHomeDirectory()
@@ -110,6 +126,7 @@ enum KnowledgeBase {
             "\(target.user)@\(target.host)",
             "agentctl", "kb", "checkout", SessionAgent.shellQuotePath(id),
             "--note", SessionAgent.shellQuotePath(note),
+            "--holder", SessionAgent.shellQuotePath(holder),
         ], home: home)
     }
 
@@ -119,9 +136,9 @@ enum KnowledgeBase {
     /// than the shared checkout, which trails main — so the bytes this returns
     /// are the bytes the sha guards. Holding them in Deck is the tool's
     /// intended use rather than a workaround.
-    static func checkout(target: SSHTarget, id: String) throws -> CheckedOutDocument {
-        let data = try SessionAgent.run(checkoutArguments(target: target, id: id))
-        return try parseCheckoutResponse(data, id: id, target: target)
+    static func checkout(target: SSHTarget, id: String, holder: String) throws -> CheckedOutDocument {
+        let data = try SessionAgent.run(checkoutArguments(target: target, id: id, holder: holder))
+        return try parseCheckoutResponse(data, id: id, target: target, holder: holder)
     }
 
     /// The shape a content sha must have: 64 lowercase hex characters, the
@@ -145,7 +162,7 @@ enum KnowledgeBase {
     /// Parses `kb checkout`'s JSON response, separated from `checkout` so the
     /// parsing and validation are testable without a real ssh call.
     static func parseCheckoutResponse(
-        _ data: Data, id: String, target: SSHTarget
+        _ data: Data, id: String, target: SSHTarget, holder: String
     ) throws -> CheckedOutDocument {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = root["content"] as? String,
@@ -159,7 +176,8 @@ enum KnowledgeBase {
                 "content_sha is not 64 lowercase hex characters: \(sha)")
         }
         return CheckedOutDocument(
-            id: id, content: content, contentSha: sha, sourceRef: sourceRef, target: target)
+            id: id, content: content, contentSha: sha, sourceRef: sourceRef, target: target,
+            holder: holder)
     }
 
     // MARK: - Release
@@ -178,6 +196,7 @@ enum KnowledgeBase {
     static func releaseArguments(
         target: SSHTarget,
         id: String,
+        holder: String,
         controlPath: String = defaultControlPath(),
         home: String = NSHomeDirectory()
     ) -> [String] {
@@ -189,6 +208,7 @@ enum KnowledgeBase {
             "-o", "ServerAliveCountMax=3",
             "\(target.user)@\(target.host)",
             "agentctl", "kb", "release", SessionAgent.shellQuotePath(id),
+            "--holder", SessionAgent.shellQuotePath(holder),
         ], home: home)
     }
 
@@ -197,8 +217,8 @@ enum KnowledgeBase {
     /// Nothing depends on this succeeding, and surfacing "could not release a
     /// lease" to someone who has just closed a window would be noise about a
     /// thing they cannot act on.
-    static func release(target: SSHTarget, id: String) {
-        _ = try? SessionAgent.run(releaseArguments(target: target, id: id),
+    static func release(target: SSHTarget, id: String, holder: String) {
+        _ = try? SessionAgent.run(releaseArguments(target: target, id: id, holder: holder),
                                   classifyMissingCommand: false)
     }
 

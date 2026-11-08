@@ -20,7 +20,7 @@ final class RestStateResolutionTests: XCTestCase {
     }
 
     func testAnExplicitBoardShapeResolvesToBoard() {
-        var crew = Crew(id: "placard", displayName: "Placard")
+        var crew = Crew(id: "signpost", displayName: "Signpost")
         crew.shape = "board"
         XCTAssertEqual(RestStateResolution.shape(for: crew), .board)
     }

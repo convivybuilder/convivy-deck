@@ -63,8 +63,8 @@ final class RemovePinnedSessionTests: XCTestCase {
     func testLeavesTheCrewRowAndEveryOtherCrewUntouched() throws {
         let store = ThemeStore(fileURL: url())
         store.addCrew(Crew(id: "ask", displayName: "Ask", workingDirectory: "~/Convivy/ask"))
-        let nyh = Crew(id: "nyh", displayName: "NYH Studio")
-        store.addCrew(nyh)
+        let lakeside = Crew(id: "lakeside", displayName: "Lakeside Studio")
+        store.addCrew(lakeside)
         store.addPinnedSession(PinnedSession(name: "ask--research", displayName: "research"), toCrew: SessionRef(host: nil, name: "ask"))
 
         store.removePinnedSession("ask--research", fromCrew: SessionRef(host: nil, name: "ask"))
@@ -72,7 +72,7 @@ final class RemovePinnedSessionTests: XCTestCase {
         let ask = try XCTUnwrap((store.configuration.railSessions ?? []).first { $0.id == "ask" })
         XCTAssertEqual(ask.displayName, "Ask")
         XCTAssertEqual(ask.workingDirectory, "~/Convivy/ask")
-        XCTAssertEqual(store.configuration.railSessions?.first { $0.id == "nyh" }, nyh)
+        XCTAssertEqual(store.configuration.railSessions?.first { $0.id == "lakeside" }, lakeside)
     }
 
     /// A name that is not pinned on the named crew is a no-op — defence in

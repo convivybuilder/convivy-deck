@@ -122,7 +122,7 @@ final class CockpitRevealTests: XCTestCase {
     func testAnItemFromAnotherProductDoesNotReveal() async {
         let model = await model(
             entries: entries([("epic_A", "claimed")]),
-            placement: { id in LibraryClient.CorrectionDetail(id: id, product: "vivy", parentId: "epic_A") })
+            placement: { id in LibraryClient.CorrectionDetail(id: id, product: "orchard", parentId: "epic_A") })
         let outcome = await model.reveal(itemID: "issue_elsewhere")
         XCTAssertEqual(outcome, .notInCockpit)
         XCTAssertTrue(model.expandedEntries.isEmpty, "another project's parent id must not open this project's epic")
@@ -228,7 +228,7 @@ final class CockpitRevealTests: XCTestCase {
     func testFollowingADifferentProjectClearsTheHighlight() async {
         let model = await model(entries: entries([("epic_A", "claimed")]), childParents: ["issue_1": "epic_A"])
         _ = await model.reveal(itemID: "issue_1")
-        await model.refresh(target: TestHost.unreachableTarget, product: "vivy")
+        await model.refresh(target: TestHost.unreachableTarget, product: "orchard")
         XCTAssertNil(model.highlightedItemID)
         await model.refresh(target: nil, product: nil)
         XCTAssertNil(model.highlightedItemID)

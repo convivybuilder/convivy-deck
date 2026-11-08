@@ -106,7 +106,7 @@ final class HostDisplayTests: XCTestCase {
         let crews = [
             Crew(id: "steward", displayName: "steward", host: "mini"),
             Crew(id: "steward-2", displayName: "steward", host: "laptop"),
-            Crew(id: "vivy", displayName: "vivy", host: "mini"),
+            Crew(id: "orchard", displayName: "orchard", host: "mini"),
         ]
         XCTAssertEqual(HostDisplay.duplicateDisplayNames(among: crews), ["steward"])
     }
@@ -114,7 +114,7 @@ final class HostDisplayTests: XCTestCase {
     func testDuplicateDisplayNamesIsEmptyWhenEveryNameIsUnique() {
         let crews = [
             Crew(id: "steward", displayName: "steward", host: "mini"),
-            Crew(id: "vivy", displayName: "vivy", host: "laptop"),
+            Crew(id: "orchard", displayName: "orchard", host: "laptop"),
         ]
         XCTAssertTrue(HostDisplay.duplicateDisplayNames(among: crews).isEmpty)
     }
@@ -123,9 +123,9 @@ final class HostDisplayTests: XCTestCase {
     /// pinned crews and catalog rows, neither of which is a `Crew`.
     func testDuplicateDisplayNamesAmongRawNamesFindsASharedName() {
         XCTAssertEqual(
-            HostDisplay.duplicateDisplayNames(among: ["steward", "steward", "vivy"]),
+            HostDisplay.duplicateDisplayNames(among: ["steward", "steward", "orchard"]),
             ["steward"])
-        XCTAssertTrue(HostDisplay.duplicateDisplayNames(among: ["steward", "vivy"]).isEmpty)
+        XCTAssertTrue(HostDisplay.duplicateDisplayNames(among: ["steward", "orchard"]).isEmpty)
     }
 
     /// issue_01M3TBDZX3XEYT2TWPZK4J9WKW: macstudio's "Steward" and a promoted
@@ -158,7 +158,7 @@ final class HostDisplayTests: XCTestCase {
     /// A name drawn by only one entry on the rail shows nothing, whatever
     /// its own host or how many hosts are configured.
     func testCrewLabelIsNilWhenTheNameIsNotDuplicated() {
-        let crew = Crew(id: "vivy", displayName: "Vivy", host: "mini")
+        let crew = Crew(id: "orchard", displayName: "Orchard", host: "mini")
         XCTAssertNil(HostDisplay.crewLabel(
             for: crew, duplicateNames: [], hosts: [mini, laptop], defaultHost: "mini", probed: { _ in nil }))
         XCTAssertNil(HostDisplay.crewLabel(
@@ -216,7 +216,7 @@ final class HostDisplayTests: XCTestCase {
     }
 
     func testNoWarningWhenTheCrewsHostMatchesAnEntry() {
-        let crew = Crew(id: "vivy", displayName: "Vivy", host: "laptop")
+        let crew = Crew(id: "orchard", displayName: "Orchard", host: "laptop")
         XCTAssertNil(HostDisplay.unresolvedHostWarning(
             for: crew, hosts: [mini, laptop], defaultHost: "mini", probed: { _ in nil }))
     }
@@ -225,7 +225,7 @@ final class HostDisplayTests: XCTestCase {
     /// `HostResolution` has already fallen back to the default silently —
     /// this names both the stale reference and where it actually landed.
     func testWarnsWhenTheCrewsHostNamesNothingInTheTable() {
-        let crew = Crew(id: "vivy", displayName: "Vivy", host: "deleted-host")
+        let crew = Crew(id: "orchard", displayName: "Orchard", host: "deleted-host")
         let warning = HostDisplay.unresolvedHostWarning(
             for: crew, hosts: [mini, laptop], defaultHost: "laptop", probed: { _ in nil })
         XCTAssertEqual(warning,
@@ -235,7 +235,7 @@ final class HostDisplayTests: XCTestCase {
     /// Independent of host count — a stale reference is worth flagging even
     /// with only one host left in the table.
     func testWarningFiresEvenWithOnlyOneHostConfigured() {
-        let crew = Crew(id: "vivy", displayName: "Vivy", host: "deleted-host")
+        let crew = Crew(id: "orchard", displayName: "Orchard", host: "deleted-host")
         XCTAssertNotNil(HostDisplay.unresolvedHostWarning(
             for: crew, hosts: [mini], defaultHost: "mini", probed: { _ in nil }))
     }
@@ -249,7 +249,7 @@ final class HostDisplayTests: XCTestCase {
     /// failed, not why, so it names the likeliest cause without asserting
     /// it as the diagnosis.
     func testMessageNamesTheHostAndKeepsTheTailnetHedge() {
-        let crew = Crew(id: "vivy", displayName: "Vivy", host: "laptop")
+        let crew = Crew(id: "orchard", displayName: "Orchard", host: "laptop")
         let warning = HostDisplay.unreachableWarning(
             for: crew, hosts: [mini, laptop], defaultHost: "mini",
             isUnreachable: { _ in true }, probed: { _ in nil })
@@ -257,7 +257,7 @@ final class HostDisplayTests: XCTestCase {
     }
 
     func testNoWarningWhenTheHostIsReachable() {
-        let crew = Crew(id: "vivy", displayName: "Vivy", host: "laptop")
+        let crew = Crew(id: "orchard", displayName: "Orchard", host: "laptop")
         XCTAssertNil(HostDisplay.unreachableWarning(
             for: crew, hosts: [mini, laptop], defaultHost: "mini",
             isUnreachable: { _ in false }, probed: { _ in nil }))
@@ -267,7 +267,7 @@ final class HostDisplayTests: XCTestCase {
     /// have been polled in the first place — `unresolvedHostWarning` is the
     /// one that fires for that crew, never this one.
     func testNoWarningWhenTheHostDoesNotResolveAtAll() {
-        let crew = Crew(id: "vivy", displayName: "Vivy", host: "deleted-host")
+        let crew = Crew(id: "orchard", displayName: "Orchard", host: "deleted-host")
         XCTAssertNil(HostDisplay.unreachableWarning(
             for: crew, hosts: [], defaultHost: nil,
             isUnreachable: { _ in true }, probed: { _ in nil }))

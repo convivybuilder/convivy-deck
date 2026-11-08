@@ -34,12 +34,18 @@ struct SessionsSettingsView: View {
     @State private var beadDocuments: [LibraryClient.BeadDocument]?
     @State private var beadListFailed = false
 
+    /// Caches `groupHeadingsByRef`'s own walk — see `RailDerivedCache`'s
+    /// doc.
+    @State private var groupHeadingsCache = RailDerivedCache<SessionsSettingsView.GroupHeadingsCacheInput, [SessionRef: String]>()
+    /// Caches `railIndentsByRef`'s own walk, over the same inputs.
+    @State private var railIndentsCache = RailDerivedCache<SessionsSettingsView.GroupHeadingsCacheInput, [SessionRef: CGFloat]>()
+
     private var configuration: ThemeConfiguration { store.configuration }
     /// Merges in whatever the steward has served, the same rail
     /// `ContentView.crews` draws — this is what lets a crew made through
     /// `new-crew`, with no local config at all, reach Settings too.
     private var roster: SessionRoster {
-        SessionRoster(configuration: configuration, servedCrews: Array(railState.servedCrews.values))
+        SessionRoster(configuration: configuration, servedCrews: RailPoll.orderedServedCrews(railState.servedCrews))
     }
     private var appearance: Appearance {
         configuration.windowAppearance(systemIsDark: systemColorScheme == .dark)
@@ -51,6 +57,100 @@ struct SessionsSettingsView: View {
     /// host beside it; a name that appears once shows none."
     private var duplicateEntryNames: Set<String> {
         HostDisplay.duplicateDisplayNames(among: roster.entries.map(\.displayName))
+    }
+
+    /// The pinned block in rail draw order, groups folded in — what the
+    /// "Rail" section actually lists (CQ·188), rather than `roster.entries`'
+    /// own storage order.
+    private var pinnedEntries: [RosterEntry] {
+        roster.pinnedInRailOrder(groups: configuration.groups, hosts: configuration.hosts,
+                                 defaultHost: configuration.defaultHost)
+    }
+
+    /// The whole list this tab shows: the pinned block above, in rail draw
+    /// order, then the catalog exactly as `roster.entries` already orders
+    /// it — catalog rows are never grouped.
+    private var displayedEntries: [RosterEntry] {
+        pinnedEntries + roster.entries.filter { !$0.isPinned }
+    }
+
+    /// Which pinned row opens a new group's block, keyed by the FIRST row of
+    /// each contiguous run — the group's name, drawn as a small caption
+    /// above that row (CQ·188: "under their group names"), so the list
+    /// reads the same grouping the rail's own heading draws. Nil for every
+    /// other row, including every nested crew: a group only ever holds a
+    /// top-level crew (`CrewGroup`'s own doc), so a nested crew never opens
+    /// a block of its own and never interrupts its parent's.
+    /// `groupHeadingsByRef`'s recompute inputs — see `RailDerivedCache`'s
+    /// doc.
+    struct GroupHeadingsCacheInput: Equatable {
+        var pinnedEntries: [RosterEntry]
+        var groups: [CrewGroup]
+        var hosts: [HostEntry]
+        var defaultHost: String?
+    }
+
+    /// MEMOIZED THROUGH `groupHeadingsCache` (CQ·196), the same treatment
+    /// the rail's own derived crew model gets: this walked `pinnedEntries`
+    /// and re-resolved every row's group membership on every access rather
+    /// than once per change of the pinned block, the groups, or the host
+    /// table.
+    private var groupHeadingsByRef: [SessionRef: String] {
+        let input = GroupHeadingsCacheInput(
+            pinnedEntries: pinnedEntries, groups: configuration.groups,
+            hosts: configuration.hosts, defaultHost: configuration.defaultHost)
+        return groupHeadingsCache.value(for: input) {
+            let pinned = input.pinnedEntries
+            let crews = pinned.map(\.asCrew)
+            var headings: [SessionRef: String] = [:]
+            var lastGroupName: String?
+            for entry in pinned {
+                guard RailNesting.isTopLevel(entry.asCrew, in: crews, hosts: input.hosts,
+                                             defaultHost: input.defaultHost)
+                else { continue }
+                let group = RailNesting.group(containing: entry.ref, in: input.groups)
+                if let group, group.name != lastGroupName {
+                    headings[entry.ref] = group.name
+                }
+                lastGroupName = group?.name
+            }
+            return headings
+        }
+    }
+
+    /// Each pinned row's rail indent. A catalog row is not on the rail, so
+    /// it has no entry and draws flush.
+    private var railIndentsByRef: [SessionRef: CGFloat] {
+        let input = GroupHeadingsCacheInput(
+            pinnedEntries: pinnedEntries, groups: configuration.groups,
+            hosts: configuration.hosts, defaultHost: configuration.defaultHost)
+        return railIndentsCache.value(for: input) {
+            let crews = input.pinnedEntries.map(\.asCrew)
+            var indents: [SessionRef: CGFloat] = [:]
+            for crew in crews {
+                indents[crew.ref] = RailNesting.railIndent(
+                    of: crew, in: crews, groups: input.groups,
+                    hosts: input.hosts, defaultHost: input.defaultHost)
+            }
+            return indents
+        }
+    }
+
+    /// The rail's groups (CQ·184), in the order they actually draw — the
+    /// same order `RailNesting.orderedGroups` derives for the rail itself,
+    /// so "move up"/"move down" here matches what moves on the rail.
+    ///
+    /// FED `roster`'s OWN MERGED PINNED CREWS, never `configuration.railSessions`
+    /// directly — the rail draws `ContentView.crews`, the merge of `rail`
+    /// with whatever the steward has served, and the two differ exactly
+    /// when a crew is served but not yet written into `rail` at all (the
+    /// common case; see `CrewMerge`'s own doc). Reading the raw array left a
+    /// group holding such a crew drawing as an un-positioned trailing
+    /// "ghost" entry, and its move buttons silently no-oping.
+    private var orderedGroups: [CrewGroup] {
+        RailNesting.orderedGroups(
+            for: roster.entries.filter(\.isPinned).map(\.asCrew), groups: configuration.groups,
+            hosts: configuration.hosts, defaultHost: configuration.defaultHost)
     }
 
     /// THE LIST IS THE ONLY SCROLLER, and that is load-bearing rather than a
@@ -119,18 +219,34 @@ struct SessionsSettingsView: View {
                 // Keyed by `ref`, not `Identifiable`'s default `id`: two
                 // same-named crews on different hosts share `id`, and
                 // `ForEach`'s own diffing needs a key that does not.
-                ForEach(roster.entries, id: \.ref) { entry in
+                ForEach(displayedEntries, id: \.ref) { entry in
                     row(entry).tag(entry.ref)
                 }
                 .onMove { source, destination in
                     var updated = roster
-                    updated.moveRail(from: source, to: destination)
+                    updated.moveRail(displayedEntries, from: source, to: destination)
                     store.setRoster(updated)
                 }
             } header: {
                 columnHeaders
                     .padding(.top, 14)
                     .padding(.bottom, 5)
+            }
+
+            // The rail's operator-defined folds (CQ·184) — a crew joins or
+            // leaves one from the rail's own "Move to Group" menu; this
+            // section is only for renaming, reordering and deleting the
+            // group itself.
+            Section("Groups") {
+                if orderedGroups.isEmpty {
+                    Text("No groups yet. Right-click a crew on the rail and choose "
+                         + "\"Move to Group\" to make one.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(orderedGroups.enumerated()), id: \.element.name) { index, group in
+                        groupRow(group, index: index, count: orderedGroups.count)
+                    }
+                }
             }
         }
         // Takes the window's remaining height rather than naming its own, which
@@ -141,6 +257,18 @@ struct SessionsSettingsView: View {
     }
 
     private func row(_ entry: RosterEntry) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let groupName = groupHeadingsByRef[entry.ref] {
+                Text(groupName)
+                    .font(.caption2.weight(.semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(.tertiary)
+            }
+            rowContent(entry)
+        }
+    }
+
+    private func rowContent(_ entry: RosterEntry) -> some View {
         HStack(spacing: 8) {
             Button {
                 edit(entry.ref) { $0.setPinned(!$0.isPinned) }
@@ -162,6 +290,7 @@ struct SessionsSettingsView: View {
                 .fill(Color(configuration.theme(forSession: entry.ref)
                     .palette(for: appearance).cursor))
                 .frame(width: 8, height: 8)
+                .padding(.leading, railIndentsByRef[entry.ref] ?? 0)
 
             Text(entry.displayName)
 
@@ -190,6 +319,49 @@ struct SessionsSettingsView: View {
                 // Explicit slot width keeps the checkbox centred over its caption.
                 // The pin button above uses Self.railColumnWidth for the same reason.
                 .frame(width: Self.refreshColumnWidth, alignment: .center)
+        }
+    }
+
+    /// One row of the Groups section: the group's name, editable the same
+    /// way a roster row's folder/project fields are, then move-up, move-down
+    /// and delete. "Up" and "down" swap this group's whole block of members
+    /// with its neighbor on the rail (`ThemeStore.moveGroup`), so they are
+    /// disabled at the ends of `orderedGroups` the same way a `List`'s own
+    /// reorder arrows would be.
+    private func groupRow(_ group: CrewGroup, index: Int, count: Int) -> some View {
+        HStack(spacing: 8) {
+            CommittingField(
+                text: group.name, prompt: "Group name",
+                onCommit: { raw in store.renameGroup(group, to: raw) })
+                .id("group-\(group.name)")
+
+            Spacer(minLength: 8)
+
+            Button {
+                store.moveGroup(group, up: true, in: roster)
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.borderless)
+            .disabled(index == 0)
+            .help("Move \(group.name) earlier on the rail")
+
+            Button {
+                store.moveGroup(group, up: false, in: roster)
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.borderless)
+            .disabled(index == count - 1)
+            .help("Move \(group.name) later on the rail")
+
+            Button(role: .destructive) {
+                store.deleteGroup(group)
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Delete \(group.name), leaving its members on the rail ungrouped")
         }
     }
 
@@ -287,8 +459,8 @@ struct SessionsSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            // A crew can follow several repos (Selector spans `selector` and
-            // `selector-backend`; the Library crew works in both `library`
+            // A crew can follow several repos (Lantern spans `lantern` and
+            // `lantern-backend`; the Library crew works in both `library`
             // and `knowledge`) — see `Crew.repos`. The Pull Requests panel
             // itself still reads only the first entry as of this PR; the
             // fan-out is issue_01M2P5JHM1G8XCMKM4HEHVJB2P's follow-up.
@@ -411,8 +583,8 @@ struct SessionsSettingsView: View {
 
     /// One row per configured repo, each with its own remove button and its
     /// own `validateRepoIdentity` warning — `entry.repo`'s old single-field
-    /// form collapsed every crew to one repo, which is wrong for Selector
-    /// (`selector`, `selector-backend`), Constance (four repos), Vivy
+    /// form collapsed every crew to one repo, which is wrong for Lantern
+    /// (`lantern`, `lantern-backend`), Meridian (four repos), Orchard
     /// (three) and the Library crew (`library`, `knowledge`).
     ///
     /// A row committed empty is REMOVED rather than left as an empty

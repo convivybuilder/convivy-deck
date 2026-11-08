@@ -67,12 +67,26 @@ struct ItemDetailPane: View {
     /// epic. Reuses `target`: `found_during` names an epic in the same
     /// product as the item carrying it, so no second host lookup is needed.
     let onOpenItem: (String) -> Void
+    /// Approves a proposed epic (CQ·186) — `ContentView.approveEpicFromItemPane`,
+    /// which writes through `CockpitModel.writeApprovalFromItemPane`, the
+    /// same core the cockpit's own Proposals region writes through, so this
+    /// pane builds no second approval path. The outcome is explicit: a
+    /// successful write, a refusal in the Library's own words, or the write
+    /// never being attempted (another approve/decline already in flight) —
+    /// distinguishing the last from a success is the `deck-reviewer` finding
+    /// on PR #399 this type exists to close.
+    let onApprove: (String) async -> CockpitModel.ApprovalWriteOutcome
+    /// The Decline counterpart to `onApprove`, over
+    /// `CockpitModel.writeApprovalFromItemPane`.
+    let onDecline: (String) async -> CockpitModel.ApprovalWriteOutcome
 
     @StateObject private var model = ItemDetailModel()
+    @State private var showDeclineConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            approvalSection
             foundDuringSection
             foundDuringItemsSection
             if LibraryClient.canSetModel(state: model.detail?.state) {
@@ -115,10 +129,16 @@ struct ItemDetailPane: View {
     /// filed against" is the question a cross-product link raises (the
     /// operator, 2026-08-26). It draws nothing when the Library did not carry one,
     /// rather than a placeholder.
+    ///
+    /// **The title carries its own reference key** (`CockpitView.keyedTitle`)
+    /// — an epic's `"E39"`, a work item's `"E9·4"` — so an item opened from a
+    /// `deck-open:` link or a Course row reads the same handle an operator was
+    /// given elsewhere. Degrades to the bare title before the fetch resolves,
+    /// the same moment `id` itself still stands in for it.
     @ViewBuilder
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(model.detail?.title ?? id)
+            CockpitView.keyedTitle(model.detail?.key, model.detail?.title ?? id)
                 .frameFont(.emphasis)
                 .lineLimit(2)
             if let product = model.detail?.product, !product.isEmpty {
@@ -130,16 +150,102 @@ struct ItemDetailPane: View {
             Spacer(minLength: 4)
             if model.isLoading { ProgressView().controlSize(.mini) }
             Button {
+                Task { await model.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise").font(.system(size: 9))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .disabled(model.isLoading)
+            .help("Refresh this item")
+            Button {
                 onClose()
             } label: {
                 Image(systemName: "xmark").font(.system(size: 9))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Close and return to the cockpit")
+            .help("Close and go back to where this was opened from")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+        if let refreshError = model.refreshError {
+            Text(refreshError)
+                .frameFont(.label)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+        }
+    }
+
+    /// Approve/Decline for a proposed epic (CQ·186), drawn only while
+    /// `ItemDetailPane.showsApprovalControls` says the loaded item
+    /// qualifies. An epic that is not a candidate still shows its own
+    /// maturity here when it has one, so "approved" (or any other
+    /// terminal word the Library uses) stays visible even with no
+    /// controls beside it; a non-epic item draws nothing.
+    @ViewBuilder
+    private var approvalSection: some View {
+        if model.detail?.type == "epic" {
+            Divider()
+            HStack(spacing: 8) {
+                if let maturity = model.detail?.maturity, !maturity.isEmpty {
+                    Text(maturity)
+                        .frameFont(.label)
+                        .foregroundStyle(.secondary)
+                }
+                if ItemDetailPane.showsApprovalControls(
+                    type: model.detail?.type, maturity: model.detail?.maturity) {
+                    Button("Approve") {
+                        Task { await model.approve(using: onApprove) }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(model.isWritingApproval)
+                    Button("Decline") {
+                        showDeclineConfirmation = true
+                    }
+                    .buttonStyle(.plain)
+                    .controlSize(.small)
+                    .foregroundStyle(.secondary)
+                    .disabled(model.isWritingApproval)
+                    .confirmationDialog(
+                        "Decline this epic?", isPresented: $showDeclineConfirmation
+                    ) {
+                        Button("Decline", role: .destructive) {
+                            Task { await model.decline(using: onDecline) }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("This ends the proposal. Any unfinished work under it closes as won't fix.")
+                    }
+                }
+                if model.isWritingApproval { ProgressView().controlSize(.mini) }
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            if let refusal = model.approvalWriteRefusal {
+                Text(refusal)
+                    .frameFont(.label)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 6)
+            }
+        }
+    }
+
+    /// Whether `approvalSection` offers Approve and Decline (CQ·186): the
+    /// loaded item is an epic, and its maturity is `proposed` or unset.
+    /// Anything else — `approved`, `declined`, `built`, `superseded` — is a
+    /// decision already made, so neither control draws. A pure function so
+    /// the gate is pinned by a test without a view.
+    nonisolated static func showsApprovalControls(type: String?, maturity: String?) -> Bool {
+        guard type == "epic" else { return false }
+        let trimmed = (maturity ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == LibraryClient.proposedMaturity
     }
 
     /// The epic whose work turned this item up, when `found_during` is set —
@@ -716,6 +822,17 @@ final class ItemDetailModel: ObservableObject {
     @Published private(set) var isWritingModel = false
     @Published private(set) var modelWriteRefusal: String?
 
+    /// Set only when `refresh()` (CQ·185's refresh button) fails. `html`
+    /// and `detail` are left untouched on that path, so this is what tells
+    /// the header a refresh did not land — the pane's existing red-text
+    /// style, same as `modelWriteRefusal`.
+    @Published private(set) var refreshError: String?
+
+    /// The Approve/Decline write in flight, and the Library's words for the
+    /// last one it refused (CQ·186). Cleared when the next write starts.
+    @Published private(set) var isWritingApproval = false
+    @Published private(set) var approvalWriteRefusal: String?
+
     /// The found-during epic's own title, resolved by a second fetch once
     /// `detail.foundDuring` is known. `nil` until that fetch resolves (or
     /// fails, or there is nothing to resolve) — `foundDuringSection` falls
@@ -877,6 +994,69 @@ final class ItemDetailModel: ObservableObject {
                 "Could not reach this item: \(ItemDetailModel.describe(error))", appearance: appearance)
         }
         isLoading = false
+    }
+
+    /// Re-reads the loaded item for the refresh button (CQ·185), and for a
+    /// successful Approve/Decline (CQ·186) — unlike `load`, this KEEPS
+    /// WHAT IS ON SCREEN rather than clearing to the loading page first,
+    /// the same reasoning `CheckoutDocumentsModel.reload` gives: a refresh
+    /// should not flash the pane blank. A failed refresh leaves `detail`
+    /// and `html` as they were and reports the failure through
+    /// `refreshError` instead of replacing the content with an error page.
+    func refresh() async {
+        guard let id = cachedId, let target = cachedTarget, !isLoading else { return }
+        refreshError = nil
+        isLoading = true
+        defer { isLoading = false }
+        let read = fetchDetail
+        let appearance = cachedAppearance
+        do {
+            let fetched = try await Task.detached { try read(target, id) }.value
+            guard cachedId == id else { return }
+            let page = await renderDetail(fetched, target, appearance)
+            guard cachedId == id else { return }
+            detail = fetched
+            html = page
+            loadFoundDuringTitleIfNeeded(fetched, id: id, target: target)
+            loadFoundDuringItemsIfNeeded(fetched, id: id, target: target)
+        } catch {
+            guard cachedId == id else { return }
+            refreshError = "Could not refresh this item: \(ItemDetailModel.describe(error))"
+        }
+    }
+
+    /// Approves the loaded epic through `write` — `ItemDetailPane.onApprove`,
+    /// which `ContentView` wires to `CockpitModel.writeApprovalFromItemPane`,
+    /// the same core the cockpit's own Proposals region writes through.
+    /// `write` answers with an explicit outcome (CQ·186's `deck-reviewer`
+    /// finding on PR #399): a successful write reloads the item through
+    /// `refresh()` so its new maturity draws; a refusal or a not-attempted
+    /// outcome shows its message and reloads nothing.
+    func approve(using write: (String) async -> CockpitModel.ApprovalWriteOutcome) async {
+        await writeApproval(write)
+    }
+
+    /// The Decline counterpart to `approve(using:)`, over
+    /// `ItemDetailPane.onDecline`.
+    func decline(using write: (String) async -> CockpitModel.ApprovalWriteOutcome) async {
+        await writeApproval(write)
+    }
+
+    private func writeApproval(_ write: (String) async -> CockpitModel.ApprovalWriteOutcome) async {
+        guard let id = cachedId, !isWritingApproval else { return }
+        approvalWriteRefusal = nil
+        isWritingApproval = true
+        defer { isWritingApproval = false }
+        let outcome = await write(id)
+        guard cachedId == id else { return }
+        switch outcome {
+        case .wrote:
+            await refresh()
+        case .refused(let message):
+            approvalWriteRefusal = message
+        case .notAttempted(let reason):
+            approvalWriteRefusal = reason
+        }
     }
 
     /// Resolves the found-during epic's title for `foundDuringSection`, when

@@ -37,6 +37,14 @@ struct HeldKBSave: Codable, Equatable, Identifiable {
     let heldAt: Date
     /// Why the last attempt to send this save did not go out. Nil before any attempt.
     var reason: String?
+    /// The identity this document was checked out under when it was held —
+    /// `document.holder` (CQ·177). Optional, and read with a fallback to
+    /// `DeckOperator.label()` at send time (`attempt`), so a hold recorded by
+    /// a build that predates this field still decodes and still resends,
+    /// rather than the whole store failing to parse over one missing key —
+    /// the same per-field degrade discipline every other reader in this
+    /// codebase follows.
+    var holder: String?
 
     /// One held save per document and host. A later hold of the same document
     /// replaces the earlier record, because `saveLocally` writes the same draft file.
@@ -53,6 +61,7 @@ struct HeldKBSave: Codable, Equatable, Identifiable {
         self.draftPath = draftPath
         self.heldAt = heldAt
         reason = nil
+        holder = document.holder
     }
 
     /// Whether `other` is this same hold: the same document and host, over the
@@ -241,7 +250,10 @@ enum HeldKBSaves {
     ///
     /// `configuredTargets` is the set of hosts in Deck's Hosts settings. A record
     /// naming any other host is refused. `draftDirectory` gives the working-copy
-    /// directory a document's draft must sit in.
+    /// directory a document's draft must sit in. `checkoutReferenceDocument` and
+    /// `checkinReferenceDocument` default to the real `LibraryClient` calls;
+    /// `EditorModelTests`-style seams replace them so a test sees the Library
+    /// round trip without ssh.
     static func send(
         _ saves: [HeldKBSave],
         store: HeldKBSaveStore,
@@ -250,6 +262,11 @@ enum HeldKBSaves {
         configuredTargets: [SSHTarget],
         now: Date = Date(),
         draftDirectory: (String) throws -> URL = { try WorkingCopyStore.directory(forKBId: $0) },
+        checkoutRegistry: LibraryCheckoutRegistry = .shared,
+        checkoutReferenceDocument: (SSHTarget, String, String) throws -> Void =
+            LibraryClient.checkoutReferenceDocument,
+        checkinReferenceDocument: (SSHTarget, String, String) throws -> Void =
+            LibraryClient.checkinReferenceDocument,
         run: ([String], String?) throws -> Data = { argv, stdin in
             try SessionAgent.run(argv, stdin: stdin)
         }
@@ -258,7 +275,9 @@ enum HeldKBSaves {
         for save in saves {
             let outcome = attempt(save, signingKey: signingKey, certificatePEM: certificatePEM,
                                   configuredTargets: configuredTargets, now: now,
-                                  draftDirectory: draftDirectory, run: run)
+                                  draftDirectory: draftDirectory, checkoutRegistry: checkoutRegistry,
+                                  checkoutReferenceDocument: checkoutReferenceDocument,
+                                  checkinReferenceDocument: checkinReferenceDocument, run: run)
             results.append(SendResult(save: save, outcome: outcome))
             do {
                 if let reason = outcome.reason {
@@ -298,6 +317,17 @@ enum HeldKBSaves {
     /// at hold time, and the certificate must be inside its window. Each check
     /// refuses with a reason and the signing key is not asked to sign unless all of
     /// them pass.
+    ///
+    /// Once those checks pass, this takes the Library's own reference-document
+    /// checkout under the record's holder (CQ·187) — the lock `kb apply`'s
+    /// admission check requires, which an editor pane normally takes at open but
+    /// a resend runs long after that pane may have checked back in. A refusal —
+    /// held by someone else, or the Library unreachable — is this attempt's own
+    /// failure, with the Library's message, and `submitIfCurrent` is never
+    /// reached. The checkout is handed back once the submit settles, whatever it
+    /// settled to, unless `checkoutRegistry` says an open editor pane still holds
+    /// the same checkout under the same holder — in which case handing it back
+    /// here would pull it out from under that pane.
     private static func attempt(
         _ save: HeldKBSave,
         signingKey: SigningKey,
@@ -305,6 +335,11 @@ enum HeldKBSaves {
         configuredTargets: [SSHTarget],
         now: Date,
         draftDirectory: (String) throws -> URL,
+        checkoutRegistry: LibraryCheckoutRegistry = .shared,
+        checkoutReferenceDocument: (SSHTarget, String, String) throws -> Void =
+            LibraryClient.checkoutReferenceDocument,
+        checkinReferenceDocument: (SSHTarget, String, String) throws -> Void =
+            LibraryClient.checkinReferenceDocument,
         run: ([String], String?) throws -> Data
     ) -> Outcome {
         // The id names the working-copy directory and the Touch ID prompt, so it is
@@ -368,27 +403,52 @@ enum HeldKBSaves {
         guard let certificatePEM else {
             return .refused("no signing certificate is stored for this key")
         }
+        let holder = save.holder ?? DeckOperator.label()
+
+        // THE LIBRARY'S OWN CHECKOUT, BEFORE THE RESEND SIGNS ANYTHING. By now the
+        // editor that held this save has usually checked its own checkout in, so
+        // `kb apply`'s admission check (CQ·177) would otherwise refuse the resend
+        // with "no live checkout is held on <id>". A refusal here — held by
+        // someone else, or the Library unreachable — is this attempt's own
+        // failure, in the Library's own words, and `submitIfCurrent` is never
+        // reached.
+        do {
+            try checkoutReferenceDocument(save.target, save.documentId, holder)
+        } catch {
+            return .refused(LibraryClient.referenceCheckoutRefusalMessage(error))
+        }
+
         let document = KnowledgeBase.CheckedOutDocument(
             id: save.documentId, content: content, contentSha: save.contentSha,
-            sourceRef: save.sourceRef, target: save.target)
+            sourceRef: save.sourceRef, target: save.target, holder: holder)
+        let outcome: Outcome
         do {
             switch try KnowledgeBase.submitIfCurrent(
                 target: save.target, document: document, content: content,
                 signingKey: signingKey, certificatePEM: certificatePEM, now: now,
                 signReason: signReason(for: save), run: run) {
             case .sent:
-                return .sent
+                outcome = .sent
             case .cancelled:
-                return .cancelled
+                outcome = .cancelled
             case .refused(let message):
-                return .refused(message)
+                outcome = .refused(message)
             case .noCertificate:
-                return .refused("no signing certificate is stored for this key")
+                outcome = .refused("no signing certificate is stored for this key")
             case .outsideValidity:
-                return .refused("the signing certificate is outside its validity window")
+                outcome = .refused("the signing certificate is outside its validity window")
             }
         } catch {
-            return .refused("\(error)")
+            outcome = .refused("\(error)")
         }
+
+        // HANDED BACK WHATEVER THE SUBMIT SETTLED TO — unless an open editor pane
+        // still holds this exact checkout (same document, host and holder), in
+        // which case checking it in here would pull it out from under that pane
+        // rather than the checkout this resend itself took.
+        if !checkoutRegistry.isHeld(documentId: save.documentId, target: save.target, holder: holder) {
+            _ = try? checkinReferenceDocument(save.target, save.documentId, holder)
+        }
+        return outcome
     }
 }

@@ -148,10 +148,10 @@ final class HostScopedCrewSettingsTests: XCTestCase {
     /// An entry written before the host half existed is a bare crew id, and a
     /// user who upgrades finds the rows they left open still open.
     func testALegacyBareEntryStillOpensTheRow() {
-        let expansion = CrewExpansion(raw: "steward,vivy")
+        let expansion = CrewExpansion(raw: "steward,orchard")
         XCTAssertTrue(expansion.isExpanded(Self.onFirst))
-        XCTAssertTrue(expansion.isExpanded(SessionRef(host: nil, name: "vivy")))
-        XCTAssertFalse(expansion.isExpanded(SessionRef(host: "first-box", name: "selector")))
+        XCTAssertTrue(expansion.isExpanded(SessionRef(host: nil, name: "orchard")))
+        XCTAssertFalse(expansion.isExpanded(SessionRef(host: "first-box", name: "lantern")))
     }
 
     /// Collapsing a row read as expanded through a legacy entry has to drop
@@ -242,35 +242,35 @@ final class HostScopedCrewSettingsTests: XCTestCase {
     /// no crew at all.
     func testACrewNestsUnderTheParentOnItsOwnHost() throws {
         let crews = [
-            Crew(id: "vivy", displayName: "Vivy", host: "first-box"),
-            Crew(id: "vivy", displayName: "Vivy", host: "second-box"),
-            Crew(id: "vivy-labs", displayName: "Labs", parent: "vivy", host: "second-box"),
+            Crew(id: "orchard", displayName: "Orchard", host: "first-box"),
+            Crew(id: "orchard", displayName: "Orchard", host: "second-box"),
+            Crew(id: "orchard-labs", displayName: "Labs", parent: "orchard", host: "second-box"),
         ]
         let parent = try XCTUnwrap(RailNesting.nestingParent(of: crews[2], in: crews))
-        XCTAssertEqual(parent.ref, SessionRef(host: "second-box", name: "vivy"))
+        XCTAssertEqual(parent.ref, SessionRef(host: "second-box", name: "orchard"))
         XCTAssertEqual(RailNesting.nestedCrews(of: crews[0], in: crews), [])
-        XCTAssertEqual(RailNesting.nestedCrews(of: crews[1], in: crews).map(\.id), ["vivy-labs"])
+        XCTAssertEqual(RailNesting.nestedCrews(of: crews[1], in: crews).map(\.id), ["orchard-labs"])
     }
 
     func testAParentThatExistsOnlyOnAnotherHostDrawsTheRowTopLevel() {
         let crews = [
-            Crew(id: "vivy", displayName: "Vivy", host: "first-box"),
-            Crew(id: "vivy-labs", displayName: "Labs", parent: "vivy", host: "second-box"),
+            Crew(id: "orchard", displayName: "Orchard", host: "first-box"),
+            Crew(id: "orchard-labs", displayName: "Labs", parent: "orchard", host: "second-box"),
         ]
         XCTAssertNil(RailNesting.nestingParent(of: crews[1], in: crews))
         XCTAssertEqual(RailNesting.topLevelCrews(crews).map(\.ref),
-                       [SessionRef(host: "first-box", name: "vivy"),
-                        SessionRef(host: "second-box", name: "vivy-labs")])
+                       [SessionRef(host: "first-box", name: "orchard"),
+                        SessionRef(host: "second-box", name: "orchard-labs")])
     }
 
     func testOnlyCrewsOnTheSameHostAreOfferedAsParents() {
         let crews = [
-            Crew(id: "vivy", displayName: "Vivy", host: "first-box"),
-            Crew(id: "constance", displayName: "Constance", host: "second-box"),
-            Crew(id: "vivy-labs", displayName: "Labs", host: "second-box"),
+            Crew(id: "orchard", displayName: "Orchard", host: "first-box"),
+            Crew(id: "meridian", displayName: "Meridian", host: "second-box"),
+            Crew(id: "orchard-labs", displayName: "Labs", host: "second-box"),
         ]
         XCTAssertEqual(RailNesting.eligibleParents(for: crews[2], in: crews).map(\.id),
-                       ["constance"])
+                       ["meridian"])
     }
 
     // MARK: - Reading a file written before hosts scoped a crew

@@ -36,14 +36,14 @@ final class TerminalTargetTests: XCTestCase {
     func testARemoteSessionsResolvedTargetReachesArgv() throws {
         let target = SSHTarget(user: "operator", host: "10.0.0.5")
         let (_, args) = try TerminalLaunch.executableAndArguments(
-            for: .remoteSession(name: "vivy", workingDirectory: nil, target: target))
+            for: .remoteSession(name: "orchard", workingDirectory: nil, target: target))
         XCTAssertTrue(args.contains("operator@10.0.0.5"))
     }
 
     func testARemoteShellsResolvedTargetReachesArgv() throws {
         let target = SSHTarget(user: "operator", host: "10.0.0.5")
         let (_, args) = try TerminalLaunch.executableAndArguments(
-            for: .remoteShell(session: "vivy", workingDirectory: nil, target: target))
+            for: .remoteShell(session: "orchard", workingDirectory: nil, target: target))
         XCTAssertTrue(args.contains("operator@10.0.0.5"))
     }
 

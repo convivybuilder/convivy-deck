@@ -52,7 +52,7 @@ final class TmuxWindowControlTests: XCTestCase {
     /// the host". A non-default target reaches the destination token.
     func testSelectWindowArgumentsHonourANonDefaultTarget() throws {
         let laptop = SSHTarget(user: "operator", host: "10.0.0.5")
-        let args = try TmuxWindowControl.selectWindowArguments(target: laptop, session: "vivy", window: 2)
+        let args = try TmuxWindowControl.selectWindowArguments(target: laptop, session: "orchard", window: 2)
         XCTAssertTrue(args.contains("operator@10.0.0.5"))
     }
 
@@ -104,7 +104,7 @@ final class TmuxWindowControlTests: XCTestCase {
     func testMoveWindowArgumentsHonourANonDefaultTarget() throws {
         let laptop = SSHTarget(user: "operator", host: "10.0.0.5")
         let args = try TmuxWindowControl.moveWindowArguments(
-            target: laptop, session: "vivy", window: 2, newSessionName: "vivy--w2")
+            target: laptop, session: "orchard", window: 2, newSessionName: "orchard--w2")
         XCTAssertTrue(args.contains("operator@10.0.0.5"))
     }
 

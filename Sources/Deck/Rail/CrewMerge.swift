@@ -60,9 +60,28 @@ enum CrewMerge {
     /// spec's fill into local config. When nothing resolves (including
     /// `hosts: []`) the name is compared as written, as above.
     static func crewHostKey(for crew: Crew, hosts: [HostEntry], defaultHost: String?) -> String? {
-        let name = crew.host ?? defaultHost
-        guard let target = HostResolution.target(forHostName: crew.host, hosts: hosts,
-                                                 defaultHost: defaultHost) else { return name }
+        resolvedHostKey(forHostName: crew.host, hosts: hosts, defaultHost: defaultHost)
+    }
+
+    /// The catalog side's host name, resolved by the identical rule
+    /// `crewHostKey` applies to a rail row — `LaunchableSession.host` is
+    /// filled from `defaultHost` at parse time the same way `Crew.host` is,
+    /// so the two compare on the same footing.
+    private static func catalogHostKey(for entry: LaunchableSession, hosts: [HostEntry], defaultHost: String?) -> String? {
+        resolvedHostKey(forHostName: entry.host, hosts: hosts, defaultHost: defaultHost)
+    }
+
+    /// `crewHostKey`'s resolution rule, open to a bare host name rather
+    /// than a `Crew` — what a caller-supplied `SessionRef`'s own `host`
+    /// needs run through before it is compared against a rail row, since
+    /// the ref can carry a resolved name (built from the merged crews list)
+    /// while the row still carries whatever `theme.json` or a prior
+    /// sparsifying commit left it with. See `ThemeStore.removeCrew`/
+    /// `setParent`.
+    static func resolvedHostKey(forHostName name: String?, hosts: [HostEntry], defaultHost: String?) -> String? {
+        let implied = name ?? defaultHost
+        guard let target = HostResolution.target(forHostName: name, hosts: hosts,
+                                                 defaultHost: defaultHost) else { return implied }
         return HostResolution.hostName(for: target, hosts: hosts)
     }
 
@@ -74,10 +93,19 @@ enum CrewMerge {
     ///
     /// A spec with no configured counterpart still draws a row — this is
     /// how a crew made through `new-crew`, with no local config at all,
-    /// reaches the rail (`placard`, created 2026-09-05). A configured row
+    /// reaches the rail (`signpost`, created 2026-09-05). A configured row
     /// with no matching spec (a crew from before this feature, or a
     /// laptop-only entry the steward never wrote a spec for) draws
     /// unchanged.
+    ///
+    /// UNLESS THE CATALOG ALREADY HOLDS IT. A served crew the operator has
+    /// unpinned reaches `catalog` as a `LaunchableSession` of the same
+    /// (host, id) — see `SessionRoster.applied(to:)` — and that is the crew
+    /// staying unpinned, not a second copy of it. Drawing it here too put it
+    /// on the rail, pinned, right beside its own catalog row: unpinning it
+    /// again then appended yet another catalog copy, since the row that
+    /// came back from the rail was never the same `RosterEntry` as the one
+    /// already sitting in the catalog.
     ///
     /// `hosts`/`defaultHost` scope every match to `hostKey`'s host-NAME
     /// comparison, above. Every Builder install has a crew named `steward`,
@@ -97,7 +125,8 @@ enum CrewMerge {
     /// configured row can never set locally, so the spec's value always
     /// applies once matched.
     static func merge(
-        configured: [Crew], served: [ServedCrew], hosts: [HostEntry], defaultHost: String?
+        configured: [Crew], served: [ServedCrew], catalog: [LaunchableSession] = [],
+        hosts: [HostEntry], defaultHost: String?
     ) -> [Crew] {
         var result: [Crew] = []
         var matched = Set<ServedCrew.ID>()
@@ -109,6 +138,13 @@ enum CrewMerge {
         let servedByCrewId = Dictionary(
             served.map { (SessionRef(host: hostKey(for: $0, hosts: hosts), name: $0.crewId), $0) },
             uniquingKeysWith: { first, _ in first })
+        // A served crew whose (host, id) names a catalog entry IS that
+        // entry, unpinned — see this type's own doc. Appending it here too
+        // would draw it pinned and in the catalog at once, which is the bug
+        // this set exists to close.
+        let catalogRefs = Set(catalog.map {
+            SessionRef(host: catalogHostKey(for: $0, hosts: hosts, defaultHost: defaultHost), name: $0.id)
+        })
 
         for crew in configured {
             let crewHostKey = crewHostKey(for: crew, hosts: hosts, defaultHost: defaultHost)
@@ -122,9 +158,43 @@ enum CrewMerge {
             result.append(applying(match, to: crew, hosts: hosts))
         }
         for crew in served where !matched.contains(crew.id) {
+            guard !catalogRefs.contains(SessionRef(host: hostKey(for: crew, hosts: hosts), name: crew.crewId)) else {
+                continue
+            }
             result.append(asCrew(crew, hosts: hosts))
         }
         return result
+    }
+
+    /// The served spec a catalog entry's (host, id) names, if any — the
+    /// catalog-side counterpart to `match`, keyed by (host, id) alone since
+    /// `LaunchableSession` carries no `sessionId` of its own to prefer.
+    static func catalogMatch(
+        _ entry: LaunchableSession, in served: [ServedCrew], hosts: [HostEntry], defaultHost: String?
+    ) -> ServedCrew? {
+        let key = catalogHostKey(for: entry, hosts: hosts, defaultHost: defaultHost)
+        return served.first { $0.crewId == entry.id && hostKey(for: $0, hosts: hosts) == key }
+    }
+
+    /// Fills a catalog entry's unset fields from a matched served spec — the
+    /// same fill rule `applying` gives a rail row, minus `sessionId`, which
+    /// `LaunchableSession` has no field for.
+    static func applyingToCatalog(_ served: ServedCrew, to entry: LaunchableSession, hosts: [HostEntry]) -> LaunchableSession {
+        var merged = entry
+        let displayName = (merged.displayName == merged.id ? served.displayName : nil) ?? merged.displayName
+        merged.workingDirectory = merged.workingDirectory ?? served.workingDirectory
+        merged.host = merged.host ?? HostResolution.hostName(for: served.host, hosts: hosts)
+        merged.project = merged.project ?? served.project
+        merged.bead = merged.bead ?? served.bead
+        merged.shape = merged.shape ?? served.shape
+        merged.documents = merged.documents.isEmpty ? served.documents : merged.documents
+        merged.repos = merged.repos.isEmpty ? served.resolvedRepos : merged.repos
+        merged.sessions = mergedChildren(configured: merged.sessions, served: served.sessions)
+        return LaunchableSession(id: merged.id, displayName: displayName,
+                                 workingDirectory: merged.workingDirectory, command: merged.command,
+                                 sessions: merged.sessions, parent: merged.parent, host: merged.host,
+                                 project: merged.project, bead: merged.bead, repos: merged.repos,
+                                 shape: merged.shape, documents: merged.documents)
     }
 
     /// A served-only crew, drawn with no configured counterpart at all — ON

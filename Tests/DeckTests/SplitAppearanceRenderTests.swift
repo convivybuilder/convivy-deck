@@ -39,7 +39,7 @@ final class SplitAppearanceRenderTests: XCTestCase {
           "defaultHost": "macstudio",
           "hosts": [{ "name": "macstudio", "user": "operator", "address": "192.0.2.1" }],
           "rail": [
-            { "session": "vivy", "name": "Vivy" },
+            { "session": "orchard", "name": "Orchard" },
             { "session": "deck", "name": "Deck" },
             { "session": "steward", "name": "Steward" }
           ]

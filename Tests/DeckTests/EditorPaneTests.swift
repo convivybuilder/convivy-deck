@@ -1,6 +1,31 @@
 import XCTest
 @testable import Deck
 
+/// A thread-safe recorder for `EditorModel.heartbeatReferenceDocument` —
+/// `startHeartbeat` calls the seam off the main actor (`Task.detached`), so
+/// a plain array is not safe to mutate from it, the same reasoning
+/// `CockpitModelTests`'s `CallCounter` gives for its own lock.
+private final class HeartbeatCalls: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [(SSHTarget, String, String)] = []
+
+    func record(_ target: SSHTarget, _ docId: String, _ holder: String) {
+        lock.lock()
+        calls.append((target, docId, holder))
+        lock.unlock()
+    }
+
+    var count: Int {
+        lock.lock(); defer { lock.unlock() }
+        return calls.count
+    }
+
+    var last: (SSHTarget, String, String)? {
+        lock.lock(); defer { lock.unlock() }
+        return calls.last
+    }
+}
+
 /// Tests for phase 3's editor: the remote render verb, the atomic write back,
 /// what the page is allowed to say to Swift, and what it is allowed to load.
 ///
@@ -346,6 +371,374 @@ final class EditorPaneTests: XCTestCase {
         XCTAssertTrue(text.contains("could not be verified as faithful"))
         XCTAssertTrue(text.contains("dropped a table"))
         XCTAssertTrue(text.contains("unbalanced backtick"))
+    }
+
+    /// CQ·177: the banner used to discard `kb apply`'s own refusal text, so a
+    /// refused save said only "The knowledge base refused this save" with no
+    /// reason. The fixed sentence still leads; the reason now follows it.
+    func testRefusedExplanationKeepsTheFixedSentenceAndAddsTheReason() {
+        let text = EditorPane.refusedExplanation(
+            "deck/reference/cockpit-edit-check is checked out to session:other, not deck:operator@example.com")
+        XCTAssertTrue(text.contains("The knowledge base refused this save."))
+        XCTAssertTrue(text.contains("Your draft is kept on this Mac"))
+        XCTAssertTrue(text.contains("checked out to session:other"))
+    }
+
+    // MARK: - A refused Library checkout stops the pane before editing (CQ·177)
+
+    /// `EditorModel.kbCheckoutFailurePage` is what `load`'s `.kb` branch
+    /// shows when `LibraryClient.checkoutReferenceDocument` is refused —
+    /// pulled out as a pure function, the same seam `EditorRoundTrip.gate`
+    /// uses, so the decision is pinned without a real ssh target. `load`
+    /// `return`s on this path before `checkedOut` is ever assigned and
+    /// before `page` can become `.ready`, which is what keeps the reader
+    /// from typing into a document that was never actually checked out.
+    func testARefusedLibraryCheckoutSurfacesAsAFailedPageNamingTheHolder() {
+        let error = LibraryClient.FetchError.libraryRefused(status: 409, body: """
+            {"error": "already checked out: deck/reference/cockpit-edit-check is held by \
+            session:other until 2026-10-24T23:00:00Z"}
+            """)
+
+        guard case .failed(let message) = EditorModel.kbCheckoutFailurePage(error) else {
+            return XCTFail("expected .failed")
+        }
+        XCTAssertTrue(message.contains("held by session:other"), message)
+    }
+
+    /// An unreachable Library reads the same way any other load failure does
+    /// — words, not a raw error enum printed verbatim.
+    func testALibraryCheckoutTransportFailureSurfacesAsAFailedPage() {
+        let error = LibraryClient.FetchError.unexpectedResponse("ssh: timed out")
+
+        guard case .failed(let message) = EditorModel.kbCheckoutFailurePage(error) else {
+            return XCTFail("expected .failed")
+        }
+        XCTAssertTrue(message.contains("ssh: timed out"), message)
+    }
+
+    // MARK: - Keeping a Reference Room checkout alive mid-edit (CQ·177 finding 1)
+
+    /// Shortens the real interval so a test sees `startHeartbeat`'s loop
+    /// fire without waiting thirty minutes, and polls with a bounded
+    /// deadline rather than a fixed sleep — the same idiom
+    /// `SlateSignedSendTests` uses for a background task's own timing.
+    @MainActor
+    private func pollUntil(
+        timeout: TimeInterval = 5, _ condition: () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + .seconds(timeout)
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                return XCTFail("condition never became true within \(timeout)s")
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    @MainActor
+    func testTheHeartbeatTimerFiresWithTheCheckoutHolder() async throws {
+        let model = EditorModel()
+        let calls = HeartbeatCalls()
+        model.heartbeatInterval = .milliseconds(10)
+        model.heartbeatReferenceDocument = { target, docId, holder in
+            calls.record(target, docId, holder)
+        }
+
+        model.startHeartbeat(target: TestHost.unreachableTarget, docId: "deck/specs/a",
+                             holder: TestHost.holder)
+        try await pollUntil { calls.count > 0 }
+        model.releaseLease()
+
+        let (target, docId, holder) = try XCTUnwrap(calls.last)
+        XCTAssertEqual(target, TestHost.unreachableTarget)
+        XCTAssertEqual(docId, "deck/specs/a")
+        XCTAssertEqual(holder, TestHost.holder)
+    }
+
+    @MainActor
+    func testTheHeartbeatTimerStopsOnRelease() async throws {
+        let model = EditorModel()
+        let calls = HeartbeatCalls()
+        model.heartbeatInterval = .milliseconds(10)
+        model.heartbeatReferenceDocument = { target, docId, holder in
+            calls.record(target, docId, holder)
+        }
+
+        model.startHeartbeat(target: TestHost.unreachableTarget, docId: "deck/specs/a",
+                             holder: TestHost.holder)
+        try await pollUntil { calls.count > 0 }
+        model.releaseLease()
+        // A heartbeat already on its detached task when release cancels the loop
+        // still finishes and records (the full suite caught that, 2 against 1), so
+        // let it settle before taking the count. That straggler is harmless: the
+        // Library answers a heartbeat with no checkout behind it with a 404 and never
+        // creates one, and the cancelled loop no longer reports it.
+        try await Task.sleep(for: .milliseconds(100))
+        let countAfterSettling = calls.count
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertEqual(calls.count, countAfterSettling, "the heartbeat kept firing after release")
+    }
+
+    /// `load`'s `.kb` branch sets `loadedRef` before it ever reaches ssh —
+    /// see its own "RELEASE BEFORE ACQUIRING" note — which is what lets this
+    /// test reach `report`'s gate with `TestHost.unreachableTarget` (fails on
+    /// DNS lookup in milliseconds, per its own doc) rather than a live
+    /// checkout.
+    @MainActor
+    func testA404HeartbeatSurfacesTheLapsedBannerInTheRefusedStyle() async throws {
+        let model = EditorModel()
+        await model.load(ref: .kb(id: "deck/specs/a"), appearance: .light,
+                         server: WorkingCopyServer(), target: TestHost.unreachableTarget)
+        XCTAssertEqual(model.status, .clean, "control: nothing has reported a status yet")
+
+        model.heartbeatInterval = .milliseconds(10)
+        model.heartbeatReferenceDocument = { _, _, _ in
+            throw LibraryClient.FetchError.libraryRefused(status: 404, body: "{}")
+        }
+        model.startHeartbeat(target: TestHost.unreachableTarget, docId: "deck/specs/a",
+                             holder: TestHost.holder)
+
+        try await pollUntil { model.status != .clean }
+        guard case .refused(let message) = model.status else {
+            return XCTFail("expected .refused, got \(model.status)")
+        }
+        XCTAssertTrue(message.contains("lapsed"), message)
+        XCTAssertTrue(message.contains("reopen"), message)
+    }
+
+    /// A lapse also drops the pane's claim on the checkout: the shared
+    /// registry stops reporting it held, and the heartbeat stops, so a held
+    /// save resent for the same document checks its own checkout back in and
+    /// nothing keeps renewing it (CQ·187 review).
+    @MainActor
+    func testA404HeartbeatDropsThePanesClaimAndStopsTheHeartbeat() async throws {
+        let model = EditorModel()
+        let calls = HeartbeatCalls()
+        let target = TestHost.unreachableTarget
+        LibraryCheckoutRegistry.shared.register(documentId: "deck/specs/lapse", target: target,
+                                                holder: TestHost.holder)
+        defer {
+            LibraryCheckoutRegistry.shared.unregister(documentId: "deck/specs/lapse", target: target,
+                                                      holder: TestHost.holder)
+        }
+        model.heartbeatInterval = .milliseconds(10)
+        model.heartbeatReferenceDocument = { target, docId, holder in
+            calls.record(target, docId, holder)
+            throw LibraryClient.FetchError.libraryRefused(status: 404, body: "{}")
+        }
+
+        model.startHeartbeat(target: target, docId: "deck/specs/lapse", holder: TestHost.holder)
+        try await pollUntil { model.libraryCheckoutLapsed }
+
+        XCTAssertFalse(LibraryCheckoutRegistry.shared.isHeld(documentId: "deck/specs/lapse", target: target,
+                                                             holder: TestHost.holder))
+        let countAtLapse = calls.count
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(calls.count, countAtLapse, "the heartbeat should stop after a lapse")
+    }
+
+    /// `Deck`'s windows are a plain `WindowGroup`, so the same document and
+    /// holder can be registered twice — one claim per open pane. A 404 is
+    /// this pane's own lapse, not the other pane's, so it must drop only the
+    /// one claim this pane took and leave the second pane's claim registered
+    /// (CQ·193).
+    @MainActor
+    func testA404HeartbeatLeavesASecondPanesClaimRegistered() async throws {
+        let model = EditorModel()
+        let target = TestHost.unreachableTarget
+        LibraryCheckoutRegistry.shared.register(documentId: "deck/specs/lapse-shared", target: target,
+                                                holder: TestHost.holder)
+        LibraryCheckoutRegistry.shared.register(documentId: "deck/specs/lapse-shared", target: target,
+                                                holder: TestHost.holder)
+        defer {
+            while LibraryCheckoutRegistry.shared.isHeld(documentId: "deck/specs/lapse-shared", target: target,
+                                                        holder: TestHost.holder) {
+                LibraryCheckoutRegistry.shared.unregister(documentId: "deck/specs/lapse-shared", target: target,
+                                                          holder: TestHost.holder)
+            }
+        }
+        model.heartbeatInterval = .milliseconds(10)
+        model.heartbeatReferenceDocument = { _, _, _ in
+            throw LibraryClient.FetchError.libraryRefused(status: 404, body: "{}")
+        }
+
+        model.startHeartbeat(target: target, docId: "deck/specs/lapse-shared", holder: TestHost.holder)
+        try await pollUntil { model.libraryCheckoutLapsed }
+
+        XCTAssertTrue(LibraryCheckoutRegistry.shared.isHeld(documentId: "deck/specs/lapse-shared", target: target,
+                                                            holder: TestHost.holder),
+                     "a second pane's own claim on the same key must survive this pane's own lapse")
+    }
+
+    /// A lapsed pane that later closes must not drop its claim a second
+    /// time: the 404 already unregistered it, so a second unregister in
+    /// `releaseLease` would take the other open pane's claim with it
+    /// (CQ·193 review).
+    @MainActor
+    func testALapsedPaneClosingLeavesASecondPanesClaimRegistered() async throws {
+        let target = TestHost.unreachableTarget
+        let document = KnowledgeBase.CheckedOutDocument(
+            id: "deck/specs/cq193-lapse-close", content: "# A\n", contentSha: "sha",
+            sourceRef: "projects/deck/specs/cq193-lapse-close.md", target: target, holder: TestHost.holder)
+        LibraryCheckoutRegistry.shared.register(
+            documentId: document.id, target: document.target, holder: document.holder)
+        LibraryCheckoutRegistry.shared.register(
+            documentId: document.id, target: document.target, holder: document.holder)
+        defer {
+            while LibraryCheckoutRegistry.shared.isHeld(
+                documentId: document.id, target: document.target, holder: document.holder) {
+                LibraryCheckoutRegistry.shared.unregister(
+                    documentId: document.id, target: document.target, holder: document.holder)
+            }
+        }
+
+        let lapsingPane = EditorModel()
+        lapsingPane.checkedOut = document
+        let calls = CheckinCalls()
+        lapsingPane.checkinReferenceDocument = { target, docId, holder in calls.record(target, docId, holder) }
+        lapsingPane.heartbeatInterval = .milliseconds(10)
+        lapsingPane.heartbeatReferenceDocument = { _, _, _ in
+            throw LibraryClient.FetchError.libraryRefused(status: 404, body: "{}")
+        }
+        lapsingPane.startHeartbeat(target: target, docId: document.id, holder: document.holder)
+        try await pollUntil { lapsingPane.libraryCheckoutLapsed }
+
+        lapsingPane.releaseLease()
+
+        XCTAssertTrue(LibraryCheckoutRegistry.shared.isHeld(
+            documentId: document.id, target: document.target, holder: document.holder),
+            "the second pane's claim must survive the lapsed pane closing")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(calls.count, 0, "a lapsed pane must not check in a checkout")
+    }
+
+    // MARK: - Two panes on one document share the Library checkout (CQ·193)
+
+    /// A thread-safe recorder for `EditorModel.checkinReferenceDocument` —
+    /// the same shape `HeartbeatCalls` gives the heartbeat seam, needed here
+    /// because `releaseLease` runs the checkin off the main actor.
+    private final class CheckinCalls: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls: [(SSHTarget, String, String)] = []
+
+        func record(_ target: SSHTarget, _ docId: String, _ holder: String) {
+            lock.lock()
+            calls.append((target, docId, holder))
+            lock.unlock()
+        }
+
+        var count: Int {
+            lock.lock(); defer { lock.unlock() }
+            return calls.count
+        }
+    }
+
+    /// `Deck`'s windows are a plain `WindowGroup`, so the same KB document can
+    /// be open in two panes under the same holder, each its own `EditorModel`
+    /// with its own claim registered at `load`. Closing the first of the two
+    /// must leave the shared key registered for the second, and must not
+    /// check the Library's own checkout back in — doing either would strand
+    /// the still-open second pane with no live checkout at its next
+    /// heartbeat or save.
+    @MainActor
+    func testClosingTheFirstOfTwoPanesLeavesTheKeyRegisteredAndChecksInNothing() async throws {
+        let target = TestHost.unreachableTarget
+        let document = KnowledgeBase.CheckedOutDocument(
+            id: "deck/specs/cq193-first", content: "# A\n", contentSha: "sha",
+            sourceRef: "projects/deck/specs/cq193-first.md", target: target, holder: TestHost.holder)
+        LibraryCheckoutRegistry.shared.register(
+            documentId: document.id, target: document.target, holder: document.holder)
+        LibraryCheckoutRegistry.shared.register(
+            documentId: document.id, target: document.target, holder: document.holder)
+        defer {
+            while LibraryCheckoutRegistry.shared.isHeld(
+                documentId: document.id, target: document.target, holder: document.holder) {
+                LibraryCheckoutRegistry.shared.unregister(
+                    documentId: document.id, target: document.target, holder: document.holder)
+            }
+        }
+
+        let firstPane = EditorModel()
+        firstPane.checkedOut = document
+        let calls = CheckinCalls()
+        firstPane.checkinReferenceDocument = { target, docId, holder in calls.record(target, docId, holder) }
+
+        firstPane.releaseLease()
+
+        XCTAssertTrue(LibraryCheckoutRegistry.shared.isHeld(
+            documentId: document.id, target: document.target, holder: document.holder),
+            "the second pane's claim must still be registered")
+        // The checkin, unlike the unregister above, runs off the main actor
+        // inside `releaseLease`'s detached task — give it room to run before
+        // asserting it never fired.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(calls.count, 0,
+                       "closing the first of two panes must not check in a checkout the second still holds")
+    }
+
+    /// The second pane's release is the one that finds no claim left on the
+    /// key, and is the one that checks the Library's own checkout back in.
+    @MainActor
+    func testClosingTheSecondOfTwoPanesChecksInExactlyOnce() async throws {
+        let target = TestHost.unreachableTarget
+        let document = KnowledgeBase.CheckedOutDocument(
+            id: "deck/specs/cq193-second", content: "# A\n", contentSha: "sha",
+            sourceRef: "projects/deck/specs/cq193-second.md", target: target, holder: TestHost.holder)
+        LibraryCheckoutRegistry.shared.register(
+            documentId: document.id, target: document.target, holder: document.holder)
+        LibraryCheckoutRegistry.shared.register(
+            documentId: document.id, target: document.target, holder: document.holder)
+        defer {
+            while LibraryCheckoutRegistry.shared.isHeld(
+                documentId: document.id, target: document.target, holder: document.holder) {
+                LibraryCheckoutRegistry.shared.unregister(
+                    documentId: document.id, target: document.target, holder: document.holder)
+            }
+        }
+
+        let calls = CheckinCalls()
+        let firstPane = EditorModel()
+        firstPane.checkedOut = document
+        firstPane.checkinReferenceDocument = { target, docId, holder in calls.record(target, docId, holder) }
+        firstPane.releaseLease()
+
+        let secondPane = EditorModel()
+        secondPane.checkedOut = document
+        secondPane.checkinReferenceDocument = { target, docId, holder in calls.record(target, docId, holder) }
+        secondPane.releaseLease()
+
+        try await pollUntil { calls.count > 0 }
+        XCTAssertFalse(LibraryCheckoutRegistry.shared.isHeld(
+            documentId: document.id, target: document.target, holder: document.holder))
+        // Settle any straggler the way `testTheHeartbeatTimerStopsOnRelease` does,
+        // so a second, unwanted checkin would still be caught.
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(calls.count, 1, "the last pane's release is the one that checks the checkout in")
+    }
+
+    /// A transport failure (ssh, the network) is not a lapse: the next tick
+    /// gets another chance rather than the reader being told to reopen a
+    /// document whose checkout may still be perfectly live.
+    @MainActor
+    func testATransportFailureHeartbeatLeavesTheBannerAlone() async throws {
+        let model = EditorModel()
+        await model.load(ref: .kb(id: "deck/specs/a"), appearance: .light,
+                         server: WorkingCopyServer(), target: TestHost.unreachableTarget)
+        let calls = HeartbeatCalls()
+        model.heartbeatInterval = .milliseconds(10)
+        model.heartbeatReferenceDocument = { target, docId, holder in
+            calls.record(target, docId, holder)
+            throw LibraryClient.FetchError.unexpectedResponse("ssh: timed out")
+        }
+        model.startHeartbeat(target: TestHost.unreachableTarget, docId: "deck/specs/a",
+                             holder: TestHost.holder)
+
+        try await pollUntil { calls.count >= 3 }
+        model.releaseLease()
+
+        XCTAssertEqual(model.status, .clean,
+                       "a transport failure must not surface the lapsed banner")
     }
 
     // MARK: - What the page may load

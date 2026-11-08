@@ -108,14 +108,14 @@ final class RemoveCrewTests: XCTestCase {
         // rather than one that happens to collide with a shipped
         // catalog row and gets silently skipped by `addCrew`'s own
         // duplicate guard.
-        let nyh = Crew(id: "nyh", displayName: "NYH Studio", workingDirectory: "~/Convivy/nyh",
-                       sessions: [PinnedSession(name: "nyh--research", displayName: "research")])
+        let lakeside = Crew(id: "lakeside", displayName: "Lakeside Studio", workingDirectory: "~/Convivy/lakeside",
+                       sessions: [PinnedSession(name: "lakeside--research", displayName: "research")])
         store.addCrew(Crew(id: "ask", displayName: "Ask"))
-        store.addCrew(nyh)
+        store.addCrew(lakeside)
 
         store.removeCrew(SessionRef(host: nil, name: "ask"))
 
-        XCTAssertEqual(store.configuration.railSessions?.first { $0.id == "nyh" }, nyh)
+        XCTAssertEqual(store.configuration.railSessions?.first { $0.id == "lakeside" }, lakeside)
     }
 
     /// A crew's pinned children live NESTED inside its own row

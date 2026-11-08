@@ -72,9 +72,25 @@ struct HostsSettingsView: View {
 
             if let entry = selection.flatMap({ name in hosts.first { $0.name == name } }) {
                 Divider()
-                detail(for: entry)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
+                // ITS OWN SCROLL AREA, separate from the list's
+                // (issue_01M5CZ5JF1X2W56FFMAQ1Y6E7D). A tall host — every
+                // field filled, a desktop-session line, a missing-Builder-
+                // server offer, a test outcome, the rollover section — used
+                // to overflow the window with nothing to scroll, because the
+                // VStack this sits in had no scroll view of its own at all.
+                // `.layoutPriority(1)` over the list's default 0 is what makes
+                // the list give ground FIRST: the list still claims its own
+                // floor below, `Self.minimumListHeight`, but everything past
+                // that goes to the detail panel rather than being split
+                // evenly between the two.
+                ScrollView {
+                    detail(for: entry)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                }
+                .scrollIndicators(.visible)
+                .frame(maxHeight: .infinity)
+                .layoutPriority(1)
             }
         }
         .frame(minWidth: 460, minHeight: 420, alignment: .topLeading)
@@ -360,6 +376,16 @@ struct HostsSettingsView: View {
 
     // MARK: - The list
 
+    /// Three rows' worth of height, so a selected host's own detail — however
+    /// tall — can never squeeze the list away entirely
+    /// (issue_01M5CZ5JF1X2W56FFMAQ1Y6E7D): there is always enough of the list
+    /// left to click another host, or to click below the rows and clear the
+    /// selection (`List`'s own empty-area-deselects behaviour, which had
+    /// nothing to click when the list had collapsed to nothing). Measured
+    /// against the section header (about 33pt) plus three rows (about 32pt
+    /// each) at this tab's own type size.
+    private static let minimumListHeight: CGFloat = 130
+
     private var list: some View {
         List(selection: $selection) {
             Section {
@@ -374,7 +400,7 @@ struct HostsSettingsView: View {
                     .padding(.bottom, 5)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: Self.minimumListHeight, maxHeight: .infinity)
         .listStyle(.inset)
         .alternatingRowBackgrounds()
     }
@@ -475,8 +501,24 @@ struct HostsSettingsView: View {
     @ViewBuilder
     private func detail(for entry: HostEntry) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(entry.name)
-                .font(.headline)
+            HStack {
+                Text(entry.name)
+                    .font(.headline)
+                Spacer(minLength: 8)
+                // A deterministic way back whatever the detail's own height —
+                // the list's empty area clears the selection too, but only
+                // once there is enough of the list left to click
+                // (issue_01M5CZ5JF1X2W56FFMAQ1Y6E7D).
+                Button {
+                    selection = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Close \(entry.name)\u{2019}s details")
+                .accessibilityLabel("Close details")
+            }
 
             LabeledContent("Name:") {
                 CommittingField(

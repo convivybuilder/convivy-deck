@@ -5,7 +5,7 @@ import Foundation
 /// WHY THIS IS SEPARATE FROM `Crew`. A rail row is a session you keep in
 /// front of you; a catalog entry is one you can summon. They carry nearly the
 /// same fields and mean different things — the operator, 2026-07-23: "we have co's set up
-/// for NYH studio, write-better, ask, etc. And no way to launch them from Deck.
+/// for Lakeside studio, write-better, ask, etc. And no way to launch them from Deck.
 /// But we don't always need every co in the rail."
 ///
 /// The extra field is `command`. A catalog row usually omits it and gets `co`;
@@ -25,7 +25,7 @@ struct LaunchableSession: Identifiable, Equatable {
     /// This is where the two structs stop agreeing, and deliberately. A rail row
     /// with no command takes `Crew.defaultLaunchCommand` (`co -r`) because
     /// every rail row is a crew co that reads the KB. A catalog row is any
-    /// session at all — `nyh`, `write-better`, `ask` — so there is nothing to
+    /// session at all — `lakeside`, `write-better`, `ask` — so there is nothing to
     /// refresh by default, and a row that wants the refresh says `co -r`.
     var command: String?
 

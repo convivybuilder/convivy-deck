@@ -18,7 +18,7 @@ final class CrewRepoTests: XCTestCase {
     }
 
     func testAFileWithNoRepoKeyDecodesToNil() throws {
-        let file = try write(#"{"rail": [{"session": "vivy"}]}"#)
+        let file = try write(#"{"rail": [{"session": "orchard"}]}"#)
         XCTAssertNil(ThemeConfiguration.load(from: file).railSessions?.first?.repo)
     }
 
@@ -28,17 +28,17 @@ final class CrewRepoTests: XCTestCase {
     }
 
     func testACatalogRowsRepoDecodes() throws {
-        let file = try write(#"{"catalog": [{"session": "nyh", "repo": "convivy/vivy"}]}"#)
-        XCTAssertEqual(ThemeConfiguration.load(from: file).catalog.first?.repo, "convivy/vivy")
+        let file = try write(#"{"catalog": [{"session": "lakeside", "repo": "convivy/orchard"}]}"#)
+        XCTAssertEqual(ThemeConfiguration.load(from: file).catalog.first?.repo, "convivy/orchard")
     }
 
     /// A repo missing the slash costs the row its Pull Requests panel, not
     /// its place on the rail — the same "field costs itself" pattern
     /// `project`/`host` already get.
     func testARailRowWithNoSlashKeepsTheRowButDropsTheRepo() throws {
-        let file = try write(#"{"rail": [{"session": "vivy", "repo": "convivy-deck"}]}"#)
+        let file = try write(#"{"rail": [{"session": "orchard", "repo": "convivy-deck"}]}"#)
         let row = try XCTUnwrap(ThemeConfiguration.load(from: file).railSessions?.first)
-        XCTAssertEqual(row.id, "vivy")
+        XCTAssertEqual(row.id, "orchard")
         XCTAssertNil(row.repo)
     }
 
@@ -46,15 +46,15 @@ final class CrewRepoTests: XCTestCase {
     /// panel, not its place on the rail — load-bearing here specifically
     /// because `repo` reaches an unquoted remote URL (`PRLadder.fetchLadder`).
     func testARailRowWithAnInjectionShapedRepoKeepsTheRowButDropsTheRepo() throws {
-        let file = try write(#"{"rail": [{"session": "vivy", "repo": "convivy/deck; rm -rf ~"}]}"#)
+        let file = try write(#"{"rail": [{"session": "orchard", "repo": "convivy/deck; rm -rf ~"}]}"#)
         let row = try XCTUnwrap(ThemeConfiguration.load(from: file).railSessions?.first)
-        XCTAssertEqual(row.id, "vivy")
+        XCTAssertEqual(row.id, "orchard")
         XCTAssertNil(row.repo)
     }
 
     /// An empty segment on either side of the slash is dropped the same way.
     func testARailRowWithAnEmptySegmentDropsTheRepo() throws {
-        let file = try write(#"{"rail": [{"session": "vivy", "repo": "convivy/"}]}"#)
+        let file = try write(#"{"rail": [{"session": "orchard", "repo": "convivy/"}]}"#)
         let row = try XCTUnwrap(ThemeConfiguration.load(from: file).railSessions?.first)
         XCTAssertNil(row.repo)
     }

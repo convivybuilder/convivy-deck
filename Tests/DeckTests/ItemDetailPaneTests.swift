@@ -604,4 +604,161 @@ final class ItemDetailPaneTests: XCTestCase {
         XCTAssertFalse(folded.contains("BACKGROUND-CLOSE"))
         XCTAssertTrue(folded.contains("<p>body text</p>"))
     }
+
+    // MARK: - Refresh (CQ·185)
+
+    /// A refresh re-runs the item load for the same id and target, and
+    /// picks up a changed field — here, the body — on success.
+    @MainActor
+    func testRefreshReReadsTheSameItemAndPicksUpAChange() async {
+        let model = ItemDetailModel()
+        model.fetchDetail = { _, id in LibraryClient.CorrectionDetail(id: id, title: "A bug", body: "first") }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_01ABC", target: TestHost.target, appearance: .light)
+        XCTAssertEqual(model.detail?.body, "first")
+
+        model.fetchDetail = { _, id in LibraryClient.CorrectionDetail(id: id, title: "A bug", body: "second") }
+        await model.refresh()
+        XCTAssertEqual(model.detail?.body, "second")
+        XCTAssertNil(model.refreshError)
+    }
+
+    /// A failed refresh keeps the last content on screen — `detail` and
+    /// `html` are untouched — and reports the failure separately, rather
+    /// than replacing the pane with an error page the way a failed first
+    /// load does.
+    @MainActor
+    func testAFailedRefreshKeepsTheLastContentAndReportsTheFailure() async {
+        let model = ItemDetailModel()
+        model.fetchDetail = { _, id in LibraryClient.CorrectionDetail(id: id, title: "A bug", body: "first") }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_01ABC", target: TestHost.target, appearance: .light)
+        let htmlBeforeRefresh = model.html
+
+        model.fetchDetail = { _, _ in throw LibraryClient.FetchError.libraryRefused(status: 500, body: "boom") }
+        await model.refresh()
+
+        XCTAssertEqual(model.detail?.body, "first")
+        XCTAssertEqual(model.html, htmlBeforeRefresh)
+        XCTAssertNotNil(model.refreshError)
+    }
+
+    /// No item loaded yet means nothing to refresh.
+    @MainActor
+    func testRefreshWithNothingLoadedIsANoOp() async {
+        let model = ItemDetailModel()
+        model.fetchDetail = { _, id in
+            XCTFail("nothing was loaded, so refresh should not fetch")
+            return LibraryClient.CorrectionDetail(id: id)
+        }
+        await model.refresh()
+        XCTAssertNil(model.detail)
+    }
+
+    // MARK: - Approve/Decline on a proposed epic (CQ·186)
+
+    /// The gate `approvalSection` reads: an epic whose maturity is
+    /// `proposed` or unset (including whitespace-only) offers the
+    /// controls; anything else — a non-epic, or an epic already decided —
+    /// does not.
+    func testShowsApprovalControlsOnlyForAProposedOrUnsetEpic() {
+        XCTAssertTrue(ItemDetailPane.showsApprovalControls(type: "epic", maturity: "proposed"))
+        XCTAssertTrue(ItemDetailPane.showsApprovalControls(type: "epic", maturity: nil))
+        XCTAssertTrue(ItemDetailPane.showsApprovalControls(type: "epic", maturity: ""))
+        XCTAssertTrue(ItemDetailPane.showsApprovalControls(type: "epic", maturity: "  "))
+        XCTAssertFalse(ItemDetailPane.showsApprovalControls(type: "epic", maturity: "approved"))
+        XCTAssertFalse(ItemDetailPane.showsApprovalControls(type: "epic", maturity: "declined"))
+        XCTAssertFalse(ItemDetailPane.showsApprovalControls(type: "bug", maturity: "proposed"))
+        XCTAssertFalse(ItemDetailPane.showsApprovalControls(type: nil, maturity: nil))
+    }
+
+    /// Approve calls the shared path (`onApprove`, wired to
+    /// `CockpitModel.writeApprovalFromItemPane`) with the loaded item's id.
+    @MainActor
+    func testApproveCallsTheSharedPathWithTheItemsId() async {
+        let model = ItemDetailModel()
+        model.fetchDetail = { _, id in
+            LibraryClient.CorrectionDetail(id: id, title: "An epic", type: "epic", maturity: "proposed")
+        }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_EPIC", target: TestHost.target, appearance: .light)
+
+        var calledWith: String?
+        await model.approve { id in calledWith = id; return .wrote }
+        XCTAssertEqual(calledWith, "issue_EPIC")
+    }
+
+    /// Decline calls the same shared path with the item's id.
+    @MainActor
+    func testDeclineCallsTheSharedPathWithTheItemsId() async {
+        let model = ItemDetailModel()
+        model.fetchDetail = { _, id in
+            LibraryClient.CorrectionDetail(id: id, title: "An epic", type: "epic", maturity: "proposed")
+        }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_EPIC", target: TestHost.target, appearance: .light)
+
+        var calledWith: String?
+        await model.decline { id in calledWith = id; return .wrote }
+        XCTAssertEqual(calledWith, "issue_EPIC")
+    }
+
+    /// A successful Approve reloads the item, so its new maturity draws.
+    @MainActor
+    func testApproveSuccessReloadsTheItem() async {
+        let model = ItemDetailModel()
+        model.fetchDetail = { _, id in
+            LibraryClient.CorrectionDetail(id: id, title: "An epic", type: "epic", maturity: "proposed")
+        }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_EPIC", target: TestHost.target, appearance: .light)
+
+        model.fetchDetail = { _, id in
+            LibraryClient.CorrectionDetail(id: id, title: "An epic", type: "epic", maturity: "approved")
+        }
+        await model.approve { _ in .wrote }
+        XCTAssertEqual(model.detail?.maturity, "approved")
+        XCTAssertNil(model.approvalWriteRefusal)
+    }
+
+    /// A refused Approve shows the Library's refusal and does not reload.
+    @MainActor
+    func testApproveRefusalIsShownAndTheItemIsNotReloaded() async {
+        let model = ItemDetailModel()
+        model.fetchDetail = { _, id in
+            LibraryClient.CorrectionDetail(id: id, title: "An epic", type: "epic", maturity: "proposed")
+        }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_EPIC", target: TestHost.target, appearance: .light)
+
+        model.fetchDetail = { _, id in
+            XCTFail("a refused write must not reload the item")
+            return LibraryClient.CorrectionDetail(id: id)
+        }
+        await model.approve { _ in .refused("an agent is holding this epic") }
+        XCTAssertEqual(model.approvalWriteRefusal, "an agent is holding this epic")
+        XCTAssertEqual(model.detail?.maturity, "proposed")
+    }
+
+    /// A write never attempted (another approve/decline already in flight,
+    /// `deck-reviewer`'s finding on PR #399) says why and reloads nothing —
+    /// the same "changes nothing" behavior a refusal gets, distinct from a
+    /// successful write only in that it must never be read as one.
+    @MainActor
+    func testApproveNotAttemptedShowsWhyAndDoesNotReload() async {
+        let model = ItemDetailModel()
+        model.fetchDetail = { _, id in
+            LibraryClient.CorrectionDetail(id: id, title: "An epic", type: "epic", maturity: "proposed")
+        }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_EPIC", target: TestHost.target, appearance: .light)
+
+        model.fetchDetail = { _, id in
+            XCTFail("a not-attempted write must not reload the item")
+            return LibraryClient.CorrectionDetail(id: id)
+        }
+        await model.approve { _ in .notAttempted("Another approval or decline is already in flight.") }
+        XCTAssertEqual(model.approvalWriteRefusal, "Another approval or decline is already in flight.")
+        XCTAssertEqual(model.detail?.maturity, "proposed")
+    }
 }

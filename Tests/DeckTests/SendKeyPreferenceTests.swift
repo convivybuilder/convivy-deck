@@ -47,12 +47,12 @@ final class SendKeyPreferenceTests: XCTestCase {
         let file = url()
         try FileManager.default.createDirectory(
             at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try #"{"sendKey": "banana", "sessions": {"vivy": "azure"}}"#
+        try #"{"sendKey": "banana", "sessions": {"orchard": "azure"}}"#
             .write(to: file, atomically: true, encoding: .utf8)
 
         let loaded = ThemeConfiguration.load(from: file)
         XCTAssertEqual(loaded.sendKey, .default)
-        XCTAssertEqual(loaded.sessions[SessionRef(host: nil, name: "vivy")], "azure")
+        XCTAssertEqual(loaded.sessions[SessionRef(host: nil, name: "orchard")], "azure")
     }
 
     func testThePreferenceSurvivesSaveAndLoad() throws {

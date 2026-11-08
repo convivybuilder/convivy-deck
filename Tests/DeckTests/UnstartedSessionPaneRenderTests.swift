@@ -85,7 +85,7 @@ final class UnstartedSessionPaneRenderTests: XCTestCase {
     }
 
     private func stopped(_ configuration: ThemeConfiguration, canvas: RGB) -> some View {
-        StartSessionView(name: "Vivy", canvas: canvas, onStart: {}, onTerminal: {})
+        StartSessionView(name: "Orchard", canvas: canvas, onStart: {}, onTerminal: {})
             .surfaceAppearance(configuration.pinnedSurface(for: .conversation))
     }
 
@@ -187,7 +187,7 @@ final class UnstartedSessionPaneRenderTests: XCTestCase {
     func testMissingDirectoryPaneDrawsTheSessionCanvasUnderBuilderDefault() throws {
         let config = configuration(.builderDefault)
         let expected = canvas(config.appearance(for: .conversation, systemIsDark: false))
-        let view = MissingDirectoryView(name: "Vivy", folder: nil, canvas: expected, onTerminal: {})
+        let view = MissingDirectoryView(name: "Orchard", folder: nil, canvas: expected, onTerminal: {})
             .environmentObject(SettingsNavigation())
             .surfaceAppearance(config.pinnedSurface(for: .conversation))
         assertDraws(expected, try render(view))

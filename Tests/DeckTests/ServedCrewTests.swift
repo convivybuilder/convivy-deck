@@ -16,10 +16,10 @@ final class ServedCrewTests: XCTestCase {
     func testDecodesTheLiveEnvelope() {
         let rows = ServedCrew.decode(data("""
         {"crews": [
-          {"bead": "placard/bead/placard", "derived": ["project", "bead"],
-           "displayName": "Placard", "host": "mini", "id": "placard",
-           "project": "placard", "sessionId": "$58", "sessions": [],
-           "workingDirectory": "\(TestHost.homeRoot)/Convivy/placard"},
+          {"bead": "signpost/bead/signpost", "derived": ["project", "bead"],
+           "displayName": "Signpost", "host": "mini", "id": "signpost",
+           "project": "signpost", "sessionId": "$58", "sessions": [],
+           "workingDirectory": "\(TestHost.homeRoot)/Convivy/signpost"},
           {"bead": "company/bead/convivy-builder", "derived": ["project"],
            "displayName": "Shipwright", "host": "mini", "id": "shipwright",
            "project": "shipwright", "sessionId": "$59", "sessions": [],
@@ -28,13 +28,13 @@ final class ServedCrewTests: XCTestCase {
         """), host: TestHost.target)
 
         XCTAssertEqual(rows.count, 2)
-        XCTAssertEqual(rows[0].crewId, "placard")
-        XCTAssertEqual(rows[0].displayName, "Placard")
-        XCTAssertEqual(rows[0].workingDirectory, "\(TestHost.homeRoot)/Convivy/placard")
+        XCTAssertEqual(rows[0].crewId, "signpost")
+        XCTAssertEqual(rows[0].displayName, "Signpost")
+        XCTAssertEqual(rows[0].workingDirectory, "\(TestHost.homeRoot)/Convivy/signpost")
         XCTAssertEqual(rows[0].sessionId, "$58")
         XCTAssertEqual(rows[0].specHost, "mini")
-        XCTAssertEqual(rows[0].project, "placard")
-        XCTAssertEqual(rows[0].bead, "placard/bead/placard")
+        XCTAssertEqual(rows[0].project, "signpost")
+        XCTAssertEqual(rows[0].bead, "signpost/bead/signpost")
         XCTAssertEqual(rows[0].sessions, [])
         XCTAssertEqual(rows[0].derived, ["project", "bead"])
         XCTAssertEqual(rows[0].host, TestHost.target)
@@ -49,36 +49,36 @@ final class ServedCrewTests: XCTestCase {
     /// when a spec does name one.
     func testRepoDecodesWhenPresent() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "placard", "repo": "convivy/placard"}]}
+        {"crews": [{"id": "signpost", "repo": "convivy/signpost"}]}
         """), host: TestHost.target)
-        XCTAssertEqual(rows.first?.repo, "convivy/placard")
+        XCTAssertEqual(rows.first?.repo, "convivy/signpost")
     }
 
     // MARK: - the null/absent-field degrade, point by point
 
     func testEveryFieldButIdIsOptional() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "vivy-commercial"}]}
+        {"crews": [{"id": "orchard-commercial"}]}
         """), host: TestHost.target)
-        XCTAssertEqual(rows, [ServedCrew(crewId: "vivy-commercial", host: TestHost.target)])
+        XCTAssertEqual(rows, [ServedCrew(crewId: "orchard-commercial", host: TestHost.target)])
     }
 
     func testExplicitNullsDegradeTheSameAsAbsentFields() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "vivy-commercial", "displayName": null, "workingDirectory": null,
+        {"crews": [{"id": "orchard-commercial", "displayName": null, "workingDirectory": null,
                     "sessionId": null, "host": null, "project": null, "bead": null, "repo": null,
                     "sessions": null, "derived": null}]}
         """), host: TestHost.target)
-        XCTAssertEqual(rows, [ServedCrew(crewId: "vivy-commercial", host: TestHost.target)])
+        XCTAssertEqual(rows, [ServedCrew(crewId: "orchard-commercial", host: TestHost.target)])
     }
 
     /// Wrong-typed fields degrade to nil rather than crashing or coercing.
     func testWronglyTypedFieldsDegradeToNil() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "vivy-commercial", "displayName": 7, "sessionId": 58,
+        {"crews": [{"id": "orchard-commercial", "displayName": 7, "sessionId": 58,
                     "project": true, "repo": 5, "sessions": "not-an-array", "derived": "not-an-array"}]}
         """), host: TestHost.target)
-        XCTAssertEqual(rows, [ServedCrew(crewId: "vivy-commercial", host: TestHost.target)])
+        XCTAssertEqual(rows, [ServedCrew(crewId: "orchard-commercial", host: TestHost.target)])
     }
 
     // MARK: - a row missing id costs only itself
@@ -86,23 +86,23 @@ final class ServedCrewTests: XCTestCase {
     func testARowMissingIdIsSkippedButOthersAreKept() {
         let rows = ServedCrew.decode(data("""
         {"crews": [{"displayName": "No id here"},
-                    {"id": "placard", "displayName": "Placard"}]}
+                    {"id": "signpost", "displayName": "Signpost"}]}
         """), host: TestHost.target)
-        XCTAssertEqual(rows.map(\.crewId), ["placard"])
+        XCTAssertEqual(rows.map(\.crewId), ["signpost"])
     }
 
     func testAnEmptyIdIsSkipped() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": ""}, {"id": "placard"}]}
+        {"crews": [{"id": ""}, {"id": "signpost"}]}
         """), host: TestHost.target)
-        XCTAssertEqual(rows.map(\.crewId), ["placard"])
+        XCTAssertEqual(rows.map(\.crewId), ["signpost"])
     }
 
     func testANonObjectRowIsSkipped() {
         let rows = ServedCrew.decode(data("""
-        {"crews": ["not-an-object", {"id": "placard"}]}
+        {"crews": ["not-an-object", {"id": "signpost"}]}
         """), host: TestHost.target)
-        XCTAssertEqual(rows.map(\.crewId), ["placard"])
+        XCTAssertEqual(rows.map(\.crewId), ["signpost"])
     }
 
     // MARK: - only a malformed top-level payload fails
@@ -137,7 +137,7 @@ final class ServedCrewTests: XCTestCase {
     /// to a hand-edited config's own `workdir`.
     func testAnInvalidWorkingDirectoryDegradesToNilRatherThanFailingTheRow() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "placard", "workingDirectory": "not/absolute"}]}
+        {"crews": [{"id": "signpost", "workingDirectory": "not/absolute"}]}
         """), host: TestHost.target)
         XCTAssertEqual(rows.count, 1)
         XCTAssertNil(rows.first?.workingDirectory)
@@ -145,32 +145,32 @@ final class ServedCrewTests: XCTestCase {
 
     func testAValidWorkingDirectoryPassesThrough() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "placard", "workingDirectory": "\(TestHost.homeRoot)/Convivy/placard"}]}
+        {"crews": [{"id": "signpost", "workingDirectory": "\(TestHost.homeRoot)/Convivy/signpost"}]}
         """), host: TestHost.target)
-        XCTAssertEqual(rows.first?.workingDirectory, "\(TestHost.homeRoot)/Convivy/placard")
+        XCTAssertEqual(rows.first?.workingDirectory, "\(TestHost.homeRoot)/Convivy/signpost")
     }
 
     // MARK: - children
 
     func testDecodesChildSessions() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "placard",
-                    "sessions": [{"name": "placard--build", "displayName": "Build",
+        {"crews": [{"id": "signpost",
+                    "sessions": [{"name": "signpost--build", "displayName": "Build",
                                   "sessionId": "$19"}]}]}
         """), host: TestHost.target)
         XCTAssertEqual(rows.first?.sessions,
-                       [ServedCrew.Child(name: "placard--build", displayName: "Build", sessionId: "$19")])
+                       [ServedCrew.Child(name: "signpost--build", displayName: "Build", sessionId: "$19")])
     }
 
     /// A child missing `name` costs only itself, the same rule the crew row
     /// follows for `id`.
     func testAChildMissingNameIsSkippedButOthersAreKept() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "placard",
+        {"crews": [{"id": "signpost",
                     "sessions": [{"displayName": "No name"},
-                                 {"name": "placard--build"}]}]}
+                                 {"name": "signpost--build"}]}]}
         """), host: TestHost.target)
-        XCTAssertEqual(rows.first?.sessions.map(\.name), ["placard--build"])
+        XCTAssertEqual(rows.first?.sessions.map(\.name), ["signpost--build"])
     }
 
     // MARK: - shape/documents (steward-board proposal, 2026-09-09, phase A —
@@ -219,7 +219,7 @@ final class ServedCrewTests: XCTestCase {
     /// `[]` — the same empty-array default `sessions`/`derived` fall back to.
     func testShapeAndDocumentsDefaultWhenAbsent() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "placard"}]}
+        {"crews": [{"id": "signpost"}]}
         """), host: TestHost.target)
         XCTAssertNil(rows.first?.shape)
         XCTAssertEqual(rows.first?.documents, [])
@@ -229,7 +229,7 @@ final class ServedCrewTests: XCTestCase {
     /// `sessions` do above — the field costs itself, not the row.
     func testWronglyTypedShapeAndDocumentsDegrade() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "placard", "shape": 7, "documents": "not-an-array"}]}
+        {"crews": [{"id": "signpost", "shape": 7, "documents": "not-an-array"}]}
         """), host: TestHost.target)
         XCTAssertEqual(rows.count, 1)
         XCTAssertNil(rows.first?.shape)
@@ -240,17 +240,17 @@ final class ServedCrewTests: XCTestCase {
 
     func testDecodeStampsEveryRowWithTheGivenHost() {
         let rows = ServedCrew.decode(data("""
-        {"crews": [{"id": "placard"}]}
+        {"crews": [{"id": "signpost"}]}
         """), host: TestHost.secondaryTarget)
         XCTAssertEqual(rows.first?.host, TestHost.secondaryTarget)
     }
 
     func testIDDiffersByHostForTheSameCrewId() {
         let a = ServedCrew.decode(data("""
-        {"crews": [{"id": "placard"}]}
+        {"crews": [{"id": "signpost"}]}
         """), host: TestHost.target).first!
         let b = ServedCrew.decode(data("""
-        {"crews": [{"id": "placard"}]}
+        {"crews": [{"id": "signpost"}]}
         """), host: TestHost.secondaryTarget).first!
         XCTAssertNotEqual(a.id, b.id)
     }

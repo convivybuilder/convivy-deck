@@ -207,7 +207,7 @@ extension PaneCanvasTests {
     }
 
     func testALightCanvasIsNeverJustWhite() {
-        for session in ["deck", "steward", "vivy", "selector"] {
+        for session in ["deck", "steward", "orchard", "lantern"] {
             let bg = ThemeConfiguration.empty.theme(forSession: SessionRef(host: nil, name: session))
                 .palette(for: .light).background
             let tint = bg.canvasTint(for: .light, lift: ContentView.canvasLift,

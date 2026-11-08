@@ -29,7 +29,7 @@ final class DeckOpenRefValidationTests: XCTestCase {
     }
 
     func testValidPathURL() {
-        let path = "\(TestHost.homeRoot)/Convivy/vivy/README.md"
+        let path = "\(TestHost.homeRoot)/Convivy/orchard/README.md"
         let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
         let url = URL(string: "deck-open:?origin=path&ref=\(encoded)")!
         guard case .path(let p) = DeckOpenRef.validate(url, hosts: testHosts) else {
@@ -158,16 +158,16 @@ final class DeckOpenRefValidationTests: XCTestCase {
 
     func testPathIsNormalisedBeforeRootCheck() {
         let result = DeckOpenRef.validatePath(
-            "\(TestHost.homeRoot)/Convivy/deck/../hollis/file.md", allowedRoots: testRoots)
+            "\(TestHost.homeRoot)/Convivy/deck/../quarry/file.md", allowedRoots: testRoots)
         XCTAssertNotNil(result)
-        XCTAssertEqual(result, "\(TestHost.homeRoot)/Convivy/hollis/file.md")
+        XCTAssertEqual(result, "\(TestHost.homeRoot)/Convivy/quarry/file.md")
     }
 
     func testValidPathsAreAccepted() {
         XCTAssertNotNil(DeckOpenRef.validatePath(
-            "\(TestHost.homeRoot)/Convivy/vivy/README.md", allowedRoots: testRoots))
+            "\(TestHost.homeRoot)/Convivy/orchard/README.md", allowedRoots: testRoots))
         XCTAssertNotNil(DeckOpenRef.validatePath(
-            "\(TestHost.homeRoot)/Convivy/hollis/src/main.swift", allowedRoots: testRoots))
+            "\(TestHost.homeRoot)/Convivy/quarry/src/main.swift", allowedRoots: testRoots))
         XCTAssertNotNil(DeckOpenRef.validatePath(
             "\(TestHost.homeRoot)/Convivy/knowledge/projects/deck/specs/session-pane.md",
             allowedRoots: testRoots))
@@ -845,7 +845,7 @@ final class ViewerDownloadFilenameTests: XCTestCase {
     // MARK: - path ref
 
     func testPathRefFilenameIsBasename() {
-        let origin = DeckOpenRef.Origin.path(absolutePath: "\(TestHost.homeRoot)/Convivy/vivy/README.md")
+        let origin = DeckOpenRef.Origin.path(absolutePath: "\(TestHost.homeRoot)/Convivy/orchard/README.md")
         XCTAssertEqual(DeckOpenRef.suggestedFilename(for: origin), "README.md")
     }
 

@@ -133,7 +133,7 @@ final class DiscoveredSessionTests: XCTestCase {
     func testDecodeStampsEveryRowWithTheGivenHost() {
         let laptop = SSHTarget(user: "operator", host: "10.0.0.5")
         let rows = DiscoveredSession.decode(data("""
-        {"sessions": [{"name": "vivy"}, {"name": "ask"}]}
+        {"sessions": [{"name": "orchard"}, {"name": "ask"}]}
         """), host: laptop)
         XCTAssertEqual(rows.map(\.host), [laptop, laptop])
     }

@@ -105,4 +105,34 @@ final class SlateBadgeTests: XCTestCase {
         let unknownInk = SlateBadgeGlyph.ink(for: .unknown, on: surface)
         XCTAssertNotEqual(countInk, unknownInk)
     }
+
+    // MARK: - `SlateBadgeGlyph.groupTotalInk` (CQ·192)
+
+    /// The group heading's own ink for a `.count` total is its own colour,
+    /// not a session row's `attentionTextInk` — the confusion the operator named,
+    /// 2026-10-25, "they are sort of all in the same column" — and it still
+    /// clears the text floor on both rail backings the heading draws on.
+    func testGroupTotalInkDiffersFromAttentionTextInkAndClearsContrastOnBothBackings() {
+        for appearance: Appearance in [.light, .dark] {
+            let backing = RailRow.markBacking(appearance: appearance, isSelected: false,
+                                              accent: RGB(red: 0, green: 0, blue: 0))
+            let groupInk = SlateBadgeGlyph.groupTotalInk(for: .count(3), on: backing)
+            let sessionInk = ThemeRecipe.attentionTextInk(on: backing)
+            XCTAssertNotEqual(groupInk, sessionInk,
+                              "\(appearance) group total ink matched a session row's own ink")
+            XCTAssertGreaterThanOrEqual(groupInk.contrastRatio(against: backing),
+                                        ThemeRecipe.minimumTextContrast,
+                                        "\(appearance) group total ink under-contrasts the rail backing")
+        }
+    }
+
+    /// `.unknown` keeps the same caution ink a session row's own badge
+    /// uses — a doubt about the group's total reads the same as a doubt
+    /// about one session's.
+    func testGroupTotalInkForUnknownIsWarningInk() {
+        let backing = RailRow.markBacking(appearance: .light, isSelected: false,
+                                          accent: RGB(red: 0, green: 0, blue: 0))
+        XCTAssertEqual(SlateBadgeGlyph.groupTotalInk(for: .unknown, on: backing),
+                      ThemeRecipe.warningInk(on: backing))
+    }
 }

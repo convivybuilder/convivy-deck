@@ -12,7 +12,8 @@ final class BuilderServerInstallRunTests: XCTestCase {
         XCTAssertEqual(argv.first, "-t")
         XCTAssertTrue(argv.contains("ControlPath=none"))
         XCTAssertEqual(Array(argv.suffix(2)),
-                       ["builder@kestrel", "curl -fsSL https://convivybuilder.org/install.sh | sh"])
+                       ["builder@kestrel",
+                        #"exec "$SHELL" -lc 'curl -fsSL https://convivybuilder.org/install.sh | sh'"#])
         XCTAssertFalse(argv.contains { $0.contains("--release") })
         XCTAssertEqual(argv.filter { $0.contains("@") }, ["builder@kestrel"])
     }

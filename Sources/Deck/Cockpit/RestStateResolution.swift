@@ -26,7 +26,7 @@ enum RestStateResolution {
         /// Corrections Queue, Working documents).
         case board
         /// The minimal service panel — a crew that follows no Course by
-        /// design (ask, cfo, ea).
+        /// design (ask, ledger, aide).
         case service
     }
 

@@ -29,7 +29,7 @@ final class PinnedSessionConfigTests: XCTestCase {
         XCTAssertNil(row.parent)
     }
 
-    /// `CrewCatalog.known` no longer ships `vivy-commercial` or any other
+    /// `CrewCatalog.known` no longer ships `orchard-commercial` or any other
     /// row — it is empty (`deck/specs/running-deck-as-someone-else` §"The
     /// defaults name Convivy") — so an empty file's rail fallback has no
     /// rows to default at all.
@@ -81,11 +81,11 @@ final class PinnedSessionConfigTests: XCTestCase {
 
     func testParentIsDecodedButUnrelatedToRendering() throws {
         let file = try write("""
-        {"rail": [{"session": "vivy"}, {"session": "vivy-commercial", "parent": "vivy"}]}
+        {"rail": [{"session": "orchard"}, {"session": "orchard-commercial", "parent": "orchard"}]}
         """)
         let rail = try XCTUnwrap(ThemeConfiguration.load(from: file).railSessions)
-        XCTAssertEqual(rail.first { $0.id == "vivy-commercial" }?.parent, "vivy")
-        XCTAssertNil(rail.first { $0.id == "vivy" }?.parent)
+        XCTAssertEqual(rail.first { $0.id == "orchard-commercial" }?.parent, "orchard")
+        XCTAssertNil(rail.first { $0.id == "orchard" }?.parent)
     }
 
     func testADanglingOrMissingParentIsStillJustDecoded() throws {
@@ -139,14 +139,14 @@ final class PinnedSessionConfigTests: XCTestCase {
         config.railSessions = [
             Crew(id: "ask", displayName: "Ask",
                    sessions: [PinnedSession(name: "ask--research", displayName: "research")]),
-            Crew(id: "vivy-commercial", displayName: "Vivy Commercial", parent: "vivy"),
+            Crew(id: "orchard-commercial", displayName: "Orchard Commercial", parent: "orchard"),
         ]
         try config.save(to: file)
 
         let reloaded = try XCTUnwrap(ThemeConfiguration.load(from: file).railSessions)
         XCTAssertEqual(reloaded.first { $0.id == "ask" }?.sessions,
                        [PinnedSession(name: "ask--research", displayName: "research")])
-        XCTAssertEqual(reloaded.first { $0.id == "vivy-commercial" }?.parent, "vivy")
+        XCTAssertEqual(reloaded.first { $0.id == "orchard-commercial" }?.parent, "orchard")
     }
 
     /// A row with no children and no parent must not grow either key on save
@@ -289,15 +289,15 @@ final class PinnedSessionConfigTests: XCTestCase {
             {"session": "ask", "sessions": [
                 {"name": "ask--research"}, {"name": "ask--tax-2025"}
             ]},
-            {"session": "vivy"}
-        ], "catalog": [{"session": "nyh"}]}
+            {"session": "orchard"}
+        ], "catalog": [{"session": "lakeside"}]}
         """)
         let config = ThemeConfiguration.load(from: file)
         let rail = try XCTUnwrap(config.railSessions)
-        XCTAssertEqual(rail.map(\.id), ["ask", "vivy"])
+        XCTAssertEqual(rail.map(\.id), ["ask", "orchard"])
         XCTAssertEqual(rail.first { $0.id == "ask" }?.sessions.map(\.name),
                        ["ask--research", "ask--tax-2025"])
-        XCTAssertEqual(config.catalog.map(\.id), ["nyh"])
+        XCTAssertEqual(config.catalog.map(\.id), ["lakeside"])
     }
 
     /// First occurrence wins, checked by identity rather than just count: of

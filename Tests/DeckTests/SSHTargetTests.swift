@@ -75,10 +75,10 @@ final class SSHTargetTests: XCTestCase {
     /// `..` is rejected outright rather than normalised, since normalising it
     /// correctly is the harder job and nothing needs it.
     func testWorkingDirectoryRequiresAnAbsoluteOrHomePath() {
-        for path in ["work/vivy", "", "~operator/work", "\(TestHost.homeRoot)/../root"] {
+        for path in ["work/orchard", "", "~operator/work", "\(TestHost.homeRoot)/../root"] {
             XCTAssertThrowsError(try validateWorkingDirectory(path))
         }
-        for path in ["\(TestHost.homeRoot)/Convivy/deck", "~/work/vivy", "/"] {
+        for path in ["\(TestHost.homeRoot)/Convivy/deck", "~/work/orchard", "/"] {
             XCTAssertEqual(try validateWorkingDirectory(path), path)
         }
     }
@@ -103,7 +103,7 @@ final class SSHTargetTests: XCTestCase {
     }
 
     func testSessionNameAllowsCrewNamingConventions() throws {
-        for name in ["steward", "sous-chef", "co-vivy-2245", "convivy_deck"] {
+        for name in ["steward", "galley", "co-orchard-2245", "convivy_deck"] {
             XCTAssertEqual(try validateTmuxSessionName(name), name)
         }
     }

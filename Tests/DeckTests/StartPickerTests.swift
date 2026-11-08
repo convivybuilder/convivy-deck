@@ -5,57 +5,52 @@ import XCTest
 /// (`design/start-section/index.html`, `issue_01M1SV8QKJ7ADH87PCNC0Q0YE8`).
 /// `StartPickerView` itself is not reachable without a view-level test
 /// target, so this pins the filter's matching, the ↑↓ arithmetic, the
-/// running-entry exclusion, and the foot label — the four pieces that can
+/// choose-vs-launch routing, and the foot label — the four pieces that can
 /// be wrong without a screenshot showing it.
 final class StartPickerTests: XCTestCase {
     private func entry(_ id: String, _ name: String? = nil) -> LaunchableSession {
         LaunchableSession(id: id, displayName: name ?? id)
     }
 
-    // MARK: - availableEntries: the running-entry routing fix
+    // MARK: - choose: the select-vs-launch routing fix
 
-    /// The one correctness fix the issue ties to option C: a catalog entry
-    /// that is already running must not be offered to start again — it
-    /// belongs under `OTHER SESSIONS` (`RailView.otherSessions`) once
-    /// `RailView`'s own catalog-id filter there is gone, not here.
-    func testAvailableEntriesExcludesARunningEntry() {
-        let hollis = entry("hollis", "Hollis")
-        let keel = entry("keel", "Keel")
-        let result = StartPicker.availableEntries([hollis, keel]) { $0.id == "hollis" }
-        XCTAssertEqual(result.map(\.id), ["keel"])
+    /// `issue_01M5MME44FPVHRQB4KDBXZA5YR`: a catalog entry already running
+    /// selects its own ref, the same one `RailView.otherSessions` now
+    /// excludes it from the other side of, rather than launching a second
+    /// session.
+    func testChooseOfARunningEntrySelectsItsRef() {
+        let quarry = entry("quarry", "Quarry")
+        XCTAssertEqual(StartPicker.choose(quarry, isRunning: true), .select(quarry.ref))
     }
 
-    func testAvailableEntriesKeepsEveryEntryWhenNoneAreRunning() {
-        let entries = [entry("hollis"), entry("keel")]
-        let result = StartPicker.availableEntries(entries) { _ in false }
-        XCTAssertEqual(result.map(\.id), ["hollis", "keel"])
-    }
-
-    func testAvailableEntriesIsEmptyWhenEveryEntryIsRunning() {
-        let entries = [entry("hollis"), entry("keel")]
-        let result = StartPicker.availableEntries(entries) { _ in true }
-        XCTAssertTrue(result.isEmpty)
+    /// The earlier defect this must not bring back
+    /// (`issue_01M1SV8QKJ7ADH87PCNC0Q0YE8`): launching a catalog entry
+    /// still selects the ref it is about to start, so the pane that
+    /// attaches once it comes up is the same row the operator chose.
+    func testChooseOfAStoppedEntryLaunchesIt() {
+        let quarry = entry("quarry", "Quarry")
+        XCTAssertEqual(StartPicker.choose(quarry, isRunning: false), .launch(quarry))
     }
 
     // MARK: - filter: the filter field's matching
 
     func testFilterWithAnEmptyQueryReturnsEveryEntry() {
-        let entries = [entry("hollis", "Hollis"), entry("keel", "Keel")]
-        XCTAssertEqual(StartPicker.filter(entries, query: "").map(\.id), ["hollis", "keel"])
+        let entries = [entry("quarry", "Quarry"), entry("keel", "Keel")]
+        XCTAssertEqual(StartPicker.filter(entries, query: "").map(\.id), ["quarry", "keel"])
     }
 
     func testFilterWithAWhitespaceOnlyQueryReturnsEveryEntry() {
-        let entries = [entry("hollis", "Hollis"), entry("keel", "Keel")]
-        XCTAssertEqual(StartPicker.filter(entries, query: "   ").map(\.id), ["hollis", "keel"])
+        let entries = [entry("quarry", "Quarry"), entry("keel", "Keel")]
+        XCTAssertEqual(StartPicker.filter(entries, query: "   ").map(\.id), ["quarry", "keel"])
     }
 
     func testFilterMatchesASubstringCaseInsensitively() {
-        let entries = [entry("hollis", "Hollis"), entry("keel", "Keel")]
-        XCTAssertEqual(StartPicker.filter(entries, query: "OLL").map(\.id), ["hollis"])
+        let entries = [entry("quarry", "Quarry"), entry("keel", "Keel")]
+        XCTAssertEqual(StartPicker.filter(entries, query: "UAR").map(\.id), ["quarry"])
     }
 
     func testFilterWithNoMatchReturnsEmpty() {
-        let entries = [entry("hollis", "Hollis")]
+        let entries = [entry("quarry", "Quarry")]
         XCTAssertTrue(StartPicker.filter(entries, query: "zzz").isEmpty)
     }
 
@@ -103,7 +98,13 @@ final class StartPickerTests: XCTestCase {
     // MARK: - footLabel
 
     func testFootLabelAtRestNamesTheTotal() {
-        XCTAssertEqual(StartPicker.footLabel(matchCount: 16, totalCount: 16), "16 not running")
+        XCTAssertEqual(StartPicker.footLabel(matchCount: 16, totalCount: 16), "16 sessions")
+    }
+
+    /// The singular form, for the one-entry catalog — distinct from the
+    /// plural so the wording reads naturally at either count.
+    func testFootLabelAtRestWithOneEntryUsesTheSingular() {
+        XCTAssertEqual(StartPicker.footLabel(matchCount: 1, totalCount: 1), "1 session")
     }
 
     func testFootLabelWhileFilteredNamesBothCounts() {

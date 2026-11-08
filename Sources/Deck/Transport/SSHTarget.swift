@@ -117,7 +117,7 @@ func validateHostName(_ name: String) throws -> String {
 ///
 /// A PREFIX RATHER THAN A SUFFIX, so `tmux ls` groups them and a reaper can
 /// match them without knowing the fleet's session names. It also cannot collide
-/// with a fleet session: a rail row named `deck-shell-vivy` would have to be
+/// with a fleet session: a rail row named `deck-shell-orchard` would have to be
 /// configured deliberately, and the worst case is sharing a shell rather than
 /// touching an agent.
 let scratchShellPrefix = "deck-shell-"
@@ -258,6 +258,44 @@ func sshResolvedConfigArguments(
     let host = try validateHostAddress(target.host)
     return withDeckIdentity(
         ["-G", "-o", "ControlPath=\(controlPath)", "\(user)@\(host)"], home: home)
+}
+
+/// argv for the bounded no-op session `SessionAgent.run`'s recovery sends
+/// through an existing control socket before trusting `-O check`'s
+/// `confirmedAlive` on its own — see `SSHControlSocket.probe`. `ControlMaster=no`
+/// is the whole point: with a control socket already at `controlPath`, ssh
+/// rides it as a mux client regardless of this setting, and `ControlMaster=no`
+/// only forbids THIS invocation from becoming a master of its own if that
+/// socket turns out not to be one — so a master whose local mux answers but
+/// whose actual transport is dead fails this call exactly as it would fail a
+/// real request, rather than silently opening a fresh direct connection the
+/// way `ControlMaster=auto` would.
+func sshControlSocketProbeArguments(
+    target: SSHTarget, controlPath: String, home: String = NSHomeDirectory()
+) throws -> [String] {
+    let user = try validateHostUser(target.user)
+    let host = try validateHostAddress(target.host)
+    return withDeckIdentity([
+        "-o", "ControlPath=\(controlPath)",
+        "-o", "ControlMaster=no",
+        "\(user)@\(host)",
+        "true",
+    ], home: home)
+}
+
+/// argv for `ssh -O exit`, which asks the master at `controlPath` to stop —
+/// see `SSHControlSocket.stop`, the step between a probe that found the
+/// master unusable and forcibly deleting its socket file. A master that
+/// answers this cleanly has already removed its own socket by the time the
+/// call returns, which is what lets the caller skip `SSHControlSocket.clear`
+/// on this path.
+func sshControlSocketExitArguments(
+    target: SSHTarget, controlPath: String, home: String = NSHomeDirectory()
+) throws -> [String] {
+    let user = try validateHostUser(target.user)
+    let host = try validateHostAddress(target.host)
+    return withDeckIdentity(
+        ["-O", "exit", "-o", "ControlPath=\(controlPath)", "\(user)@\(host)"], home: home)
 }
 
 /// argv for `ssh -O cancel`, which asks whichever process holds the shared

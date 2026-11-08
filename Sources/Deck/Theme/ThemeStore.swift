@@ -60,7 +60,26 @@ final class ThemeStore: ObservableObject {
     /// these is a discrete click rather than a drag, and there is no continuous
     /// gesture to coalesce.
     func setRoster(_ roster: SessionRoster) {
-        commit(roster.applied(to: configuration))
+        var updated = roster.applied(to: configuration)
+        // Mirrors `removeCrew`'s own prune, for every path that can take a
+        // top-level crew off the rail through the roster editor (an unpin,
+        // a bulk remove) rather than through `removeCrew` directly — see
+        // that mutator's doc.
+        //
+        // MATCHED ON THE RESOLVED HOST (`CrewMerge.crewHostKey`), not a raw
+        // `.ref` — `roster.applied` writes `rail` sparse (`CrewMerge.sparse`
+        // drops a default-host row's `host` to nil), while a group's own
+        // members are stored resolved. Comparing raw refs failed every
+        // member of a default-host group and dropped it on any roster edit
+        // at all, pinned crew or not (CQ·189).
+        let rail = updated.railSessions ?? CrewCatalog.known
+        let liveTopLevelRefs = Set(
+            RailNesting.topLevelCrews(rail, hosts: updated.hosts, defaultHost: updated.defaultHost).map {
+                SessionRef(host: CrewMerge.crewHostKey(for: $0, hosts: updated.hosts, defaultHost: updated.defaultHost),
+                           name: $0.id)
+            })
+        updated.groups = pruningGroups(updated.groups, keeping: liveTopLevelRefs)
+        commit(updated)
     }
 
     /// Pins a newly spawned sibling session under its crew — see
@@ -77,7 +96,9 @@ final class ThemeStore: ObservableObject {
     func addPinnedSession(_ session: PinnedSession, toCrew crew: SessionRef) {
         var updated = configuration
         var rail = updated.railSessions ?? CrewCatalog.known
-        guard let index = rail.firstIndex(where: { $0.ref == crew }) else { return }
+        guard let index = rail.firstIndex(where: {
+            refMatches(crew, row: $0, hosts: updated.hosts, defaultHost: updated.defaultHost)
+        }) else { return }
         rail[index].sessions.append(session)
         updated.railSessions = rail
         commit(updated)
@@ -160,7 +181,9 @@ final class ThemeStore: ObservableObject {
     func removePinnedSession(_ name: String, fromCrew crew: SessionRef) {
         var updated = configuration
         var rail = updated.railSessions ?? CrewCatalog.known
-        guard let index = rail.firstIndex(where: { $0.ref == crew }) else { return }
+        guard let index = rail.firstIndex(where: {
+            refMatches(crew, row: $0, hosts: updated.hosts, defaultHost: updated.defaultHost)
+        }) else { return }
         let countBefore = rail[index].sessions.count
         rail[index].sessions.removeAll { $0.name == name }
         guard rail[index].sessions.count != countBefore else { return }
@@ -200,13 +223,19 @@ final class ThemeStore: ObservableObject {
         var updated = configuration
         var rail = updated.railSessions ?? CrewCatalog.known
         let countBefore = rail.count
-        rail.removeAll { $0.ref == crew }
+        rail.removeAll { refMatches(crew, row: $0, hosts: updated.hosts, defaultHost: updated.defaultHost) }
         // A genuine no-op — including "that crew was never on the rail" —
         // writes nothing at all, rather than materializing the shipped
         // catalog into an explicit `rail` key for a remove that changed
         // nothing.
         guard rail.count != countBefore else { return }
         updated.railSessions = rail
+        // Unpinning a crew takes it out of its group too (CQ·184): a
+        // member naming a crew no longer on the rail is otherwise only
+        // "ignored" by the epic's own degrade-gracefully rule, which would
+        // leave a stale reference sitting in `groups` until the crew is
+        // re-pinned and silently rejoins a group nobody chose for it again.
+        updated.groups = removingMember(crew, from: updated.groups)
         commit(updated)
     }
 
@@ -230,12 +259,163 @@ final class ThemeStore: ObservableObject {
     func renameCrew(_ crew: SessionRef, to displayName: String) {
         var updated = configuration
         var rail = updated.railSessions ?? CrewCatalog.known
-        guard let index = rail.firstIndex(where: { $0.ref == crew }) else { return }
+        guard let index = rail.firstIndex(where: {
+            refMatches(crew, row: $0, hosts: updated.hosts, defaultHost: updated.defaultHost)
+        }) else { return }
         let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, rail[index].displayName != trimmed else { return }
         rail[index].displayName = trimmed
         updated.railSessions = rail
         commit(updated)
+    }
+
+    /// Opens or folds a group — a click on its heading (toggling), or a
+    /// selection landing on one of its members while it is folded (forcing
+    /// it open, never closed). `group` is matched by full value, the same
+    /// identity `RailView` rendered it from, since a group carries no id of
+    /// its own; a mismatch (another edit beat this one to `configuration`)
+    /// is a no-op rather than a wrong group's fold flipping.
+    func setGroupFolded(_ group: CrewGroup, folded: Bool) {
+        var updated = configuration
+        guard let index = updated.groups.firstIndex(of: group), group.folded != folded else { return }
+        updated.groups[index].folded = folded
+        commit(updated)
+    }
+
+    // MARK: - Groups (CQ·184)
+
+    /// Matches a caller-supplied ref against a rail row on the RESOLVED
+    /// host, not the raw stored one. `row.host` can be sparse — nil for a
+    /// default-host row, the way `CrewMerge.sparse` leaves it once any
+    /// `setRoster` commit has run this session — while `ref` is typically
+    /// built from the merged crews list `ContentView` draws (`Crew.ref`),
+    /// which fills a served crew's host from its resolved target. Comparing
+    /// `ref` as written against `row.ref` failed that case outright: not a
+    /// mismatched group membership, but `removeCrew`/`setParent` finding no
+    /// row at all to act on (CQ·189).
+    private func refMatches(_ ref: SessionRef, row: Crew, hosts: [HostEntry], defaultHost: String?) -> Bool {
+        ref.name == row.id
+            && CrewMerge.resolvedHostKey(forHostName: ref.host, hosts: hosts, defaultHost: defaultHost)
+                == CrewMerge.crewHostKey(for: row, hosts: hosts, defaultHost: defaultHost)
+    }
+
+    /// Takes `crew` out of whatever group it belongs to, leaving every other
+    /// group untouched. Shared by every mutator below that moves a crew
+    /// somewhere else — "Remove from Group", a move into a different group,
+    /// `createGroup`'s own "take it out of its old group first" step, and
+    /// `removeCrew`/`setRoster` unpinning it from the rail altogether. A
+    /// group left with no members is dropped outright rather than kept as
+    /// an empty heading nothing could ever draw (CQ·184 bullet 1: "A group
+    /// that loses its last member through a move or a removal is deleted").
+    private func removingMember(_ crew: SessionRef, from groups: [CrewGroup]) -> [CrewGroup] {
+        groups.compactMap { group in
+            guard group.members.contains(crew) else { return group }
+            var updated = group
+            updated.members.removeAll { $0 == crew }
+            return updated.members.isEmpty ? nil : updated
+        }
+    }
+
+    /// The same pruning as `removingMember`, run over every group at once
+    /// against a set of still-live refs rather than one removed ref — what
+    /// `setRoster` needs, since a roster edit can take several crews off the
+    /// rail in one commit (a drag, a bulk unpin) and each one's membership
+    /// has to go the same way `removeCrew`'s single-crew path already does.
+    private func pruningGroups(_ groups: [CrewGroup], keeping liveRefs: Set<SessionRef>) -> [CrewGroup] {
+        groups.compactMap { group in
+            var updated = group
+            updated.members = group.members.filter { liveRefs.contains($0) }
+            return updated.members.isEmpty ? nil : updated
+        }
+    }
+
+    /// "New Group…" from a crew's rail context menu — creates a group
+    /// holding only `crew`, taking it out of whatever group it was already
+    /// in first (a crew can move straight from one group into a brand-new
+    /// one). A name that trims to empty, or already names another group, is
+    /// refused outright and nothing commits: `RailNesting.DrawItem`
+    /// identifies a group as `"group:<name>"`, so two groups sharing a name
+    /// would collide on SwiftUI list identity (PR #397's security review).
+    func createGroup(named name: String, firstMember crew: SessionRef) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !configuration.groups.contains(where: { $0.name == trimmed }) else { return }
+        var updated = configuration
+        updated.groups = removingMember(crew, from: updated.groups)
+        updated.groups.append(CrewGroup(name: trimmed, members: [crew], folded: false))
+        commit(updated)
+    }
+
+    /// "Move to Group ▸" — moves `crew` into the existing group named
+    /// `groupName`, taking it out of any group it already belonged to
+    /// first. A no-op when no group has that name — the menu only ever
+    /// offers a real one, so this is defence in depth against a stale
+    /// caller, the same posture every other mutator here takes.
+    func moveCrew(_ crew: SessionRef, toGroup groupName: String) {
+        guard configuration.groups.contains(where: { $0.name == groupName }) else { return }
+        var updated = configuration
+        updated.groups = removingMember(crew, from: updated.groups)
+        guard let index = updated.groups.firstIndex(where: { $0.name == groupName }) else { return }
+        if !updated.groups[index].members.contains(crew) {
+            updated.groups[index].members.append(crew)
+        }
+        commit(updated)
+    }
+
+    /// "Remove from Group" — a no-op for a crew that is not in any group.
+    func removeCrewFromGroup(_ crew: SessionRef) {
+        let before = configuration.groups
+        let after = removingMember(crew, from: before)
+        guard after != before else { return }
+        var updated = configuration
+        updated.groups = after
+        commit(updated)
+    }
+
+    /// Renames a group from Settings › Sessions. Refused the same way
+    /// `createGroup` refuses a name — empty, or already another group's —
+    /// and a no-op for a group not currently in `groups` (matched by value,
+    /// like `setGroupFolded`) or a name that is already exactly its own.
+    func renameGroup(_ group: CrewGroup, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != group.name else { return }
+        var updated = configuration
+        guard let index = updated.groups.firstIndex(of: group),
+              !updated.groups.contains(where: { $0.name == trimmed })
+        else { return }
+        updated.groups[index].name = trimmed
+        commit(updated)
+    }
+
+    /// Deletes a group from Settings › Sessions, leaving its members on the
+    /// rail exactly where they already sit — ungrouped, per the epic
+    /// specification: "Deleting a group leaves its members on the rail
+    /// ungrouped." A no-op for a group not currently in `groups`, matched
+    /// by value like `setGroupFolded`.
+    func deleteGroup(_ group: CrewGroup) {
+        var updated = configuration
+        guard let index = updated.groups.firstIndex(of: group) else { return }
+        updated.groups.remove(at: index)
+        commit(updated)
+    }
+
+    /// Settings › Sessions' up/down reorder — swaps `group` with whichever
+    /// top-level draw item sits immediately before (`up: true`) or after
+    /// (`up: false`) it, over `roster`'s own merged crews — the same ones
+    /// the rail itself draws, never `configuration.railSessions` directly,
+    /// so a crew served but not yet written into `rail` still moves with
+    /// its group. See `SessionRoster.movingGroup`'s doc for why that
+    /// distinction matters and how a crew with no `rail` row yet survives
+    /// the write. Persists through `setRoster`, the same materialize-sparse
+    /// path every other structural roster edit already takes. A no-op when
+    /// the group has no neighbor in that direction (already first/last) or
+    /// draws nowhere at all right now.
+    func moveGroup(_ group: CrewGroup, up: Bool, in roster: SessionRoster) {
+        var updated = roster
+        guard updated.movingGroup(
+            group, up: up, groups: configuration.groups,
+            hosts: configuration.hosts, defaultHost: configuration.defaultHost)
+        else { return }
+        setRoster(updated)
     }
 
     /// Adds a host from the Hosts tab's Add sheet — see
@@ -385,9 +565,25 @@ final class ThemeStore: ObservableObject {
     func setParent(_ parentId: String?, forCrew crew: SessionRef) {
         var updated = configuration
         var rail = updated.railSessions ?? CrewCatalog.known
-        guard let index = rail.firstIndex(where: { $0.ref == crew }) else { return }
+        guard let index = rail.firstIndex(where: {
+            refMatches(crew, row: $0, hosts: updated.hosts, defaultHost: updated.defaultHost)
+        }) else { return }
         rail[index].parent = parentId
         updated.railSessions = rail
+        // A grouped crew leaves its group the moment nesting actually takes
+        // it off the top level (CQ·184 follow-up) — `CrewGroup`'s own doc
+        // says membership is only ever a top-level ref, and once nested,
+        // the rail's context menu hides every group item for it
+        // (`isTopLevel` gates them off), leaving no UI path to clear a
+        // stale membership otherwise. Checked AFTER the write, the same way
+        // `isTopLevel` is always derived, rather than assumed from
+        // `parentId` being non-nil: a parent id that fails
+        // `nestingParent`'s own rule (no match, a cycle, another host)
+        // leaves `crew` top-level still, and its group membership
+        // untouched.
+        if !RailNesting.isTopLevel(rail[index], in: rail, hosts: updated.hosts, defaultHost: updated.defaultHost) {
+            updated.groups = removingMember(crew, from: updated.groups)
+        }
         commit(updated)
     }
 

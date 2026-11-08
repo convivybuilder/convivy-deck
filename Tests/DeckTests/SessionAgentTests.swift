@@ -12,9 +12,9 @@ final class SessionAgentTests: XCTestCase {
     // MARK: - argv
 
     func testStateArgumentsCarryTheControlMasterAndTheSession() throws {
-        let args = try SessionAgent.stateArguments(target: TestHost.target, session: "hollis")
+        let args = try SessionAgent.stateArguments(target: TestHost.target, session: "quarry")
         XCTAssertTrue(args.contains("ControlMaster=auto"))
-        XCTAssertEqual(args.suffix(2), ["state", "hollis"])
+        XCTAssertEqual(args.suffix(2), ["state", "quarry"])
     }
 
     /// A caller that names a host is addressed there — pinned for
@@ -22,10 +22,10 @@ final class SessionAgentTests: XCTestCase {
     /// `target:` was threaded through in phase 6a.
     func testAnExplicitTargetAddressesThatHost() throws {
         let target = SSHTarget(user: "operator", host: "10.0.0.5")
-        let single = try SessionAgent.stateArguments(target: target, session: "hollis")
+        let single = try SessionAgent.stateArguments(target: target, session: "quarry")
         XCTAssertTrue(single.contains("operator@10.0.0.5"))
 
-        let batched = try SessionAgent.statesArguments(target: target, sessions: ["hollis"])
+        let batched = try SessionAgent.statesArguments(target: target, sessions: ["quarry"])
         XCTAssertTrue(batched.contains("operator@10.0.0.5"))
     }
 
@@ -46,41 +46,41 @@ final class SessionAgentTests: XCTestCase {
         let crewsRoot = try SessionAgent.crewsRootArguments(target: target)
         XCTAssertTrue(crewsRoot.contains(addressed))
 
-        let send = try SessionAgent.sendArguments(target: target, session: "hollis")
+        let send = try SessionAgent.sendArguments(target: target, session: "quarry")
         XCTAssertTrue(send.contains(addressed))
 
-        let choose = try SessionAgent.chooseArguments(target: target, session: "hollis", choice: 1)
+        let choose = try SessionAgent.chooseArguments(target: target, session: "quarry", choice: 1)
         XCTAssertTrue(choose.contains(addressed))
 
-        let submit = try SessionAgent.submitArguments(target: target, session: "hollis")
+        let submit = try SessionAgent.submitArguments(target: target, session: "quarry")
         XCTAssertTrue(submit.contains(addressed))
 
-        let interrupt = try SessionAgent.interruptArguments(target: target, session: "hollis")
+        let interrupt = try SessionAgent.interruptArguments(target: target, session: "quarry")
         XCTAssertTrue(interrupt.contains(addressed))
 
-        let unqueue = try SessionAgent.unqueueArguments(target: target, session: "hollis")
+        let unqueue = try SessionAgent.unqueueArguments(target: target, session: "quarry")
         XCTAssertTrue(unqueue.contains(addressed))
 
-        let type = try SessionAgent.typeArguments(target: target, session: "hollis")
+        let type = try SessionAgent.typeArguments(target: target, session: "quarry")
         XCTAssertTrue(type.contains(addressed))
 
-        let focus = try SessionAgent.focusFreeTextArguments(target: target, session: "hollis")
+        let focus = try SessionAgent.focusFreeTextArguments(target: target, session: "quarry")
         XCTAssertTrue(focus.contains(addressed))
 
-        let key = try SessionAgent.keyArguments(target: target, session: "hollis", key: "Escape")
+        let key = try SessionAgent.keyArguments(target: target, session: "quarry", key: "Escape")
         XCTAssertTrue(key.contains(addressed))
 
-        let render = try SessionAgent.renderArguments(target: target, session: "hollis", appearance: .dark)
+        let render = try SessionAgent.renderArguments(target: target, session: "quarry", appearance: .dark)
         XCTAssertTrue(render.contains(addressed))
 
         let delta = try SessionAgent.deltaArguments(
-           target: target, session: "hollis", cursor: 0, appearance: .dark)
+           target: target, session: "quarry", cursor: 0, appearance: .dark)
         XCTAssertTrue(delta.contains(addressed))
 
-        let start = try SessionAgent.startArguments(target: target, session: "hollis")
+        let start = try SessionAgent.startArguments(target: target, session: "quarry")
         XCTAssertTrue(start.contains(addressed))
 
-        let stop = try SessionAgent.stopArguments(target: target, session: "hollis", kill: true)
+        let stop = try SessionAgent.stopArguments(target: target, session: "quarry", kill: true)
         XCTAssertTrue(stop.contains(addressed))
     }
 
@@ -538,6 +538,78 @@ final class SessionAgentTests: XCTestCase {
         XCTAssertNil(state.workingOn?.since)
     }
 
+    // MARK: - working_on_derived (the strip's fallback reading)
+
+    func testDecodesAWellFormedDispatchDerivedRecord() {
+        let state = decode("""
+            {"state":"working","working_on_derived":{"text":"rebase PR #318",
+             "derived_from":"agentctl spawn --task","age":12.5,"since":842.1}}
+            """)
+        XCTAssertEqual(state.workingOnDerived?.text, "rebase PR #318")
+        XCTAssertEqual(state.workingOnDerived?.derivedFrom, "agentctl spawn --task")
+        XCTAssertEqual(state.workingOnDerived?.age, 12.5)
+        XCTAssertEqual(state.workingOnDerived?.since, 842.1)
+    }
+
+    func testDecodesAWellFormedPromptDerivedRecord() {
+        let state = decode("""
+            {"state":"working","working_on_derived":{"text":"<task-notification>...</task-notification>",
+             "derived_from":"UserPromptSubmit","age":12.5,"since":842.1}}
+            """)
+        XCTAssertEqual(state.workingOnDerived?.derivedFrom, "UserPromptSubmit")
+    }
+
+    /// A mini that predates the field, or a reading it never assembled —
+    /// decodes to nil rather than throwing, the same floor every other
+    /// state field is held to.
+    func testAStateWithNoWorkingOnDerivedKeyStillDecodes() {
+        let state = decode(#"{"state":"idle"}"#)
+        XCTAssertNil(state.workingOnDerived)
+    }
+
+    /// A document shaped wrong for `working_on_derived` costs that one
+    /// field, never the state read — `text` and `derived_from` are both
+    /// required, so either missing decodes the whole record to nil.
+    func testAMalformedWorkingOnDerivedCostsTheFieldNotTheState() {
+        for json in [
+            #"{"state":"working","working_on_derived":"not an object"}"#,
+            #"{"state":"working","working_on_derived":{"text":"x"}}"#,
+            #"{"state":"working","working_on_derived":{"derived_from":"agentctl spawn --task"}}"#,
+            #"{"state":"working","working_on_derived":{"text":"","derived_from":"agentctl spawn --task"}}"#,
+            #"{"state":"working","working_on_derived":{"text":"x","derived_from":""}}"#,
+        ] {
+            let state = decode(json)
+            XCTAssertEqual(state.phase, .working, json)
+            XCTAssertNil(state.workingOnDerived, json)
+        }
+    }
+
+    /// `age`/`since` absent must never be invented — a reading with neither
+    /// draws no duration, the same rule `WorkingOn.since` follows.
+    func testAgeAndSinceAbsentDecodeToNilRatherThanZero() {
+        let state = decode("""
+            {"state":"working","working_on_derived":{"text":"rebase PR #318",
+             "derived_from":"agentctl spawn --task"}}
+            """)
+        XCTAssertEqual(state.workingOnDerived?.text, "rebase PR #318")
+        XCTAssertNil(state.workingOnDerived?.age)
+        XCTAssertNil(state.workingOnDerived?.since)
+    }
+
+    /// `-1e999` survives `JSONSerialization` as `-infinity` (a literal `NaN`
+    /// is rejected outright, and it refuses `1e999` too — see
+    /// `TypographyTests.testInfinityIsClampedToTheBounds`), so it is the one
+    /// non-finite value that genuinely reaches this decoder. `finiteNumber`
+    /// demotes the field to nil rather than drawing a nonsense duration.
+    func testNonFiniteAgeAndSinceDecodeToNil() {
+        let state = decode("""
+            {"state":"working","working_on_derived":{"text":"rebase PR #318",
+             "derived_from":"agentctl spawn --task","age":-1e999,"since":-1e999}}
+            """)
+        XCTAssertNil(state.workingOnDerived?.age)
+        XCTAssertNil(state.workingOnDerived?.since)
+    }
+
     // MARK: - ctx_pct and rollover (the rail's context meter)
 
     /// The brief `states` shape agent-platform#560 serves, captured from the
@@ -943,9 +1015,9 @@ final class SessionAgentRolloverTests: XCTestCase {
     func testArgvPutsTheActionAfterTheSessionName() throws {
         let target = SSHTarget(user: "operator", host: "10.0.0.5")
         for action in SessionAgent.RolloverAction.allCases {
-            let argv = try SessionAgent.rolloverArguments(target: target, session: "hollis", action: action)
+            let argv = try SessionAgent.rolloverArguments(target: target, session: "quarry", action: action)
             XCTAssertTrue(argv.contains("operator@10.0.0.5"), action.rawValue)
-            XCTAssertEqual(Array(argv.suffix(3)), ["rollover", "hollis", action.rawValue])
+            XCTAssertEqual(Array(argv.suffix(3)), ["rollover", "quarry", action.rawValue])
         }
     }
 
@@ -1180,16 +1252,16 @@ final class SessionAgentCrewsRootDecodingTests: XCTestCase {
 /// with itself; this proves it agrees with the mini.
 final class SessionAgentLiveShapeTests: XCTestCase {
     func testDecodesRealOutputFromTheMini() throws {
-        // Captured 2026-07-23 from `session-agent state hollis`.
+        // Captured 2026-07-23 from `session-agent state quarry`.
         let live = """
-            {"alive": true, "cwd": "\(TestHost.homeRoot)/Convivy/hollis", "gate": null,
+            {"alive": true, "cwd": "\(TestHost.homeRoot)/Convivy/quarry", "gate": null,
              "gate_ts": null, "last_event": "Notification", "last_event_age": 4038.2,
              "pane": "%154", "pid": 4738, "progressing": false, "reason": null,
-             "session": "hollis", "session_id": "6283a4ed-cde7-42e2-86db-5581fd2d4e73",
+             "session": "quarry", "session_id": "6283a4ed-cde7-42e2-86db-5581fd2d4e73",
              "state": "waiting", "transcript_age": 4004.1, "unparsed_records": 0}
             """
         let state = SessionState.decode(Data(live.utf8), fallbackSession: "fallback")
-        XCTAssertEqual(state.session, "hollis")
+        XCTAssertEqual(state.session, "quarry")
         XCTAssertEqual(state.phase, .waiting)
         XCTAssertTrue(state.alive)
         XCTAssertNil(state.gate)
