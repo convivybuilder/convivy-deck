@@ -287,7 +287,10 @@ struct SessionsSettingsView: View {
             .accessibilityValue(entry.isPinned ? "yes" : "no")
 
             Circle()
-                .fill(Color(configuration.theme(forSession: entry.ref)
+                .fill(Color(configuration.theme(
+                    forSession: entry.ref,
+                    servedTheme: { _ in roster.servedTheme(
+                        for: entry, hosts: configuration.hosts, defaultHost: configuration.defaultHost) })
                     .palette(for: appearance).cursor))
                 .frame(width: 8, height: 8)
                 .padding(.leading, railIndentsByRef[entry.ref] ?? 0)
@@ -400,6 +403,12 @@ struct SessionsSettingsView: View {
 
     // MARK: - The selected session
 
+    /// The folder `entry`'s matched served spec provides, if any — see
+    /// `SessionRoster.servedWorkingDirectory`'s doc.
+    private func servedWorkingDirectory(for entry: RosterEntry) -> String? {
+        roster.servedWorkingDirectory(for: entry, hosts: configuration.hosts, defaultHost: configuration.defaultHost)
+    }
+
     /// Laid out by hand rather than in a `Form`, because a `Form` brings its own
     /// scroll view and the list above is the one that must scroll.
     @ViewBuilder
@@ -419,6 +428,17 @@ struct SessionsSettingsView: View {
                         }
                     })
                     .id("folder-\(entry.ref.stringForm)")
+                    .disabled(servedWorkingDirectory(for: entry) != nil)
+            }
+            // The host's own crew spec wins over whatever is configured
+            // here (`CrewMerge.applying`'s doc), so an edit the field above
+            // would still accept is one the next merge throws away — say so
+            // rather than letting it look like it took effect.
+            if servedWorkingDirectory(for: entry) != nil {
+                Label("Set by the host's crew spec; this field has no effect "
+                      + "until the host stops serving a folder for \(entry.displayName).",
+                      systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             // The folder is checked where it is used, not where it is stored,
             // which is right for a hand-edited file and wrong for a window: a

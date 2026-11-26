@@ -665,11 +665,15 @@ struct ThemeConfiguration: Equatable {
         return trimmed
     }
 
-    /// Resolution order: an explicit mapping the user wrote, then — for a
-    /// sibling session with a crew — that crew's own resolved theme,
-    /// then the hashed default. A mapping naming a theme that does not exist
-    /// falls through the same way, rather than failing — a typo costs the
-    /// intended color, not the terminal.
+    /// Resolution order: an explicit mapping the user wrote, then the
+    /// session's own crew-served theme (agent-platform#1212's `theme` row —
+    /// see `Crew.servedTheme`), then — for a sibling session with a crew —
+    /// that crew's own resolved theme, then the hashed default. A mapping
+    /// naming a theme that does not exist falls through the same way,
+    /// rather than failing — a typo costs the intended color, not the
+    /// terminal. Matches the contract's own order for this field: "Deck
+    /// takes it after a pick in the laptop's own `theme.json` `sessions`
+    /// map and before its name-hash default."
     ///
     /// `fallbackParent` is the caller's job to supply: this type has no notion
     /// of the rail's crew/child structure, only of session-to-theme
@@ -677,6 +681,18 @@ struct ThemeConfiguration: Equatable {
     /// crew's ref for a child session and nil for everything else. A child
     /// with no theme of its own is meant to read as its crew's accent, not
     /// as a color hashed from its own, unrelated-looking name.
+    ///
+    /// `servedTheme` IS A LOOKUP, NOT A SINGLE VALUE, for the same reason:
+    /// the `fallbackParent` recursion below has to ask it again for a
+    /// DIFFERENT session (the parent's own ref), so a plain `String?` for
+    /// "this session" would not serve the recursive call. The caller (which
+    /// holds the merged crews list) answers it by `Crew.ref`; the default
+    /// answers `nil` for every caller that has no crew to ask, which is
+    /// every existing test and call site unmodified. A child session itself
+    /// is never a crew, so this returns `nil` for one directly — which is
+    /// what sends a child with no mapping of its own into the
+    /// `fallbackParent` recursion, where the SAME closure resolves the
+    /// parent crew's served theme.
     ///
     /// THE HASHED DEFAULT IS STILL HASHED FROM THE BARE NAME, so the same crew
     /// name on two hosts falls back to the same colour. That is the right
@@ -687,15 +703,19 @@ struct ThemeConfiguration: Equatable {
     /// THE LAPTOP'S SHELL DEFAULTS TO GRAPHITE, NOT A HASH. `local:shell` names
     /// no crew, so a hashed colour would make it look like one. A user mapping
     /// for it still wins, because the mapping is read first.
-    func theme(forSession session: SessionRef, fallbackParent: SessionRef? = nil) -> TerminalTheme {
+    func theme(forSession session: SessionRef, fallbackParent: SessionRef? = nil,
+               servedTheme: (SessionRef) -> String? = { _ in nil }) -> TerminalTheme {
         if let name = sessions[session], let theme = ThemeCatalog.named(name) {
             return theme
         }
         if session == .localShell {
             return ThemeCatalog.graphite
         }
+        if let name = servedTheme(session), let theme = ThemeCatalog.named(name) {
+            return theme
+        }
         if let fallbackParent {
-            return theme(forSession: fallbackParent)
+            return theme(forSession: fallbackParent, servedTheme: servedTheme)
         }
         return ThemeCatalog.defaultTheme(forSession: session.name)
     }

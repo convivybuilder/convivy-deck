@@ -20,11 +20,13 @@ enum PRLadder {
 
     // MARK: - Ladder position
 
-    /// One rung of the ladder a pull request stands on. Only `draft` through
+    /// One rung of the ladder a pull request stands on. `draft` through
     /// `readyToMerge` are the seven named rungs the epic's specification
     /// lists; `.closed` and `.stateUnknown` are the two the specification
     /// adds alongside them ("plus state unknown, and closed/merged for
-    /// recently closed rows").
+    /// recently closed rows"). `.held` is a later addition
+    /// (`issue_01M75T9CTKAT0SKTRXK461PB8S`), ahead of every review and CI
+    /// rung.
     enum Position: Equatable {
         case draft
         case inReview
@@ -33,12 +35,35 @@ enum PRLadder {
         case inCI
         case failedCI
         case readyToMerge
+        /// Every role approved at head, and the Library reports explicitly
+        /// (`ci_captured: false`) that it holds no CI results for this
+        /// repository, so there is no build to wait on. The cockpit offers
+        /// Merge here as GitHub does on a repository with no checks
+        /// (the operator, 2026-11-25); GitHub still refuses the merge if
+        /// the branch's rules require a check, and the row draws that
+        /// refusal. Kept apart from `.readyToMerge` so the row never reads
+        /// as CI passed.
+        case readyToMergeWithoutCI
+        /// An OPEN, non-draft row whose Library-reported `labels` include
+        /// `hold` (`agentctl pr-hold`, agent-platform#1192) — checked ahead
+        /// of every review and CI rung in `derivePosition`, so a pull
+        /// request that already carries every approval and a green build
+        /// still draws as held rather than ready to merge.
+        case held
         /// `state == CLOSED` or `state == MERGED` — no ladder distinction
         /// beyond that; `ClosedState` carries which. "Recently" is a row-set
         /// question for whatever panel selects which closed PRs to show,
         /// not a fact this derivation computes.
         case closed(ClosedState)
         case stateUnknown(UnknownReason)
+
+        /// The positions at which the cockpit offers Merge.
+        var offersMerge: Bool {
+            switch self {
+            case .readyToMerge, .readyToMergeWithoutCI: return true
+            default: return false
+            }
+        }
     }
 
     enum ClosedState: Equatable {
@@ -70,8 +95,10 @@ enum PRLadder {
         case unrecognizedState(String)
         /// Every review at head approved, so the remaining question is CI,
         /// and `ciStatus(row:)` could not resolve it (`CIStatus.unavailable`'s
-        /// reason travels here) — the repository is not captured, or the
-        /// conclusion is one this client does not recognise.
+        /// reason travels here): the `ci_captured` field was missing or not a
+        /// boolean, the capture went stale, or the conclusion is one this
+        /// client does not recognise. An explicit `ci_captured: false` is
+        /// not unknown; it draws `.readyToMergeWithoutCI`.
         case noCISource(detail: String)
     }
 
@@ -85,15 +112,19 @@ enum PRLadder {
         case running
         case passed
         case failed
+        /// The Library reported `ci_captured: false`: it holds no CI results
+        /// for this pull request's product and repository.
+        case notCaptured
         case unavailable(reason: String)
     }
 
     /// Maps a `StateRow`'s `ciConclusion`/`ciCaptured`/`ciCaptureStale` onto
     /// `CIStatus`, degrading per field like every other read in this file.
     ///
-    /// - `ciCaptured != true` (false, or missing/non-boolean and so `nil`
-    ///   after decode): `.unavailable` naming which; the repository either
-    ///   is not captured or this client could not tell.
+    /// - `ciCaptured == false`: `.notCaptured`; the Library holds no CI
+    ///   results for this repository.
+    /// - `ciCaptured == nil` (missing or not a boolean): `.unavailable`;
+    ///   this client cannot tell whether CI is captured.
     /// - `ciCaptured == true`, `ciConclusion == nil`, `ciCaptureStale ==
     ///   true`: `.unavailable` — the Library's own platform job that
     ///   captures CI results has stopped producing fresh rows for this head
@@ -112,8 +143,10 @@ enum PRLadder {
     ///   client has never seen): `.unavailable` naming the conclusion, never
     ///   guessed as passed or failed.
     static func ciStatus(row: StateRow) -> CIStatus {
-        guard row.ciCaptured == true else {
-            return .unavailable(reason: "CI is not captured for this repository")
+        switch row.ciCaptured {
+        case true?: break
+        case false?: return .notCaptured
+        case nil: return .unavailable(reason: "the Library did not say whether CI is captured for this repository")
         }
         guard let conclusion = row.ciConclusion else {
             if row.ciCaptureStale == true {
@@ -134,19 +167,70 @@ enum PRLadder {
     /// with this or `"unverified"` — see `ReviewRecordEntry.auth`'s doc.
     private static let runVerifiedAuth = "run-verified"
 
+    /// Review roles that report on a pull request without gating its merge.
+    /// Mirrors agentctl's `_SHADOW_REVIEW_AGENTS`, the roles `agentctl
+    /// review-status` prints as "informational, non-gating" and never counts
+    /// toward PASS or FAIL. A review record carries no field saying whether
+    /// its role gates, so this list is the only place Deck can learn it.
+    /// Matched with or without an app prefix (`<product>-shadow-reviewer`),
+    /// the way agentctl strips one before its own comparison.
+    static let nonGatingRoles: Set<String> = ["shadow-reviewer"]
+
+    static func isNonGatingRole(_ role: String?) -> Bool {
+        guard let role else { return false }
+        return nonGatingRoles.contains { role == $0 || role.hasSuffix("-\($0)") }
+    }
+
     /// How many of a pull request's review records were made at a commit
     /// other than its head. Zero once the PR is merged or closed: a stale
     /// review only matters while a fresh one could still gate the merge, and
     /// on a closed row the count read as unfinished work (the operator, 2026-10-01).
+    /// A non-gating role's record (`isNonGatingRole`) is never counted, for
+    /// the same reason: it cannot gate the merge, and `derivePosition` leaves
+    /// it out of its own stale check, so counting it here would draw "Ready
+    /// to merge" beside a stale-review badge.
     static func staleReviewCount(
         headSha: String?, records: [ReviewRecordEntry], position: Position
     ) -> Int {
         if case .closed = position { return 0 }
         guard let headSha else { return 0 }
         return records.filter { record in
+            guard !isNonGatingRole(record.role) else { return false }
             guard let ref = record.reviewedRef else { return false }
             return ref != headSha
         }.count
+    }
+
+    /// Each role's latest run-verified verdict at `headReviews` — the same
+    /// per-role "latest wins" rule the merge gate (`agentctl review-status`)
+    /// applies, which `derivePosition` below reads for both
+    /// `.changesRequested` and the all-roles-approved check, rather than
+    /// letting an earlier round's record at the same head outvote a later
+    /// one. A role with no run-verified record at head is absent from the
+    /// result, same as before this existed.
+    ///
+    /// "Latest" is by `createdAt`, nil sorting oldest
+    /// (`compareNullsLast`) — when two of a role's records tie (both nil,
+    /// or an equal timestamp), the first one encountered wins, which is the
+    /// newest one GIVEN `headReviews` arrives in the Library's own
+    /// newest-first order for `GET /review-records` (`fetchLadder`'s own
+    /// doc on that route). That fallback is pinned by
+    /// `testPerRoleLatestFallsBackToPayloadOrderWhenCreatedAtIsAbsent`
+    /// rather than left to chance.
+    private static func latestVerdictsPerRoleAtHead(_ headReviews: [ReviewRecordEntry]) -> [String: String] {
+        var latestCreatedAt: [String: String?] = [:]
+        var latestVerdict: [String: String] = [:]
+        for record in headReviews {
+            guard record.auth == runVerifiedAuth, let role = record.role, let verdict = record.verdict else {
+                continue
+            }
+            if let existingCreatedAt = latestCreatedAt[role] {
+                guard compareNullsLast(record.createdAt, existingCreatedAt) == .orderedDescending else { continue }
+            }
+            latestCreatedAt[role] = record.createdAt
+            latestVerdict[role] = verdict
+        }
+        return latestVerdict
     }
 
     /// The position of one pull request, given its latest state row (one per
@@ -168,16 +252,31 @@ enum PRLadder {
     /// wants to draw them as stale filters `reviewRecords` itself with the
     /// same `reviewedRef != stateRow.headSha` test this function uses.
     ///
+    /// **Only each role's LATEST run-verified record at head decides
+    /// anything** — `latestVerdictsPerRoleAtHead`'s rule, read here for both
+    /// `.changesRequested` and the all-roles-approved check below. Two
+    /// run-verified records for the same role at the same head happen when
+    /// a round is re-run with no push in between (a second pass after a
+    /// `REQUEST_CHANGES`, say); the earlier one no longer decides anything
+    /// once a later one for that role exists. Before this rule, ANY
+    /// run-verified `REQUEST_CHANGES` at head won regardless of a later
+    /// `APPROVE` from the same role — the bug `issue_01M74DZ4ARJMRQ5MHH8BWC8RF9`
+    /// names.
+    ///
     /// **Roles are read from the data, never hardcoded.** Deck's own roles
     /// are `deck-reviewer` and `deck-security-reviewer`, but nothing here
     /// spells either out: "ready to merge" is reached when every role that
-    /// has EVER reviewed this pull request (at any ref) has an `APPROVE`
-    /// verdict at head. A pull request only one role has ever reviewed needs
-    /// only that role's approval; one only reviewed by two roles needs both.
-    /// A role's first-ever review, still in flight, is indistinguishable
-    /// from "this repo only needs one reviewer" — there is no roster this
-    /// function can consult to tell those apart, and the specification does
-    /// not ask it to.
+    /// has EVER reviewed this pull request (at any ref) has its LATEST
+    /// run-verified head verdict reading `APPROVE`. A pull request only one
+    /// role has ever reviewed needs only that role's approval; one only
+    /// reviewed by two roles needs both. A role's first-ever review, still
+    /// in flight, is indistinguishable from "this repo only needs one
+    /// reviewer" — there is no roster this function can consult to tell
+    /// those apart, and the specification does not ask it to.
+    ///
+    /// **The one exception is a non-gating role** (`isNonGatingRole`), which
+    /// is left out of both the `.changesRequested` check and the roles that
+    /// must approve (CQ·216, issue_01M8A74KPZAFWNNSHJ14EHHER4).
     static func derivePosition(
         stateRow: StateRow?, reviewRecords: [ReviewRecordEntry], ciStatus: CIStatus
     ) -> Position {
@@ -198,21 +297,31 @@ enum PRLadder {
         if stateRow.draft == true {
             return .draft
         }
+        if let labels = stateRow.labels, labels.contains("hold") {
+            return .held
+        }
         guard let headSha = stateRow.headSha else { return .stateUnknown(.missingHeadSha) }
 
-        let headReviews = reviewRecords.filter { $0.reviewedRef == headSha }
-        let staleReviews = reviewRecords.filter { record in
+        // A non-gating role (`isNonGatingRole`) never decides the position,
+        // the same as `agentctl review-status`, which leaves it out of the
+        // required set. Its records stay in `reviewRecords` for a caller
+        // that draws them.
+        let gatingRecords = reviewRecords.filter { !isNonGatingRole($0.role) }
+        let headReviews = gatingRecords.filter { $0.reviewedRef == headSha }
+        let staleReviews = gatingRecords.filter { record in
             guard let ref = record.reviewedRef else { return false }
             return ref != headSha
         }
 
-        if headReviews.contains(where: { $0.verdict == requestChangesVerdict && $0.auth == runVerifiedAuth }) {
+        let latestVerdictPerRole = latestVerdictsPerRoleAtHead(headReviews)
+
+        if latestVerdictPerRole.values.contains(requestChangesVerdict) {
             return .changesRequested
         }
 
-        let rolesEverSeen = Set(reviewRecords.compactMap(\.role))
+        let rolesEverSeen = Set(gatingRecords.compactMap(\.role))
         let rolesApprovedAtHead = Set(
-            headReviews.filter { $0.verdict == approveVerdict && $0.auth == runVerifiedAuth }.compactMap(\.role))
+            latestVerdictPerRole.filter { $0.value == approveVerdict }.map(\.key))
 
         if !rolesEverSeen.isEmpty, !rolesApprovedAtHead.isEmpty,
            rolesApprovedAtHead.isSuperset(of: rolesEverSeen) {
@@ -220,6 +329,7 @@ enum PRLadder {
             case .running: return .inCI
             case .passed: return .readyToMerge
             case .failed: return .failedCI
+            case .notCaptured: return .readyToMergeWithoutCI
             case .unavailable(let reason): return .stateUnknown(.noCISource(detail: reason))
             }
         }
@@ -279,12 +389,21 @@ enum PRLadder {
         /// mean the Library did not report staleness, which `ciStatus`
         /// treats the same as "not stale" (the pre-library#330 behaviour).
         let ciCaptureStale: Bool?
+        /// The pull request's labels, e.g. `["hold"]` once `agentctl
+        /// pr-hold` applies the fleet's hold label — `nil` when the field is
+        /// absent or not an array, never a decode failure. The Library route
+        /// does not serve this field yet (library issue_01M75T93M9GPKJZWEPYHVAT17E);
+        /// every row decodes `labels` as `nil` until it does, which
+        /// `derivePosition` reads the same as "no hold label present."
+        /// Defaulted so every existing fixture keeps compiling unchanged.
+        let labels: [String]?
 
         init(
             repo: String?, number: Int?, title: String?, author: String?, draft: Bool?,
             headSha: String?, state: String?, producedAt: String?, ingestedAt: String?,
             ciConclusion: String? = nil, ciCaptured: Bool? = nil,
-            ciLastCapturedAt: String? = nil, ciCaptureStale: Bool? = nil
+            ciLastCapturedAt: String? = nil, ciCaptureStale: Bool? = nil,
+            labels: [String]? = nil
         ) {
             self.repo = repo
             self.number = number
@@ -299,6 +418,7 @@ enum PRLadder {
             self.ciCaptured = ciCaptured
             self.ciLastCapturedAt = ciLastCapturedAt
             self.ciCaptureStale = ciCaptureStale
+            self.labels = labels
         }
     }
 
@@ -318,7 +438,8 @@ enum PRLadder {
             ciConclusion: raw["ci_conclusion"] as? String,
             ciCaptured: raw["ci_captured"] as? Bool,
             ciLastCapturedAt: raw["ci_last_captured_at"] as? String,
-            ciCaptureStale: raw["ci_capture_stale"] as? Bool)
+            ciCaptureStale: raw["ci_capture_stale"] as? Bool,
+            labels: raw["labels"] as? [String])
     }
 
     /// One page of `GET /signals/pr-state`, decoded. Every field degrades
@@ -425,6 +546,16 @@ enum PRLadder {
         /// the same as `"unverified"` everywhere this is checked.
         let auth: String?
         let authReason: String?
+        /// When the Library recorded this review — `created_at` off the
+        /// same `review_record_dict` row `ReviewRecordsPane.ReviewRecord`
+        /// decodes in full (`PRLadderTests.reviewRecordJSON`'s fixture,
+        /// captured against the running Library, carries it). This is what
+        /// tells two run-verified records for the same role at the same
+        /// head apart — a later round posts a new record rather than
+        /// editing the earlier one in place, so `derivePosition` reads each
+        /// role's latest verdict by this field, the same "latest wins" rule
+        /// `agentctl review-status` applies at the merge gate.
+        let createdAt: String?
     }
 
     private static func decodeReviewRecordEntry(_ raw: [String: Any]) -> ReviewRecordEntry {
@@ -434,7 +565,8 @@ enum PRLadder {
             role: raw["role"] as? String,
             verdict: raw["verdict"] as? String,
             auth: raw["auth"] as? String,
-            authReason: raw["auth_reason"] as? String)
+            authReason: raw["auth_reason"] as? String,
+            createdAt: raw["created_at"] as? String)
     }
 
     /// One page of `GET /review-records`. Every row decodes, so nothing is
@@ -680,7 +812,7 @@ enum PRLadder {
     /// is built only from the records that survived that PR's own read, so
     /// losing one role's only record there makes `rolesApprovedAtHead
     /// .isSuperset(of: rolesEverSeen)` true vacuously — the PR then draws
-    /// `.readyToMerge` or `.stateUnknown(.noCISource)` while still carrying
+    /// `.readyToMerge`, `.readyToMergeWithoutCI` or `.stateUnknown(.noCISource)` while still carrying
     /// an unresolved blocking verdict `fetchLadder` never saw. Each PR's
     /// read is bounded by the same `pageLimit * maxPages` budget the
     /// whole-repository read used to share across every PR at once, so this
@@ -762,8 +894,10 @@ enum PRLadder {
     ///
     /// Both tiers sort by `number` descending as their own tie-break (higher
     /// PR numbers are newer PRs), so the order is stable and testable
-    /// without depending on `updatedAt`, which is `nil` for most rows today
-    /// (`StateRow.producedAt`'s own doc).
+    /// without depending on `updatedAt`. `updatedAt` is `producedAt ??
+    /// ingestedAt`, and every live pr-state row carries both (read
+    /// 2026-11-11: `produced_at` is GitHub's own `updated_at`); it is `nil`
+    /// only for a row missing both, which this order must still handle.
     static func orderedForDisplay(_ results: [LadderResult], expanded: Bool = false) -> [LadderResult] {
         var open: [LadderResult] = []
         var closed: [LadderResult] = []

@@ -170,4 +170,44 @@ final class SessionPromotionTests: XCTestCase {
         XCTAssertTrue(
             SessionGrouping.ungrouped([session], crews: crews, hosts: hosts, defaultHost: "mini").isEmpty)
     }
+
+    // MARK: - End to end: promoting a DISCOVERED CHILD out from under its crew
+
+    /// CQ·208's actual case: a session the path rule already groups under a
+    /// crew (`RailView.discoveredChildRow`, not an "OTHER SESSIONS" row) is
+    /// promoted to its own crew. `derive` itself does not care which kind of
+    /// row called it — the id is the session's own name and the working
+    /// directory is the session's own path either way — but the point of
+    /// promoting a CHILD rather than an orphan is that it must actually leave
+    /// its former parent's group afterward, which is what this pins.
+    func testPromotingADiscoveredChildYieldsTheRightCrewAndLeavesTheFormerParentsGroup() throws {
+        let hosts = [HostEntry(name: "mini", user: TestHost.user, address: TestHost.address)]
+        let parent = Crew(id: "garden", displayName: "garden",
+                          workingDirectory: "\(TestHost.homeRoot)/Convivy/garden")
+        let child = DiscoveredSession(
+            name: "garden-shed", host: TestHost.target,
+            path: "\(TestHost.homeRoot)/Convivy/garden/shed")
+
+        // Before promotion, the path rule groups the child under its parent
+        // — `garden-shed` is a single-dash lookalike, so rule A (name) does
+        // not match and rule B (path) is what claims it here.
+        XCTAssertEqual(
+            SessionGrouping.group([child], into: [parent], hosts: hosts, defaultHost: "mini"),
+            [parent.id: [child]])
+
+        let promoted = try SessionPromotion.derive(
+            child,
+            existingRefs: SessionPromotion.existingRefs(for: [parent], hosts: hosts, defaultHost: "mini"),
+            hosts: hosts)
+        XCTAssertEqual(promoted.id, child.name)
+        XCTAssertEqual(promoted.workingDirectory, child.path)
+
+        // After promotion, the new crew's id equals the session's own name,
+        // so rule A claims it before rule B ever gets to compare paths — the
+        // session leaves `garden`'s group and appears only under its own.
+        let grouped = SessionGrouping.group(
+            [child], into: [parent, promoted], hosts: hosts, defaultHost: "mini")
+        XCTAssertNil(grouped[parent.id], "the session should no longer group under its former parent")
+        XCTAssertEqual(grouped[promoted.id], [child], "the session should group under its own promoted crew")
+    }
 }

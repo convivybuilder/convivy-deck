@@ -54,7 +54,8 @@ final class PRLadderTests: XCTestCase {
     private func reviewRecordJSON(
         pr: Int? = 233, reviewedRef: String? = "78ee30229782093be95276aa7fa14c39485b442d",
         role: String? = "deck-reviewer", verdict: String? = "APPROVE",
-        auth: String? = "run-verified", authReason: String? = nil
+        auth: String? = "run-verified", authReason: String? = nil,
+        createdAt: String? = "2026-09-15T00:00:00Z"
     ) -> String {
         func field(_ name: String, _ value: String?) -> String {
             value.map { "\"\(name)\":\"\($0)\"," } ?? ""
@@ -62,6 +63,7 @@ final class PRLadderTests: XCTestCase {
         let prField = pr.map { "\"pr\":\($0)," } ?? ""
         let authField = auth.map { "\"auth\":\"\($0)\"," } ?? ""
         let authReasonValue = authReason.map { "\"\($0)\"" } ?? "null"
+        let createdAtValue = createdAt.map { "\"\($0)\"" } ?? "null"
         return """
         {"id":"rev_01M2M6Z8TW0GW228QZFMKF9BVZ",\
         "repo_identity":"github:convivy/convivy-deck","product":"convivy-deck",\
@@ -70,7 +72,7 @@ final class PRLadderTests: XCTestCase {
         "findings":[],"prose":"VERDICT: APPROVE","paths":[],"doc_ids":[],"item_ids":[],\
         \(authField)"auth_reason":\(authReasonValue),"content_sha":"abc123","version":1,\
         "source_comment_id":null,"signal_id":"sig_01ABC",\
-        "created_at":"2026-09-15T00:00:00Z","updated_at":"2026-09-15T00:00:00Z"}
+        "created_at":\(createdAtValue),"updated_at":"2026-09-15T00:00:00Z"}
         """.trimmingTrailingCommaBeforeBrace
     }
 
@@ -175,6 +177,56 @@ final class PRLadderTests: XCTestCase {
             .inReview)
     }
 
+    // MARK: - derivePosition: a non-gating role never decides (CQ·216)
+
+    /// agent-platform PR 1269 on 2026-11-25: reviewer and security-reviewer
+    /// APPROVE at head, CI green, and the non-gating shadow reviewer's
+    /// REQUEST_CHANGES at head. `agentctl review-status` read PASS; the
+    /// ladder read changes requested.
+    func testANonGatingRequestChangesAtHeadDoesNotBlockReadyToMerge() {
+        let row = makeRow(state: "OPEN", draft: false)
+        let records = [
+            makeReview(role: "reviewer", verdict: "APPROVE", reviewedRef: row.headSha),
+            makeReview(role: "security-reviewer", verdict: "APPROVE", reviewedRef: row.headSha),
+            makeReview(role: "shadow-reviewer", verdict: "REQUEST_CHANGES", reviewedRef: row.headSha),
+        ]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .passed),
+            .readyToMerge)
+    }
+
+    /// PRs 1270 and 1271: the shadow reviewer ran once at round 1 and never
+    /// reviewed the revised head, so its role was "seen" without approving.
+    func testANonGatingRoleThatNeverReviewedTheHeadIsNotRequired() {
+        let row = makeRow(state: "OPEN", draft: false, headSha: "newhead")
+        let records = [
+            makeReview(role: "shadow-reviewer", verdict: "APPROVE", reviewedRef: "oldhead"),
+            makeReview(role: "reviewer", verdict: "APPROVE", reviewedRef: "newhead"),
+            makeReview(role: "security-reviewer", verdict: "APPROVE", reviewedRef: "newhead"),
+        ]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .passed),
+            .readyToMerge)
+    }
+
+    /// With only a non-gating review on file, nothing gating has reviewed,
+    /// so the row waits for reviewers rather than reading ready.
+    func testANonGatingApprovalAloneIsNotReadyToMerge() {
+        let row = makeRow(state: "OPEN", draft: false)
+        let records = [makeReview(role: "shadow-reviewer", verdict: "APPROVE", reviewedRef: row.headSha)]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .passed),
+            .inReview)
+    }
+
+    func testAPrefixedShadowReviewerIsNonGatingAndOtherRolesAreNot() {
+        XCTAssertTrue(PRLadder.isNonGatingRole("shadow-reviewer"))
+        XCTAssertTrue(PRLadder.isNonGatingRole("deck-shadow-reviewer"))
+        XCTAssertFalse(PRLadder.isNonGatingRole("reviewer"))
+        XCTAssertFalse(PRLadder.isNonGatingRole("deck-security-reviewer"))
+        XCTAssertFalse(PRLadder.isNonGatingRole(nil))
+    }
+
     // MARK: - derivePosition: changes requested wins over approve at head
 
     func testChangesRequestedAtHeadWinsOverAnApprovalAtHead() {
@@ -198,6 +250,81 @@ final class PRLadderTests: XCTestCase {
         XCTAssertEqual(
             PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .unavailable(reason: "x")),
             .inSecondReview)
+    }
+
+    // MARK: - derivePosition: a role's own LATEST head record decides, not any head record
+
+    /// `issue_01M74DZ4ARJMRQ5MHH8BWC8RF9`: a role re-reviewed at the same
+    /// head with no push in between. The round that posted `REQUEST_CHANGES`
+    /// is no longer this role's latest; its later `APPROVE` is, so the merge
+    /// gate's own "ready" reading is what Deck must draw too.
+    func testRequestChangesThenApproveAtOneHeadReadsApproved() {
+        let row = makeRow(state: "OPEN", draft: false)
+        let records = [
+            makeReview(
+                role: "deck-reviewer", verdict: "REQUEST_CHANGES", reviewedRef: row.headSha,
+                createdAt: "2026-11-10T03:12:00Z"),
+            makeReview(
+                role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha,
+                createdAt: "2026-11-10T03:21:00Z"),
+        ]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .passed),
+            .readyToMerge)
+    }
+
+    /// The same pair of records, reversed: the role's latest head record is
+    /// now the `REQUEST_CHANGES`, which must block regardless of the earlier
+    /// `APPROVE` that preceded it.
+    func testApproveThenRequestChangesAtOneHeadReadsChangesRequested() {
+        let row = makeRow(state: "OPEN", draft: false)
+        let records = [
+            makeReview(
+                role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha,
+                createdAt: "2026-11-10T03:12:00Z"),
+            makeReview(
+                role: "deck-reviewer", verdict: "REQUEST_CHANGES", reviewedRef: row.headSha,
+                createdAt: "2026-11-10T03:21:00Z"),
+        ]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .passed),
+            .changesRequested)
+    }
+
+    /// A second role's later approval must not clear a first role's own
+    /// standing `REQUEST_CHANGES` — "latest wins" applies PER ROLE, never
+    /// across roles, however the two records' timestamps compare to each
+    /// other.
+    func testOneRolesLaterApprovalDoesNotClearAnotherRolesStandingRequest() {
+        let row = makeRow(state: "OPEN", draft: false)
+        let records = [
+            makeReview(
+                role: "deck-reviewer", verdict: "REQUEST_CHANGES", reviewedRef: row.headSha,
+                createdAt: "2026-11-10T03:12:00Z"),
+            makeReview(
+                role: "deck-security-reviewer", verdict: "APPROVE", reviewedRef: row.headSha,
+                createdAt: "2026-11-10T03:23:00Z"),
+        ]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .passed),
+            .changesRequested)
+    }
+
+    /// `latestVerdictsPerRoleAtHead`'s documented fallback: when neither of
+    /// a role's head records carries `createdAt`, the FIRST one encountered
+    /// wins, which is the newest one given the Library's own newest-first
+    /// `GET /review-records` order (`fetchLadder`'s doc on that route).
+    /// Pinned here rather than left implicit, per the item's own
+    /// instruction to pin the payload order as a named signal.
+    func testPerRoleLatestFallsBackToPayloadOrderWhenCreatedAtIsAbsent() {
+        let row = makeRow(state: "OPEN", draft: false)
+        let records = [
+            makeReview(role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha, createdAt: nil),
+            makeReview(role: "deck-reviewer", verdict: "REQUEST_CHANGES", reviewedRef: row.headSha, createdAt: nil),
+        ]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .passed),
+            .readyToMerge)
     }
 
     // MARK: - derivePosition: in review vs in second review
@@ -269,11 +396,119 @@ final class PRLadderTests: XCTestCase {
             PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .failed), .failedCI)
     }
 
+    /// The operator's request (2026-11-25): a repository with no CI is
+    /// mergeable once reviews pass, as GitHub allows.
+    func testEveryKnownRoleApprovedAtHeadWithCINotCapturedIsReadyToMergeWithoutCI() {
+        let row = makeRow(state: "OPEN", draft: false)
+        let records = [
+            makeReview(role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha),
+            makeReview(role: "deck-security-reviewer", verdict: "APPROVE", reviewedRef: row.headSha),
+        ]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .notCaptured),
+            .readyToMergeWithoutCI)
+    }
+
+    /// No CI does not skip review: a pending or blocking review still
+    /// decides the position.
+    func testCINotCapturedDoesNotOverrideReview() {
+        let row = makeRow(state: "OPEN", draft: false)
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: [], ciStatus: .notCaptured), .inReview)
+        let blocked = [
+            makeReview(role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha),
+            makeReview(role: "deck-security-reviewer", verdict: "REQUEST_CHANGES", reviewedRef: row.headSha),
+        ]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: blocked, ciStatus: .notCaptured),
+            .changesRequested)
+        let partial = [
+            makeReview(role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha),
+            makeReview(role: "deck-security-reviewer", verdict: "APPROVE", reviewedRef: "0ldc0mmit"),
+        ]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: partial, ciStatus: .notCaptured),
+            .inSecondReview)
+    }
+
     func testEveryKnownRoleApprovedAtHeadWithCIPassedIsReadyToMerge() {
         let row = makeRow(state: "OPEN", draft: false)
         let records = [makeReview(role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha)]
         XCTAssertEqual(
             PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .passed), .readyToMerge)
+    }
+
+    // MARK: - derivePosition: held
+
+    /// The item's own pinned case: a held row with every approval and a
+    /// green build still draws as held, ahead of the CI rung that would
+    /// otherwise read it as ready to merge.
+    func testHeldLabelWinsOverPassingReviewsAndCI() {
+        let row = makeRow(state: "OPEN", draft: false, labels: ["hold"])
+        let records = [makeReview(role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha)]
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: records, ciStatus: .passed), .held)
+    }
+
+    /// Held wins ahead of every review rung too, not only the CI ones — a
+    /// held row with no reviews at all, or a standing `REQUEST_CHANGES`,
+    /// still draws as held rather than "in review" or "changes requested".
+    func testHeldLabelWinsOverNoReviewsAndOverChangesRequested() {
+        let noReviews = makeRow(state: "OPEN", draft: false, labels: ["hold"])
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: noReviews, reviewRecords: [], ciStatus: .unavailable(reason: "x")),
+            .held)
+
+        let withChangesRequested = makeRow(state: "OPEN", draft: false, labels: ["hold"])
+        let records = [
+            makeReview(role: "deck-reviewer", verdict: "REQUEST_CHANGES", reviewedRef: withChangesRequested.headSha),
+        ]
+        XCTAssertEqual(
+            PRLadder.derivePosition(
+                stateRow: withChangesRequested, reviewRecords: records, ciStatus: .unavailable(reason: "x")),
+            .held)
+    }
+
+    /// A row with no `labels` field at all — the Library route before it
+    /// serves `labels`, or any row the hold label does not apply to — draws
+    /// exactly as it did before this change.
+    func testNoLabelsFieldDrawsExactlyAsToday() {
+        let row = makeRow(state: "OPEN", draft: false, labels: nil)
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: [], ciStatus: .unavailable(reason: "x")),
+            .inReview)
+    }
+
+    /// A row whose labels exist but do not contain `hold` also draws
+    /// exactly as today.
+    func testLabelsPresentWithoutHoldDrawsExactlyAsToday() {
+        let row = makeRow(state: "OPEN", draft: false, labels: ["needs-triage"])
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: [], ciStatus: .unavailable(reason: "x")),
+            .inReview)
+    }
+
+    /// A draft PR carrying the hold label still draws as draft — the draft
+    /// check runs first.
+    func testHeldLabelOnADraftStillDrawsAsDraft() {
+        let row = makeRow(state: "OPEN", draft: true, labels: ["hold"])
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: row, reviewRecords: [], ciStatus: .unavailable(reason: "x")),
+            .draft)
+    }
+
+    /// Once a held pull request is closed or merged, the state check still
+    /// runs first — the row draws closed or merged, never held.
+    func testHeldLabelOnAClosedOrMergedRowDrawsClosedOrMerged() {
+        let closed = makeRow(state: "CLOSED", draft: false, labels: ["hold"])
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: closed, reviewRecords: [], ciStatus: .unavailable(reason: "x")),
+            .closed(.closed))
+
+        let merged = makeRow(state: "MERGED", draft: false, labels: ["hold"])
+        XCTAssertEqual(
+            PRLadder.derivePosition(stateRow: merged, reviewRecords: [], ciStatus: .unavailable(reason: "x")),
+            .closed(.merged))
     }
 
     // MARK: - End-to-end rendering: a null conclusion, captured, and the stale flag
@@ -315,6 +550,30 @@ final class PRLadderTests: XCTestCase {
             stateRow: row, reviewRecords: records, ciStatus: PRLadder.ciStatus(row: row))
         XCTAssertEqual(position, .readyToMerge)
         XCTAssertEqual(PRLadderRow.present(position).label, "Ready to merge")
+    }
+
+    /// End to end from the wire field: `ci_captured: false` with every
+    /// review approved draws a row that offers Merge and says no CI was
+    /// captured, so it never reads as CI passed.
+    func testRenderingCIExplicitlyNotCapturedDrawsReadyToMergeWithoutCI() {
+        let row = ciRow(conclusion: nil, captured: false)
+        let records = [makeReview(role: "deck-reviewer", verdict: "APPROVE", reviewedRef: row.headSha)]
+        let position = PRLadder.derivePosition(
+            stateRow: row, reviewRecords: records, ciStatus: PRLadder.ciStatus(row: row))
+        XCTAssertEqual(position, .readyToMergeWithoutCI)
+        XCTAssertTrue(position.offersMerge)
+        XCTAssertEqual(PRLadderRow.present(position).label, "Ready to merge, no CI captured")
+    }
+
+    /// Only the two ready rungs offer Merge.
+    func testOnlyTheReadyRungsOfferMerge() {
+        let offering: [PRLadder.Position] = [.readyToMerge, .readyToMergeWithoutCI]
+        let notOffering: [PRLadder.Position] = [
+            .draft, .inReview, .changesRequested, .inSecondReview, .inCI, .failedCI, .held,
+            .closed(.closed), .closed(.merged), .stateUnknown(.noCISource(detail: "x")),
+        ]
+        XCTAssertTrue(offering.allSatisfy(\.offersMerge))
+        XCTAssertFalse(notOffering.contains(where: \.offersMerge))
     }
 
     // MARK: - derivePosition: degrade-per-field on review records
@@ -550,6 +809,40 @@ final class PRLadderTests: XCTestCase {
         XCTAssertEqual(row.ciCaptureStale, false)
     }
 
+    /// The Library's own shape for `labels` once it serves them
+    /// (library issue_01M75T93M9GPKJZWEPYHVAT17E): a plain array of label
+    /// names, decoded verbatim.
+    func testDecodeLatestPRStatesPageDecodesTheLabelsField() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"prs":[{"repo":"convivy/convivy-deck","number":420,"state":"OPEN","labels":["hold","needs-triage"]}],\
+        "truncated":false}
+        """)
+        let row = try XCTUnwrap(PRLadder.decodeLatestPRStatesPage(raw).rows.first)
+        XCTAssertEqual(row.labels, ["hold", "needs-triage"])
+    }
+
+    /// Absent `labels` decodes to `nil`, never a decode failure — the
+    /// Library route does not serve this field yet.
+    func testDecodeLatestPRStatesPageDecodesAbsentLabelsAsNil() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"prs":[{"repo":"convivy/convivy-deck","number":420,"state":"OPEN"}],"truncated":false}
+        """)
+        let row = try XCTUnwrap(PRLadder.decodeLatestPRStatesPage(raw).rows.first)
+        XCTAssertNil(row.labels)
+    }
+
+    /// A wrongly typed `labels` field (not an array of strings) degrades to
+    /// `nil` and keeps the row, the same per-field posture every other
+    /// `StateRow` field takes.
+    func testDecodeLatestPRStatesPageDegradesAWronglyTypedLabelsField() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"prs":[{"repo":"convivy/convivy-deck","number":420,"state":"OPEN","labels":"hold"}],"truncated":false}
+        """)
+        let row = try XCTUnwrap(PRLadder.decodeLatestPRStatesPage(raw).rows.first)
+        XCTAssertNil(row.labels)
+        XCTAssertEqual(row.number, 420)
+    }
+
     // MARK: - ciStatus(row:)
 
     private func ciRow(
@@ -610,14 +903,23 @@ final class PRLadderTests: XCTestCase {
             PRLadder.ciStatus(row: ciRow(conclusion: "failure", captured: true, captureStale: true)), .failed)
     }
 
-    /// An uncaptured repository is unknown even when a conclusion is present,
-    /// and so is a row that does not say.
-    func testCIStatusAnUncapturedOrUnsaidRepoIsUnavailable() {
-        for captured in [false, nil] as [Bool?] {
-            for conclusion in ["success", nil] as [String?] {
-                guard case .unavailable = PRLadder.ciStatus(row: ciRow(conclusion: conclusion, captured: captured)) else {
-                    return XCTFail("captured \(String(describing: captured)), conclusion \(String(describing: conclusion))")
-                }
+    /// An explicit `ci_captured: false` is `.notCaptured`, even when a
+    /// conclusion is present: the Library says it holds no CI results, so
+    /// a stray conclusion is not trusted as a pass.
+    func testCIStatusAnExplicitlyUncapturedRepoIsNotCaptured() {
+        for conclusion in ["success", "failure", nil] as [String?] {
+            XCTAssertEqual(
+                PRLadder.ciStatus(row: ciRow(conclusion: conclusion, captured: false)), .notCaptured,
+                String(describing: conclusion))
+        }
+    }
+
+    /// A row that does not say whether CI is captured stays unknown, so a
+    /// Library that drops the field never turns every row mergeable.
+    func testCIStatusARowThatDoesNotSayIsUnavailable() {
+        for conclusion in ["success", nil] as [String?] {
+            guard case .unavailable = PRLadder.ciStatus(row: ciRow(conclusion: conclusion, captured: nil)) else {
+                return XCTFail("conclusion \(String(describing: conclusion))")
             }
         }
     }
@@ -713,6 +1015,7 @@ final class PRLadderTests: XCTestCase {
         XCTAssertEqual(record.role, "deck-reviewer")
         XCTAssertEqual(record.verdict, "APPROVE")
         XCTAssertEqual(record.auth, "run-verified")
+        XCTAssertEqual(record.createdAt, "2026-09-15T00:00:00Z")
     }
 
     /// A row missing `auth` still decodes and stays visible — only its
@@ -1226,12 +1529,13 @@ final class PRLadderTests: XCTestCase {
 
     private func makeRow(
         state: String?, draft: Bool?, number: Int = 233, headSha: String = "head-sha-1",
-        repo: String = "convivy/convivy-deck"
+        repo: String = "convivy/convivy-deck", labels: [String]? = nil
     ) -> PRLadder.StateRow {
         PRLadder.StateRow(
             repo: repo, number: number,
             title: "a title", author: "operator-at-convivy", draft: draft,
-            headSha: headSha, state: state, producedAt: nil, ingestedAt: "2026-09-16T13:41:09Z")
+            headSha: headSha, state: state, producedAt: nil, ingestedAt: "2026-09-16T13:41:09Z",
+            labels: labels)
     }
 
     func testStaleReviewCountCountsReviewsAtAnOlderCommitOnAnOpenPR() {
@@ -1244,6 +1548,20 @@ final class PRLadderTests: XCTestCase {
             PRLadder.staleReviewCount(headSha: "head", records: records, position: .inReview), 1)
     }
 
+    /// PRs 1270 and 1271's shape: the shadow reviewer's only record sits at
+    /// an older head. The row draws Ready to merge, so it must not also
+    /// draw a stale-review badge for a role that cannot gate the merge.
+    func testStaleReviewCountLeavesOutNonGatingRoles() {
+        let records = [
+            makeReview(role: "reviewer", verdict: "APPROVE", reviewedRef: "head"),
+            makeReview(role: "security-reviewer", verdict: "APPROVE", reviewedRef: "head"),
+            makeReview(role: "shadow-reviewer", verdict: "REQUEST_CHANGES", reviewedRef: "old"),
+            makeReview(role: "deck-shadow-reviewer", verdict: "APPROVE", reviewedRef: "old"),
+        ]
+        XCTAssertEqual(
+            PRLadder.staleReviewCount(headSha: "head", records: records, position: .readyToMerge), 0)
+    }
+
     func testStaleReviewCountIsZeroOnceThePRIsMergedOrClosed() {
         let records = [makeReview(role: "reviewer", verdict: "APPROVE", reviewedRef: "old")]
         XCTAssertEqual(
@@ -1253,10 +1571,12 @@ final class PRLadderTests: XCTestCase {
     }
 
     private func makeReview(
-        role: String?, verdict: String?, reviewedRef: String?, auth: String? = "run-verified"
+        role: String?, verdict: String?, reviewedRef: String?, auth: String? = "run-verified",
+        createdAt: String? = nil
     ) -> PRLadder.ReviewRecordEntry {
         PRLadder.ReviewRecordEntry(
-            pr: 233, reviewedRef: reviewedRef, role: role, verdict: verdict, auth: auth, authReason: nil)
+            pr: 233, reviewedRef: reviewedRef, role: role, verdict: verdict, auth: auth, authReason: nil,
+            createdAt: createdAt)
     }
 }
 

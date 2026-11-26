@@ -263,10 +263,35 @@ final class LibraryMutualTLSTests: XCTestCase {
     }
 
     func testParsesThePOSTTemplatesMethodAndPath() throws {
-        let command = LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC")
+        let command = LibraryClient.itemApproveRemoteCommand(
+            itemId: "issue_01ABC",
+            act: LibraryClient.LibraryActHeaders(envelope: "ZQ==", signature: "cw==", certificate: "Y2E="))
         let parsed = try XCTUnwrap(LibraryCurlCommand.parse(command))
         XCTAssertEqual(parsed.method, "POST")
         XCTAssertEqual(parsed.path, "/items/issue_01ABC/approve")
+    }
+
+    /// **CQ·209: the mutual-TLS path must read the three signed item-act
+    /// headers back out of the same composed command the ssh/curl path
+    /// sends, or a signed write silently loses its proof on that path.**
+    func testParsesTheSignedItemActHeadersOffAnApproveCommand() throws {
+        let command = LibraryClient.itemApproveRemoteCommand(
+            itemId: "issue_01ABC",
+            act: LibraryClient.LibraryActHeaders(envelope: "ZQ==", signature: "cw==", certificate: "Y2E="))
+        let parsed = try XCTUnwrap(LibraryCurlCommand.parse(command))
+        XCTAssertEqual(parsed.actEnvelope, "ZQ==")
+        XCTAssertEqual(parsed.actSignature, "cw==")
+        XCTAssertEqual(parsed.actCertificate, "Y2E=")
+    }
+
+    /// A GET template, and a write that carries no signed act, both parse
+    /// with every act header `nil` — the normal case, not a parse failure.
+    func testActHeadersAreNilWhenTheCommandCarriesNone() throws {
+        let getCommand = LibraryClient.coursesListRemoteCommand(product: "convivy-deck")
+        let getParsed = try XCTUnwrap(LibraryCurlCommand.parse(getCommand))
+        XCTAssertNil(getParsed.actEnvelope)
+        XCTAssertNil(getParsed.actSignature)
+        XCTAssertNil(getParsed.actCertificate)
     }
 
     func testParsesThePUTTemplatesMethod() throws {
@@ -329,6 +354,40 @@ final class LibraryMutualTLSTests: XCTestCase {
             identityProvider: FakeIdentityProvider(identity: fixture.clientIdentity),
             anchorProvider: FakeAnchorProvider(anchors: [fixture.rootCertificate]))
         XCTAssertEqual(selector.transport(for: TestHost.target), .mutualTLS)
+    }
+
+    // MARK: `LibraryTransportDispatch.requestHeaders` — the headers one mutual-TLS request carries
+
+    /// **CQ·209's own pin, with no TLS session needed.** `runMutualTLS`
+    /// builds its header set by calling this function; proving the three
+    /// `Library-Act-*` headers appear here is the same guarantee as proving
+    /// `runMutualTLS` would have sent them, since nothing downstream of this
+    /// function adds or drops a header.
+    func testRequestHeadersForwardsTheThreeSignedActHeadersWhenTheParsedCommandCarriesThem() throws {
+        let command = LibraryClient.itemApproveRemoteCommand(
+            itemId: "issue_01ABC",
+            act: LibraryClient.LibraryActHeaders(envelope: "ZQ==", signature: "cw==", certificate: "Y2E="))
+        let parsed = try XCTUnwrap(LibraryCurlCommand.parse(command))
+        let headers = LibraryTransportDispatch.requestHeaders(parsed: parsed, token: "tok", hasBody: true)
+        XCTAssertEqual(headers["Library-Act-Envelope"], "ZQ==")
+        XCTAssertEqual(headers["Library-Act-Signature"], "cw==")
+        XCTAssertEqual(headers["Library-Act-Certificate"], "Y2E=")
+        XCTAssertEqual(headers["Library-Protocol"], "1")
+        XCTAssertEqual(headers["Authorization"], "Bearer tok")
+        XCTAssertEqual(headers["Content-Type"], "application/json")
+    }
+
+    /// A GET carries no act headers and no body, so neither `Library-Act-*`
+    /// nor `Content-Type` appears — the same shape the ssh/curl GET template
+    /// sends.
+    func testRequestHeadersCarriesNoActHeadersOrContentTypeForAPlainGET() throws {
+        let command = LibraryClient.coursesListRemoteCommand(product: "convivy-deck")
+        let parsed = try XCTUnwrap(LibraryCurlCommand.parse(command))
+        let headers = LibraryTransportDispatch.requestHeaders(parsed: parsed, token: "tok", hasBody: false)
+        XCTAssertNil(headers["Library-Act-Envelope"])
+        XCTAssertNil(headers["Library-Act-Signature"])
+        XCTAssertNil(headers["Library-Act-Certificate"])
+        XCTAssertNil(headers["Content-Type"])
     }
 
     // MARK: `LibraryTransportDispatch` — the switch itself
@@ -466,10 +525,12 @@ final class LibraryMutualTLSTests: XCTestCase {
             throw LibraryTestSetupFailure("the local TLS listener never became ready in this environment")
         }
 
+        let session = LibraryMutualTLSClient.makeSession(
+            identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+        defer { session.finishTasksAndInvalidate() }
         let (status, body) = try LibraryMutualTLSClient.perform(
             method: "GET", baseURL: URL(string: "https://localhost:\(server.port)")!, path: "/whoami",
-            headers: ["Library-Protocol": "1"], body: nil,
-            identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+            headers: ["Library-Protocol": "1"], body: nil, session: LibraryMutualTLSSession(urlSession: session))
         XCTAssertEqual(status, 200)
         XCTAssertEqual(body, Data("{}".utf8))
 
@@ -510,19 +571,23 @@ final class LibraryMutualTLSTests: XCTestCase {
         }
 
         let noIdentity = try TestPKIFixture() // an unrelated, never-presented identity's root only
+        let foreignSession = LibraryMutualTLSClient.makeSession(
+            identity: noIdentity.clientIdentity, anchors: [fixture.rootCertificate])
+        defer { foreignSession.finishTasksAndInvalidate() }
         XCTAssertThrowsError(try LibraryMutualTLSClient.perform(
             method: "GET", baseURL: URL(string: "https://localhost:\(server.port)")!, path: "/whoami",
-            headers: [:], body: nil,
-            identity: noIdentity.clientIdentity, anchors: [fixture.rootCertificate])
+            headers: [:], body: nil, session: LibraryMutualTLSSession(urlSession: foreignSession))
         ) { error in
             XCTAssertTrue(error is LibraryMutualTLSError, "expected a LibraryMutualTLSError, got \(error)")
         }
         // Positive control: the same server accepts the fixture's own client,
         // so the refusal above is the foreign identity's, not a broken server.
+        let ownSession = LibraryMutualTLSClient.makeSession(
+            identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+        defer { ownSession.finishTasksAndInvalidate() }
         let (status, _) = try LibraryMutualTLSClient.perform(
             method: "GET", baseURL: URL(string: "https://localhost:\(server.port)")!, path: "/whoami",
-            headers: [:], body: nil,
-            identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+            headers: [:], body: nil, session: LibraryMutualTLSSession(urlSession: ownSession))
         XCTAssertEqual(status, 200)
     }
 
@@ -556,6 +621,177 @@ final class LibraryMutualTLSTests: XCTestCase {
         XCTAssertThrowsError(try LibraryHostConnection.readTokenArguments(
             target: SSHTarget(user: "-l root", host: "kestrel"), tokenFile: "/x"))
     }
+
+    // MARK: `LibraryMutualTLSSessionHolder` — one cached session, kept alive by a heartbeat
+
+    func testTwoSessionCallsOnOneHolderReturnTheSameSessionObject() {
+        let holder = LibraryMutualTLSSessionHolder(heartbeatScheduler: FakeHeartbeatScheduler())
+        var makeCalls = 0
+        let first = holder.session(make: { makeCalls += 1; return URLSession(configuration: .ephemeral) },
+                                   heartbeat: { _ in })
+        let second = holder.session(make: { makeCalls += 1; return URLSession(configuration: .ephemeral) },
+                                    heartbeat: { _ in })
+        XCTAssertTrue(first === second, "a second call must return the cached session, not a new one")
+        XCTAssertEqual(makeCalls, 1, "make() must run exactly once")
+    }
+
+    func testCloseInvalidatesTheHolderAndTheNextCallMakesANewSession() {
+        let holder = LibraryMutualTLSSessionHolder(heartbeatScheduler: FakeHeartbeatScheduler())
+        let first = holder.session(make: { URLSession(configuration: .ephemeral) }, heartbeat: { _ in })
+        holder.close()
+        let second = holder.session(make: { URLSession(configuration: .ephemeral) }, heartbeat: { _ in })
+        XCTAssertFalse(first === second, "close() must make the next call build a fresh session")
+    }
+
+    func testTheHoldersHeartbeatFiresOnTheInjectedClockAndNotAfterClose() {
+        let scheduler = FakeHeartbeatScheduler()
+        let holder = LibraryMutualTLSSessionHolder(heartbeatScheduler: scheduler)
+        var heartbeatCalls = 0
+        _ = holder.session(make: { URLSession(configuration: .ephemeral) }, heartbeat: { _ in heartbeatCalls += 1 })
+        XCTAssertEqual(scheduler.scheduledInterval, LibraryMutualTLSSessionHolder.heartbeatInterval)
+
+        scheduler.fire()
+        XCTAssertEqual(heartbeatCalls, 1)
+        scheduler.fire()
+        XCTAssertEqual(heartbeatCalls, 2)
+
+        holder.close()
+        scheduler.fire()
+        XCTAssertEqual(heartbeatCalls, 2, "no heartbeat must fire after close()")
+    }
+
+    // MARK: `LibraryHostConnection` — the shared session and its heartbeat, with no real ssh forward
+
+    func testTwoRequestsOnOneConnectionShareOneSessionObject() throws {
+        let fixture = try TestPKIFixture()
+        let connection = LibraryHostConnection(
+            target: TestHost.target, forward: FakeForward(), heartbeatScheduler: FakeHeartbeatScheduler(),
+            sendHeartbeatRequest: { _, _ in })
+        let first = connection.session(identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+        let second = connection.session(identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+        XCTAssertTrue(first === second)
+    }
+
+    func testClosingAConnectionInvalidatesItsSessionAndTheNextRequestMakesANewOne() throws {
+        let fixture = try TestPKIFixture()
+        let fakeForward = FakeForward()
+        let connection = LibraryHostConnection(
+            target: TestHost.target, forward: fakeForward, heartbeatScheduler: FakeHeartbeatScheduler(),
+            sendHeartbeatRequest: { _, _ in })
+        let first = connection.session(identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+        connection.close()
+        XCTAssertEqual(fakeForward.stopCalls, 1, "close() must tear down the forward")
+        let second = connection.session(identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+        XCTAssertFalse(first === second)
+    }
+
+    func testAConnectionsHeartbeatFiresAt45sOnTheInjectedClockAndNotAfterClose() throws {
+        let fixture = try TestPKIFixture()
+        let scheduler = FakeHeartbeatScheduler()
+        var heartbeatCalls = 0
+        let connection = LibraryHostConnection(
+            target: TestHost.target, forward: FakeForward(), heartbeatScheduler: scheduler,
+            sendHeartbeatRequest: { _, _ in heartbeatCalls += 1 })
+        _ = connection.session(identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+
+        scheduler.fire()
+        XCTAssertEqual(heartbeatCalls, 1)
+
+        connection.close()
+        scheduler.fire()
+        XCTAssertEqual(heartbeatCalls, 1, "no heartbeat must fire after close()")
+    }
+
+    func testAHeartbeatTransportFailureClosesTheConnection() throws {
+        let fixture = try TestPKIFixture()
+        let scheduler = FakeHeartbeatScheduler()
+        let fakeForward = FakeForward()
+        var failureCalls = 0
+        let connection = LibraryHostConnection(
+            target: TestHost.target, forward: fakeForward, heartbeatScheduler: scheduler,
+            sendHeartbeatRequest: { _, _ in throw LibraryMutualTLSError.transportFailed("simulated") },
+            onHeartbeatFailure: { _ in failureCalls += 1 })
+        _ = connection.session(identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+
+        scheduler.fire()
+        XCTAssertEqual(failureCalls, 1, "a heartbeat transport failure must call onHeartbeatFailure")
+        XCTAssertEqual(fakeForward.stopCalls, 0,
+                       "the connection itself never tears down its own forward on failure — its owning pool does, by calling close() through onHeartbeatFailure")
+    }
+
+    func testAHeartbeatThatCannotReadItsTokenKeepsTheConnection() throws {
+        let fixture = try TestPKIFixture()
+        let scheduler = FakeHeartbeatScheduler()
+        var failureCalls = 0
+        let connection = LibraryHostConnection(
+            target: TestHost.target, forward: FakeForward(), heartbeatScheduler: scheduler,
+            sendHeartbeatRequest: { _, _ in throw LibraryTestSetupFailure("simulated ssh token read failure") },
+            onHeartbeatFailure: { _ in failureCalls += 1 })
+        _ = connection.session(identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+
+        scheduler.fire()
+        XCTAssertEqual(failureCalls, 0)
+    }
+
+    /// Without the refusal this crashes the test process with
+    /// `Task created in a session that has been invalidated`.
+    func testARequestOnAClosedSessionFailsAsATransportErrorInsteadOfCrashing() {
+        let session = LibraryMutualTLSSession(urlSession: URLSession(configuration: .ephemeral))
+        session.invalidate()
+        XCTAssertThrowsError(try LibraryMutualTLSClient.perform(
+            method: "GET", baseURL: URL(string: "https://localhost:9443")!, path: "/whoami",
+            headers: [:], body: nil, session: session)
+        ) { error in
+            guard case LibraryMutualTLSError.transportFailed = error else {
+                return XCTFail("expected transportFailed, got \(error)")
+            }
+        }
+    }
+
+    // MARK: `LibraryHostConnectionPool` — a heartbeat failure closes only its own connection
+
+    func testAHeartbeatFailureClosesItsConnectionThroughThePool() throws {
+        let fixture = try TestPKIFixture()
+        let scheduler = FakeHeartbeatScheduler()
+        let forward = FakeForward()
+        let pool = LibraryHostConnectionPool(
+            startForward: { _ in forward }, heartbeatScheduler: scheduler,
+            sendHeartbeatRequest: { _, _ in throw LibraryMutualTLSError.transportFailed("simulated") })
+        let connection = try pool.connection(for: TestHost.target)
+        _ = connection.session(identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+
+        scheduler.fire()
+        XCTAssertEqual(forward.stopCalls, 1)
+        XCTAssertFalse(try pool.connection(for: TestHost.target) === connection)
+    }
+
+    func testAHeartbeatThatFailsAfterItsConnectionWasReplacedLeavesTheNewOneOpen() throws {
+        let fixture = try TestPKIFixture()
+        let scheduler = FakeHeartbeatScheduler()
+        var forwards: [FakeForward] = []
+        var replacement: LibraryHostConnection?
+        var pool: LibraryHostConnectionPool!
+        pool = LibraryHostConnectionPool(
+            startForward: { _ in
+                let made = FakeForward()
+                forwards.append(made)
+                return made
+            },
+            heartbeatScheduler: scheduler,
+            sendHeartbeatRequest: { _, _ in
+                // The heartbeat is in flight while a request failure closes
+                // the connection and the next request opens a new one.
+                pool.close(TestHost.target)
+                replacement = try pool.connection(for: TestHost.target)
+                throw LibraryMutualTLSError.transportFailed("simulated")
+            })
+        let original = try pool.connection(for: TestHost.target)
+        _ = original.session(identity: fixture.clientIdentity, anchors: [fixture.rootCertificate])
+
+        scheduler.fire()
+        XCTAssertEqual(forwards.map(\.stopCalls), [1, 0])
+        XCTAssertTrue(try pool.connection(for: TestHost.target) === replacement)
+    }
 }
 
 /// A test fixture that could not be built. Thrown in place of `XCTSkip`, so a
@@ -563,4 +799,49 @@ final class LibraryMutualTLSTests: XCTestCase {
 private struct LibraryTestSetupFailure: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
+}
+
+// MARK: - Fakes for `LibraryHostConnection`'s own tests, with no real ssh process
+
+/// A `LibraryForwarding` that never spawns ssh — just a fixed port and a
+/// call count for `stop()`, so a connection's session/heartbeat behaviour is
+/// testable on its own.
+private final class FakeForward: LibraryForwarding {
+    let localPort: UInt16
+    private(set) var stopCalls = 0
+
+    init(localPort: UInt16 = 9443) { self.localPort = localPort }
+
+    func stop() { stopCalls += 1 }
+}
+
+/// A `LibraryHeartbeatScheduling` that fires its tick only when `fire()` is
+/// called, so a test proves the 45 s heartbeat behaviour without sleeping
+/// real wall-clock seconds. `cancel()` on the returned token makes later
+/// `fire()` calls no-ops, matching a real timer's own behaviour once
+/// cancelled.
+private final class FakeHeartbeatScheduler: LibraryHeartbeatScheduling {
+    private(set) var scheduledInterval: TimeInterval?
+    private var tick: (() -> Void)?
+    private var cancelled = false
+
+    func scheduleRepeating(interval: TimeInterval, tick: @escaping () -> Void) -> LibraryHeartbeatToken {
+        scheduledInterval = interval
+        self.tick = tick
+        cancelled = false
+        return FakeHeartbeatToken(scheduler: self)
+    }
+
+    func fire() {
+        guard !cancelled else { return }
+        tick?()
+    }
+
+    fileprivate func cancel() { cancelled = true }
+}
+
+private final class FakeHeartbeatToken: LibraryHeartbeatToken {
+    private weak var scheduler: FakeHeartbeatScheduler?
+    init(scheduler: FakeHeartbeatScheduler) { self.scheduler = scheduler }
+    func cancel() { scheduler?.cancel() }
 }

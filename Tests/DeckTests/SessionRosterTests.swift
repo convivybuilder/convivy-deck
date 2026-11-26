@@ -493,13 +493,76 @@ final class SessionRosterTests: XCTestCase {
 
     /// The operator's own edit to an unpinned served crew still persists.
     func testAnEditToAnUnpinnedServedCrewPersists() {
+        let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas", project: "atlas-project")
+        var list = SessionRoster(configuration: configuration(rail: nil), servedCrews: [atlas])
+        list.update("atlas") { $0.setPinned(false) }
+        list.update("atlas") { $0.project = "my-project" }
+        let saved = list.applied(to: configuration(rail: nil))
+        XCTAssertEqual(saved.catalog.first?.project, "my-project")
+    }
+
+    /// `workingDirectory` is the one field where the host's own served spec
+    /// is the authority over anything configured locally (CQ·204): an edit
+    /// to it over a crew whose host serves one is never applied, so it must
+    /// not persist as though it were — `saved.catalog.first?.workingDirectory`
+    /// stays `nil` here rather than freezing in the edit `testASpecChange-
+    /// StillReachesAnUnpinnedServedCrewAfterSaving` already proves would
+    /// otherwise stop a later spec change from reaching the row.
+    func testAWorkingDirectoryEditOverAServedValueDoesNotPersist() {
         let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas",
                                workingDirectory: "\(TestHost.homeRoot)/spec")
         var list = SessionRoster(configuration: configuration(rail: nil), servedCrews: [atlas])
         list.update("atlas") { $0.setPinned(false) }
         list.update("atlas") { $0.workingDirectory = "\(TestHost.homeRoot)/mine" }
         let saved = list.applied(to: configuration(rail: nil))
-        XCTAssertEqual(saved.catalog.first?.workingDirectory, "\(TestHost.homeRoot)/mine")
+        XCTAssertNil(saved.catalog.first?.workingDirectory, "the host's own spec wins, so the edit cannot take effect")
+    }
+
+    // MARK: - Which rows Settings greys the Folder field on
+
+    /// `servedWorkingDirectory` decides Settings' `.disabled` Folder field and
+    /// its caption, so each side of it is pinned here: a served directory is
+    /// reported for a pinned row and for an unpinned one, and a host that
+    /// serves no directory, or no spec at all, leaves the field editable.
+    func testAPinnedRowReportsItsServedWorkingDirectory() {
+        let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas",
+                               workingDirectory: "\(TestHost.homeRoot)/spec")
+        let config = configuration(rail: nil)
+        let list = SessionRoster(configuration: config, servedCrews: [atlas])
+        let entry = try! XCTUnwrap(list["atlas"])
+        XCTAssertTrue(entry.isPinned)
+        XCTAssertEqual(list.servedWorkingDirectory(for: entry, hosts: config.hosts, defaultHost: config.defaultHost),
+                       "\(TestHost.homeRoot)/spec")
+    }
+
+    func testAnUnpinnedRowReportsItsServedWorkingDirectory() {
+        let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas",
+                               workingDirectory: "\(TestHost.homeRoot)/spec")
+        let config = configuration(rail: nil)
+        var list = SessionRoster(configuration: config, servedCrews: [atlas])
+        list.update("atlas") { $0.setPinned(false) }
+        let saved = list.applied(to: config)
+        let rebuilt = SessionRoster(configuration: saved, servedCrews: [atlas])
+        let entry = try! XCTUnwrap(rebuilt["atlas"])
+        XCTAssertFalse(entry.isPinned)
+        XCTAssertEqual(rebuilt.servedWorkingDirectory(for: entry, hosts: saved.hosts, defaultHost: saved.defaultHost),
+                       "\(TestHost.homeRoot)/spec")
+    }
+
+    func testAServedCrewWithNoWorkingDirectoryLeavesTheFieldEditable() {
+        let atlas = ServedCrew(crewId: "atlas", host: mini, displayName: "Atlas")
+        let config = configuration(rail: nil)
+        let list = SessionRoster(configuration: config, servedCrews: [atlas])
+        let entry = try! XCTUnwrap(list["atlas"])
+        XCTAssertNil(list.servedWorkingDirectory(for: entry, hosts: config.hosts, defaultHost: config.defaultHost))
+    }
+
+    func testAConfiguredRowWithNoServedSpecLeavesTheFieldEditable() {
+        let config = configuration(rail: [Crew(id: "atlas", displayName: "Atlas",
+                                               workingDirectory: "\(TestHost.homeRoot)/mine")])
+        let list = SessionRoster(configuration: config, servedCrews: [])
+        let entry = try! XCTUnwrap(list["atlas"])
+        XCTAssertNil(list.servedWorkingDirectory(for: entry, hosts: config.hosts, defaultHost: config.defaultHost))
     }
 
     /// `RosterEntry`'s own `subscript` is keyed by `ref`, not bare `id` — this

@@ -213,10 +213,11 @@ struct SlatePane: View {
     /// The expanded body of an ask: the question, the answer field, and Send.
     private func askBody(_ ask: SlateCard.Ask) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Plain `Text(String)`, never Markdown or `AttributedString`
-            // — the item's own rule, so quotes, `$`, backticks and a
-            // newline in the question all draw byte for byte.
-            Text(ask.question)
+            // Still the question's own characters byte for byte — no
+            // Markdown — so quotes, `$`, backticks and a newline draw
+            // literally. `LinkedText` only adds `.link` ranges on top;
+            // it never reparses the text (issue_01M6P77WXGCMHQ2VJ47C1KBE3G).
+            Text(LinkedText.attributedString(ask.question))
                 .frameFont(.body)
                 .frame(maxWidth: .infinity, alignment: .leading)
             TextEditor(text: Binding(
@@ -262,19 +263,29 @@ struct SlatePane: View {
     private func noteCard(id: String, shownID: String?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if let shownID { cardIDLine(shownID) }
-            // Plain `Text(String)` binding, never Markdown or
-            // `AttributedString` — the item's own rule, so quotes, `$`,
-            // backticks and a newline all round-trip byte for byte.
-            TextEditor(text: Binding(
-                get: { model.noteDrafts[id] ?? "" },
-                set: { model.editNote(id: id, text: $0) }
-            ))
-            .frameFont(.body)
-            // A kept sent note's text is what the host delivered, and a note whose send
-            // is in flight is locked until that send settles (see `canEditNote`).
-            .disabled(!model.canEditNote(id: id))
-            .frame(minHeight: 60, maxHeight: 140)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(.separator))
+            // A kept sent note's text is what the host delivered, and a note
+            // whose send is in flight is locked until that send settles (see
+            // `canEditNote`) — read-only in both cases, so it draws as linked
+            // text rather than an editor nobody can type into. Still the
+            // operator's own characters byte for byte; `LinkedText` only adds
+            // `.link` ranges (issue_01M6P77WXGCMHQ2VJ47C1KBE3G).
+            if model.canEditNote(id: id) {
+                TextEditor(text: Binding(
+                    get: { model.noteDrafts[id] ?? "" },
+                    set: { model.editNote(id: id, text: $0) }
+                ))
+                .frameFont(.body)
+                .frame(minHeight: 60, maxHeight: 140)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(.separator))
+            } else {
+                ScrollView {
+                    Text(LinkedText.attributedString(model.noteDrafts[id] ?? ""))
+                        .frameFont(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 60, maxHeight: 140)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(.separator))
+            }
             if let error = model.sendErrors[id] {
                 Text(error).frameFont(.caption).foregroundStyle(.red)
             }

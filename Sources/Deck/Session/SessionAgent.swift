@@ -1400,7 +1400,7 @@ enum SessionAgent {
     /// Turns one `SSHProcessRunner` outcome into `run`'s historical
     /// contract — the decode/throw logic every caller already depended on,
     /// reading from a struct instead of three loose locals.
-    private static func decoded(_ outcome: SSHProcessOutcome, classifyMissingCommand: Bool,
+    static func decoded(_ outcome: SSHProcessOutcome, classifyMissingCommand: Bool,
                                 throwOnNonZeroExit: Bool, timeout: TimeInterval) throws -> Data {
         guard outcome.terminationStatus == 0 else {
             if outcome.timedOut {
@@ -1410,7 +1410,11 @@ enum SessionAgent {
             // A missing command is its own answer: the fix is running the
             // installer, not debugging a session. Anything else carries the
             // remote's own words, which name which of the three failures it was.
-            if classifyMissingCommand,
+            // Only exit 127 means the shell could not find the command. ssh's own
+            // failure (255) and a verb's own refusal (1) can read "No such file"
+            // too: a missing IdentityFile and a missing `launchctl` each did, and
+            // Deck offered the install on a host that already had Builder's server.
+            if classifyMissingCommand, outcome.terminationStatus == 127,
                outcome.stderr.contains("command not found") || outcome.stderr.contains("No such file") {
                 throw AgentError.notInstalled
             }

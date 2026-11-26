@@ -40,14 +40,32 @@ final class PRLadderRowTests: XCTestCase {
         XCTAssertEqual(PRLadderRow.present(.readyToMerge).severity, .invitation)
     }
 
+    // MARK: - held
+
+    /// The item's own pinned draw: held presents as "Held", `.caution`
+    /// weight, and is not terminal — the merge row still shows Close.
+    func testHeldPresentsAsHeldWithCautionSeverity() {
+        let presentation = PRLadderRow.present(.held)
+        XCTAssertEqual(presentation.label, "Held")
+        XCTAssertEqual(presentation.severity, .caution)
+        XCTAssertFalse(presentation.isTerminal)
+    }
+
+    /// Held must never read as `.invitation` — that ink means "ready to
+    /// merge, waiting on the operator to press the button", and a held row
+    /// offers no such button.
+    func testHeldIsNeverInvitationSeverity() {
+        XCTAssertNotEqual(PRLadderRow.present(.held).severity, .invitation)
+    }
+
     // MARK: - Every position presents distinctly enough to tell apart
 
-    /// No two of the seven named rungs plus closed/merged/unknown share a
-    /// label — a coincidence here would be exactly the "two things read as
-    /// one" bug the epic exists to close.
+    /// No two of the seven named rungs plus held/closed/merged/unknown share
+    /// a label — a coincidence here would be exactly the "two things read
+    /// as one" bug the epic exists to close.
     func testEveryPositionHasADistinctLabel() {
         let positions: [PRLadder.Position] = [
-            .draft, .inReview, .changesRequested, .inSecondReview, .inCI, .failedCI, .readyToMerge,
+            .draft, .inReview, .changesRequested, .inSecondReview, .inCI, .failedCI, .readyToMerge, .readyToMergeWithoutCI, .held,
             .closed(.closed), .closed(.merged), .stateUnknown(.noPRRecord),
         ]
         let labels = positions.map { PRLadderRow.present($0).label }
@@ -63,7 +81,7 @@ final class PRLadderRowTests: XCTestCase {
 
     func testOpenPositionsAreNotTerminal() {
         let openPositions: [PRLadder.Position] = [
-            .draft, .inReview, .changesRequested, .inSecondReview, .inCI, .failedCI, .readyToMerge,
+            .draft, .inReview, .changesRequested, .inSecondReview, .inCI, .failedCI, .readyToMerge, .readyToMergeWithoutCI, .held,
         ]
         for position in openPositions {
             XCTAssertFalse(PRLadderRow.present(position).isTerminal)
@@ -157,6 +175,15 @@ final class PRLadderRowTests: XCTestCase {
         XCTAssertEqual(Set(colors).count, colors.count)
     }
 
+    /// Held draws its own dot colour — never collapsed onto review, CI, or
+    /// ready, which is exactly the confusion a held PR must not read as.
+    func testDotColorHeldIsHeld() {
+        XCTAssertEqual(PRLadderRow.dotColor(.held), .held)
+        XCTAssertNotEqual(PRLadderRow.dotColor(.held), PRLadderRow.dotColor(.inReview))
+        XCTAssertNotEqual(PRLadderRow.dotColor(.held), PRLadderRow.dotColor(.inCI))
+        XCTAssertNotEqual(PRLadderRow.dotColor(.held), PRLadderRow.dotColor(.readyToMerge))
+    }
+
     func testDotColorDraftIsDraftOrUnknown() {
         XCTAssertEqual(PRLadderRow.dotColor(.draft), .draftOrUnknown)
     }
@@ -168,6 +195,42 @@ final class PRLadderRowTests: XCTestCase {
         XCTAssertEqual(PRLadderRow.dotColor(.stateUnknown(.unrecognizedState("FOO"))), .draftOrUnknown)
         XCTAssertEqual(
             PRLadderRow.dotColor(.stateUnknown(.noCISource(detail: "no source"))), .draftOrUnknown)
+    }
+
+    // MARK: - effectivePosition: a cockpit-confirmed merge or close, at once
+
+    /// `issue_01M747MYS6TYG6ZHQ2WZ3R2RAN`: a row whose press is `.reported`
+    /// draws as `.closed(.merged)` from the moment GitHub confirms, whatever
+    /// the row's own captured position still says.
+    func testEffectivePositionDrawsReportedAsMerged() {
+        let outcome = MergeReportOutcome.reportFailed(reason: "unreachable")
+        XCTAssertEqual(
+            PRLadderRow.effectivePosition(.readyToMerge, pressState: .reported(outcome)), .closed(.merged))
+    }
+
+    /// A close confirmed from the cockpit draws as closed the same way.
+    func testEffectivePositionDrawsClosedAsClosed() {
+        XCTAssertEqual(PRLadderRow.effectivePosition(.readyToMerge, pressState: .closed), .closed(.closed))
+    }
+
+    /// A captured row that later reads MERGED/CLOSED is replaced with no
+    /// visible change — the override agrees with what the capture already says.
+    func testEffectivePositionAgreesWithACaptureThatCaughtUp() {
+        let outcome = MergeReportOutcome.closed
+        XCTAssertEqual(
+            PRLadderRow.effectivePosition(.closed(.merged), pressState: .reported(outcome)), .closed(.merged))
+        XCTAssertEqual(PRLadderRow.effectivePosition(.closed(.closed), pressState: .closed), .closed(.closed))
+    }
+
+    /// Every other press state leaves the captured position untouched.
+    func testEffectivePositionLeavesOtherPressStatesAlone() {
+        let untouchedStates: [MergePressState] = [
+            .idle, .confirmingMerge, .confirmingClose, .working, .noCredential,
+            .refused(.unrecognised(status: 0, message: "boom")),
+        ]
+        for pressState in untouchedStates {
+            XCTAssertEqual(PRLadderRow.effectivePosition(.readyToMerge, pressState: pressState), .readyToMerge)
+        }
     }
 
     // MARK: - githubURL — the merge affordance's placeholder

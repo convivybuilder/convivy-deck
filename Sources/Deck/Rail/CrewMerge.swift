@@ -119,11 +119,14 @@ enum CrewMerge {
     /// it never overwrites a value Settings actually set. `displayName`
     /// counts as unset when it still equals the row's own `id`, the same
     /// fallback `ThemeConfiguration.parseRail` writes for a row with no
-    /// `name` of its own. `workingDirectory`/`project`/`bead` count as
-    /// unset when `nil`; `documents`/`repos` count as unset when empty, the
-    /// same rule spelled for a list. `sessionId` is the one field a
-    /// configured row can never set locally, so the spec's value always
-    /// applies once matched.
+    /// `name` of its own. `project`/`bead` count as unset when `nil`;
+    /// `documents`/`repos` count as unset when empty, the same rule spelled
+    /// for a list. `sessionId` is the one field a configured row can never
+    /// set locally, so the spec's value always applies once matched.
+    /// `workingDirectory` is the other exception, the opposite way round: a
+    /// path is a fact about the host, so a served value wins over a
+    /// configured one outright, and the configured value is only a fallback
+    /// for a host that serves none.
     static func merge(
         configured: [Crew], served: [ServedCrew], catalog: [LaunchableSession] = [],
         hosts: [HostEntry], defaultHost: String?
@@ -182,7 +185,10 @@ enum CrewMerge {
     static func applyingToCatalog(_ served: ServedCrew, to entry: LaunchableSession, hosts: [HostEntry]) -> LaunchableSession {
         var merged = entry
         let displayName = (merged.displayName == merged.id ? served.displayName : nil) ?? merged.displayName
-        merged.workingDirectory = merged.workingDirectory ?? served.workingDirectory
+        // A working directory is a path on the host, so the host's own
+        // served spec is the authority whenever it serves one; the
+        // configured value is only a fallback for a host that serves none.
+        merged.workingDirectory = served.workingDirectory ?? merged.workingDirectory
         merged.host = merged.host ?? HostResolution.hostName(for: served.host, hosts: hosts)
         merged.project = merged.project ?? served.project
         merged.bead = merged.bead ?? served.bead
@@ -217,7 +223,8 @@ enum CrewMerge {
              repos: served.resolvedRepos,
              sessionId: served.sessionId,
              shape: served.shape,
-             documents: served.documents)
+             documents: served.documents,
+             servedTheme: served.theme)
     }
 
     /// A configured crew, with a matched spec's fields filling whatever it
@@ -229,12 +236,19 @@ enum CrewMerge {
         if merged.displayName == merged.id, let displayName = served.displayName {
             merged.displayName = displayName
         }
-        merged.workingDirectory = merged.workingDirectory ?? served.workingDirectory
+        // A working directory is a path on the host, so the host's own
+        // served spec is the authority whenever it serves one; the
+        // configured value is only a fallback for a host that serves none.
+        merged.workingDirectory = served.workingDirectory ?? merged.workingDirectory
         merged.host = merged.host ?? HostResolution.hostName(for: served.host, hosts: hosts)
         merged.project = merged.project ?? served.project
         merged.bead = merged.bead ?? served.bead
         merged.sessionId = merged.sessionId ?? served.sessionId
         merged.shape = merged.shape ?? served.shape
+        // No local value exists for this field (see `Crew.servedTheme`'s
+        // doc), so the spec's own value always applies, the same way
+        // `sessionId` above always applies once matched.
+        merged.servedTheme = served.theme
         // `documents` and `repos` are `[String]`, not optional, so "unset"
         // is empty — the same `nil`-means-unset rule `project`/`bead`
         // follow, just spelled for an array rather than an optional. See
@@ -321,7 +335,12 @@ enum CrewMerge {
     /// that happens to equal the spec's own (stripping it is harmless: the
     /// next merge fills back in the identical value). Anything genuinely
     /// overridden — including a field the operator just edited — differs
-    /// from the spec and survives untouched.
+    /// from the spec and survives untouched. `workingDirectory` is the
+    /// exception: `applying`/`applyingToCatalog` let a served value win
+    /// outright, so a local one never takes effect while the host serves
+    /// any — it strips whenever `served.workingDirectory` is non-`nil`,
+    /// whether or not it still matches, rather than surviving as a value
+    /// that looks configured but can never apply.
     ///
     /// `hosts` resolves `served.host` back to the config NAME `asCrew`/
     /// `applying` would have filled `out.host` with — the same reverse
@@ -336,7 +355,11 @@ enum CrewMerge {
         if let displayName = served.displayName, out.displayName == displayName {
             out.displayName = out.id
         }
-        if out.workingDirectory == served.workingDirectory { out.workingDirectory = nil }
+        // `applying`/`applyingToCatalog` now let a served workingDirectory
+        // win outright, so a configured value never takes effect while the
+        // host serves one — stripping it here keeps a since-overridden local
+        // value from persisting as if it still mattered.
+        if served.workingDirectory != nil { out.workingDirectory = nil }
         if out.host == HostResolution.hostName(for: served.host, hosts: hosts) { out.host = nil }
         if out.project == served.project { out.project = nil }
         if out.bead == served.bead { out.bead = nil }
@@ -345,6 +368,12 @@ enum CrewMerge {
         if out.documents == served.documents { out.documents = [] }
         if out.repos == served.resolvedRepos { out.repos = [] }
         if out.sessions == served.sessions.map(asPinnedSession) { out.sessions = [] }
+        // Unconditional, unlike every field above: there is no local value
+        // `servedTheme` could ever be an edit away from (see `Crew
+        // .servedTheme`'s doc), so it never survives into what persists,
+        // the same "server-owned, never written" rule `ServedCrew.theme`
+        // itself follows.
+        out.servedTheme = nil
         return out
     }
 

@@ -102,15 +102,29 @@ final class LibraryMutualTLSSessionDelegate: NSObject, URLSessionDelegate, @unch
 /// `LibraryTransportDispatch` can sit beside them with no new concurrency
 /// model for callers to adopt.
 enum LibraryMutualTLSClient {
+    /// One mutual-TLS `URLSession`, anchored to `anchors` and presenting
+    /// `identity` for exactly one host's forward — never shared across
+    /// hosts. `LibraryHostConnection` builds exactly one of these per host
+    /// connection and holds onto it; callers never build their own.
+    static func makeSession(identity: SecIdentity, anchors: [SecCertificate]) -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.tlsMinimumSupportedProtocolVersion = .TLSv13
+        let delegate = LibraryMutualTLSSessionDelegate(identity: identity, anchors: anchors)
+        return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    }
+
     /// `baseURL` is the forward's own `https://localhost:<local port>` —
     /// never the Library's remote address, since the forward is what makes
     /// that loopback port answer at all. Blocks the calling thread; callers
     /// already run off the main actor the same way every `SessionAgent.run`
     /// caller in `LibraryClient` does.
+    ///
+    /// Takes `session` rather than building one: the caller owns that
+    /// session's whole lifetime (`LibraryHostConnection` keeps it alive
+    /// across requests), so this function never invalidates it.
     static func perform(
         method: String, baseURL: URL, path: String, headers: [String: String],
-        body: Data?, identity: SecIdentity, anchors: [SecCertificate],
-        timeout: TimeInterval = 30
+        body: Data?, session: LibraryMutualTLSSession, timeout: TimeInterval = 30
     ) throws -> (status: Int, body: Data) {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw LibraryMutualTLSError.transportFailed("\(path) is not a usable path against \(baseURL)")
@@ -121,13 +135,6 @@ enum LibraryMutualTLSClient {
         request.httpBody = body
         request.timeoutInterval = timeout
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.tlsMinimumSupportedProtocolVersion = .TLSv13
-        configuration.timeoutIntervalForRequest = timeout
-        let delegate = LibraryMutualTLSSessionDelegate(identity: identity, anchors: anchors)
-        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-
         let semaphore = DispatchSemaphore(value: 0)
         // `nonisolated(unsafe)`: the semaphore wait below is the actual
         // synchronization — this thread never reads `result` until the
@@ -136,7 +143,7 @@ enum LibraryMutualTLSClient {
         // semaphore.
         nonisolated(unsafe) var result: Result<(Int, Data), Error> = .failure(
             LibraryMutualTLSError.transportFailed("the request never completed"))
-        let task = session.dataTask(with: request) { data, response, error in
+        let task = try session.dataTask(with: request) { data, response, error in
             defer { semaphore.signal() }
             if let error {
                 result = .failure(classify(error))

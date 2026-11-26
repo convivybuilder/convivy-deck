@@ -684,8 +684,29 @@ final class ItemDetailPaneTests: XCTestCase {
         await model.load(id: "issue_EPIC", target: TestHost.target, appearance: .light)
 
         var calledWith: String?
-        await model.approve { id in calledWith = id; return .wrote }
+        await model.approve { id, _ in calledWith = id; return .wrote }
         XCTAssertEqual(calledWith, "issue_EPIC")
+    }
+
+    /// Approve signs over the loaded item's own displayed snapshot
+    /// (CQ·209), never a fresh read — the specification, definition of
+    /// done and maturity this test's `fetchDetail` handed back when the
+    /// item was loaded.
+    @MainActor
+    func testApproveSignsOverTheLoadedItemsOwnDisplayedSnapshot() async {
+        let model = ItemDetailModel()
+        model.fetchDetail = { _, id in
+            LibraryClient.CorrectionDetail(
+                id: id, title: "An epic", type: "epic", maturity: "proposed",
+                specification: "Spec text", definitionOfDone: "- done")
+        }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_EPIC", target: TestHost.target, appearance: .light)
+
+        var capturedSnapshot: LibraryClient.ItemActSnapshot?
+        await model.approve { _, snapshot in capturedSnapshot = snapshot; return .wrote }
+        XCTAssertEqual(capturedSnapshot, LibraryClient.ItemActSnapshot(
+            specification: "Spec text", definitionOfDone: "- done", maturity: "proposed", model: nil))
     }
 
     /// Decline calls the same shared path with the item's id.
@@ -699,7 +720,7 @@ final class ItemDetailPaneTests: XCTestCase {
         await model.load(id: "issue_EPIC", target: TestHost.target, appearance: .light)
 
         var calledWith: String?
-        await model.decline { id in calledWith = id; return .wrote }
+        await model.decline { id, _ in calledWith = id; return .wrote }
         XCTAssertEqual(calledWith, "issue_EPIC")
     }
 
@@ -716,7 +737,7 @@ final class ItemDetailPaneTests: XCTestCase {
         model.fetchDetail = { _, id in
             LibraryClient.CorrectionDetail(id: id, title: "An epic", type: "epic", maturity: "approved")
         }
-        await model.approve { _ in .wrote }
+        await model.approve { _, _ in .wrote }
         XCTAssertEqual(model.detail?.maturity, "approved")
         XCTAssertNil(model.approvalWriteRefusal)
     }
@@ -735,9 +756,30 @@ final class ItemDetailPaneTests: XCTestCase {
             XCTFail("a refused write must not reload the item")
             return LibraryClient.CorrectionDetail(id: id)
         }
-        await model.approve { _ in .refused("an agent is holding this epic") }
+        await model.approve { _, _ in .refused("an agent is holding this epic") }
         XCTAssertEqual(model.approvalWriteRefusal, "an agent is holding this epic")
         XCTAssertEqual(model.detail?.maturity, "proposed")
+    }
+
+    /// `.needsFreshRead` (CQ·209: a stale 409 or a replayed 403) shows the
+    /// Library's message AND reloads the item — the act was never applied,
+    /// so the pane must redraw what the Library now holds before a person
+    /// presses Approve again.
+    @MainActor
+    func testApproveNeedsFreshReadShowsItsMessageAndReloadsTheItem() async {
+        let model = ItemDetailModel()
+        model.fetchDetail = { _, id in
+            LibraryClient.CorrectionDetail(id: id, title: "An epic", type: "epic", maturity: "proposed")
+        }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_EPIC", target: TestHost.target, appearance: .light)
+
+        model.fetchDetail = { _, id in
+            LibraryClient.CorrectionDetail(id: id, title: "An epic", type: "epic", maturity: "approved")
+        }
+        await model.approve { _, _ in .needsFreshRead("The item changed. Reopen it and press Approve again.") }
+        XCTAssertEqual(model.approvalWriteRefusal, "The item changed. Reopen it and press Approve again.")
+        XCTAssertEqual(model.detail?.maturity, "approved", "the item was reloaded, showing what the Library now holds")
     }
 
     /// A write never attempted (another approve/decline already in flight,
@@ -757,7 +799,7 @@ final class ItemDetailPaneTests: XCTestCase {
             XCTFail("a not-attempted write must not reload the item")
             return LibraryClient.CorrectionDetail(id: id)
         }
-        await model.approve { _ in .notAttempted("Another approval or decline is already in flight.") }
+        await model.approve { _, _ in .notAttempted("Another approval or decline is already in flight.") }
         XCTAssertEqual(model.approvalWriteRefusal, "Another approval or decline is already in flight.")
         XCTAssertEqual(model.detail?.maturity, "proposed")
     }

@@ -165,6 +165,59 @@ final class CockpitViewTests: XCTestCase {
         XCTAssertEqual(CockpitView.rowTreatment(state: "redirected", resolution: nil), .closedNotDone)
     }
 
+    // MARK: - rowTreatment(_:) — an epic's own row reads `epic_state`
+
+    private func epic(state: String?, epicState: String?, resolution: String? = nil) -> LibraryClient.CourseEntry {
+        LibraryClient.CourseEntry(id: "e", title: "t", type: "epic", state: state,
+                                  epicState: epicState, resolution: resolution)
+    }
+
+    /// E5, E22 and E23 in the cockpit check of 2026-11-07: nobody holds the
+    /// epic, so `state` reads `open`, but its children are under way.
+    func testAnOpenEpicWhoseEpicStateIsInProgressReadsAsInProgress() {
+        XCTAssertEqual(CockpitView.rowTreatment(epic(state: "open", epicState: "in_progress")), .inProgress)
+    }
+
+    func testAnOpenEpicWhoseEpicStateIsNotStartedReadsAsAhead() {
+        XCTAssertEqual(CockpitView.rowTreatment(epic(state: "open", epicState: "not_started")), .ahead)
+    }
+
+    func testAClaimedEpicReadsAsInProgressWhateverItsEpicState() {
+        XCTAssertEqual(CockpitView.rowTreatment(epic(state: "claimed", epicState: "in_progress")), .inProgress)
+        XCTAssertEqual(CockpitView.rowTreatment(epic(state: "claimed", epicState: nil)), .inProgress)
+    }
+
+    /// A Course served before the Library added `epic_state` keeps the
+    /// `state`-only reading, as does a value Deck does not recognise.
+    func testAnOpenEpicWithNoOrAnUnknownEpicStateReadsAsAhead() {
+        XCTAssertEqual(CockpitView.rowTreatment(epic(state: "open", epicState: nil)), .ahead)
+        XCTAssertEqual(CockpitView.rowTreatment(epic(state: "open", epicState: "paused")), .ahead)
+    }
+
+    /// `epic_state` never overrides a terminal outcome.
+    func testATerminalEpicIgnoresAnInProgressEpicState() {
+        XCTAssertEqual(CockpitView.rowTreatment(epic(state: "fixed", epicState: "in_progress", resolution: "fixed")),
+                       .done)
+    }
+
+    /// The Course header's settled count and the trailing collapse both read
+    /// the epic-aware treatment, so an under-way epic at the end of the
+    /// Course stays visible instead of folding into the "ahead" run.
+    func testCoursePartitionKeepsAnOpenInProgressEpicOutOfTheTrailingRun() {
+        let entries = [
+            epic(state: "open", epicState: "in_progress"),
+            epic(state: "open", epicState: "not_started"),
+            epic(state: "open", epicState: "not_started"),
+            epic(state: "open", epicState: "not_started"),
+        ].enumerated().map { index, entry in
+            LibraryClient.CourseEntry(id: "e\(index)", title: entry.title, type: entry.type,
+                                      state: entry.state, epicState: entry.epicState)
+        }
+        let partition = CockpitView.coursePartition(entries)
+        XCTAssertEqual(partition.visible.map(\.id), ["e0", "e1", "e2"])
+        XCTAssertEqual(partition.hiddenTail.map(\.id), ["e3"])
+    }
+
     func testStrikethroughAppliesOnlyToTheTwoTerminalTreatments() {
         XCTAssertFalse(CockpitView.RowTreatment.ahead.strikethrough)
         XCTAssertFalse(CockpitView.RowTreatment.inProgress.strikethrough)
@@ -236,18 +289,18 @@ final class CockpitViewTests: XCTestCase {
     /// through once that state is one of `LibraryClient.terminalWorkStates`
     /// — the same vocabulary `rowTreatment` reads for every other row.
     func testPrerequisiteFragmentStrikesThroughATerminalItem() {
-        // `Text("Blocker")` (a string literal) and `Text(title)` (a `String`
-        // variable) build different storage cases — `.verbatim` versus
-        // `.anyTextStorage(LocalizedTextStorage)` — that compare unequal even
-        // over identical text, so the expectation must go through a
-        // variable too, matching how `prerequisiteFragment` builds its own.
+        // `Text("Blocker")` (a string literal) and `Text(LinkedText.attributedString(title))`
+        // build different storage cases that compare unequal even over
+        // identical text, so the expectation must go through `LinkedText`
+        // too, matching how `prerequisiteFragment` now builds its own
+        // (issue_01M6P77WXGCMHQ2VJ47C1KBE3G).
         let title = "Blocker"
         let fixedLabel = "\(title) (fixed)"
         let openLabel = "\(title) (open)"
         let resolved = CockpitView.prerequisiteFragment(.item(id: "issue_A", title: title, state: "fixed"))
-        XCTAssertEqual(resolved, Text(fixedLabel).strikethrough())
+        XCTAssertEqual(resolved, Text(LinkedText.attributedString(fixedLabel)).strikethrough())
         let unresolved = CockpitView.prerequisiteFragment(.item(id: "issue_A", title: title, state: "open"))
-        XCTAssertEqual(unresolved, Text(openLabel))
+        XCTAssertEqual(unresolved, Text(LinkedText.attributedString(openLabel)))
         XCTAssertNotEqual(unresolved, resolved)
     }
 
@@ -256,7 +309,7 @@ final class CockpitViewTests: XCTestCase {
     func testPrerequisiteFragmentShowsTitleAloneWhenStateIsAbsent() {
         let title = "Blocker"
         XCTAssertEqual(CockpitView.prerequisiteFragment(.item(id: "issue_A", title: title, state: nil)),
-                       Text(title))
+                       Text(LinkedText.attributedString(title)))
     }
 
     /// **Comment 2261: "draw it as a blocker that can't be opened."** No
@@ -273,10 +326,10 @@ final class CockpitViewTests: XCTestCase {
         let condition = "the review happens"
         let met = CockpitView.prerequisiteFragment(
             .text(text: condition, met: true, judgedBy: nil, judgedAt: nil))
-        XCTAssertEqual(met, Text(condition).strikethrough())
+        XCTAssertEqual(met, Text(LinkedText.attributedString(condition)).strikethrough())
         let unmet = CockpitView.prerequisiteFragment(
             .text(text: condition, met: false, judgedBy: nil, judgedAt: nil))
-        XCTAssertEqual(unmet, Text(condition))
+        XCTAssertEqual(unmet, Text(LinkedText.attributedString(condition)))
     }
 
     /// Several entries join comma-separated, each keeping its own
@@ -290,7 +343,8 @@ final class CockpitViewTests: XCTestCase {
             .item(id: "issue_A", title: openTitle, state: "open"),
             .item(id: "issue_B", title: doneTitle, state: "fixed"),
         ])
-        XCTAssertEqual(joined, Text(openLabel) + Text(", ") + Text(doneLabel).strikethrough())
+        XCTAssertEqual(joined, Text(LinkedText.attributedString(openLabel)) + Text(", ")
+                       + Text(LinkedText.attributedString(doneLabel)).strikethrough())
     }
 
     /// The plain-string form feeds `clampedCaption`'s tooltip — a readable

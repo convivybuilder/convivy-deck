@@ -135,7 +135,10 @@ struct RunDetailPane: View {
                     section("Instruction") {
                         switch detail.instruction {
                         case .text(let text):
-                            Text(text)
+                            // `LinkedText` only adds `.link` ranges on top of
+                            // the sanitized instruction's own characters
+                            // (issue_01M6P77WXGCMHQ2VJ47C1KBE3G).
+                            Text(LinkedText.attributedString(text))
                                 .frameFont(.body)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         case .withheld:

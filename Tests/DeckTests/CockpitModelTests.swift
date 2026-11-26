@@ -335,11 +335,9 @@ final class CockpitModelTests: XCTestCase {
     /// A model that has fetched for `convivy-deck`, with the Course and queue
     /// stubbed empty and `epics` supplying each successive epics read, so a
     /// test can tell the read before an Approve from the one after it.
-    /// `approve` takes `(itemId, actingHuman)`, so a test can assert on the
-    /// operator label the model sent as well as the id.
     private func modelFetching(
         epics: @escaping @Sendable (Int) -> [LibraryClient.Epic],
-        approve: @escaping @Sendable (String, String) throws -> Void
+        approve: @escaping @Sendable (String) throws -> Void
     ) async -> CockpitModel {
         let model = CockpitModel()
         let reads = CallCounter()
@@ -348,7 +346,7 @@ final class CockpitModelTests: XCTestCase {
             LibraryClient.CorrectionsQueue(items: [], total: 0, truncated: false, childParents: [:])
         }
         model.fetchEpics = { _, _ in epics(reads.next()) }
-        model.approveEpic = { _, id, actingHuman in try approve(id, actingHuman) }
+        model.approveEpic = { _, id, _, _ in try approve(id); return .wrote }
         await model.refresh(target: TestHost.unreachableTarget, product: "convivy-deck")
         return model
     }
@@ -357,7 +355,7 @@ final class CockpitModelTests: XCTestCase {
     /// guarded no-op that never reaches the network.
     func testApproveWithNoResolvedTargetDoesNothing() async {
         let model = CockpitModel()
-        model.approveEpic = { _, _, _ in XCTFail("the write must not run without a target") }
+        model.approveEpic = { _, _, _, _ in XCTFail("the write must not run without a target"); return .wrote }
         await model.approve(epic("issue_01ABC", maturity: "proposed"))
         XCTAssertNil(model.approvalRefusal)
         XCTAssertNil(model.approvingEpicID)
@@ -367,9 +365,29 @@ final class CockpitModelTests: XCTestCase {
         let model = await modelFetching(
             epics: { _ in [epic("a", maturity: "proposed"), epic("b", maturity: "approved"),
                            epic("c", maturity: nil)] },
-            approve: { _, _ in })
+            approve: { _ in })
         XCTAssertEqual(model.proposedEpics.map(\.id), ["a"])
         XCTAssertNil(model.proposedEpicsError)
+    }
+
+    /// **THE ACTOR THIS EPIC EXISTS TO NAME.** The Library records whatever
+    /// string reaches it as `acting_human` with no way to check it, so the
+    /// model sending anything other than `DeckOperator.label()` — the macOS
+    /// session Deck is running in — would misattribute every approval with
+    /// no refusal to catch it. This is the one seam that can assert on it
+    /// short of the live actor check in `LibraryClientTests`.
+    func testApproveSendsDeckOperatorLabelAsActingHuman() async {
+        let model = CockpitModel()
+        let sent = LockedList<String>()
+        model.fetchCourse = { _, _ in nil }
+        model.fetchQueue = { _, _ in
+            LibraryClient.CorrectionsQueue(items: [], total: 0, truncated: false, childParents: [:])
+        }
+        model.fetchEpics = { _, _ in [epic("a", maturity: "proposed")] }
+        model.approveEpic = { _, _, _, actingHuman in sent.append(actingHuman); return .wrote }
+        await model.refresh(target: TestHost.unreachableTarget, product: "convivy-deck")
+        await model.approve(model.proposedEpics[0])
+        XCTAssertEqual(sent.values, [DeckOperator.label()])
     }
 
     /// A proposal row's `Open` control names the epic it sits on, and that is
@@ -381,7 +399,7 @@ final class CockpitModelTests: XCTestCase {
         let written = LockedList<String>()
         let model = await modelFetching(
             epics: { _ in [epic("a", maturity: "proposed"), epic("b", maturity: "proposed")] },
-            approve: { id, _ in written.append(id) })
+            approve: { id in written.append(id) })
         let second = model.proposedEpics[1]
         XCTAssertEqual(CockpitView.proposalOpenTarget(second), "b")
         XCTAssertNotEqual(CockpitView.proposalOpenTarget(second), CockpitView.proposalOpenTarget(model.proposedEpics[0]))
@@ -398,28 +416,13 @@ final class CockpitModelTests: XCTestCase {
                 read == 1 ? [epic("a", maturity: "proposed"), epic("b", maturity: "proposed")]
                           : [epic("a", maturity: "approved"), epic("b", maturity: "proposed")]
             },
-            approve: { id, _ in written.append(id) })
+            approve: { id in written.append(id) })
         XCTAssertEqual(model.proposedEpics.map(\.id), ["a", "b"])
         await model.approve(model.proposedEpics[0])
         XCTAssertEqual(written.values, ["a"])
         XCTAssertEqual(model.proposedEpics.map(\.id), ["b"])
         XCTAssertNil(model.approvalRefusal)
         XCTAssertNil(model.approvingEpicID)
-    }
-
-    /// **THE ACTOR THIS EPIC EXISTS TO NAME.** The Library records whatever
-    /// string reaches it as `acting_human` with no way to check it, so the
-    /// model sending anything other than `DeckOperator.label()` — the macOS
-    /// session Deck is running in — would misattribute every approval with
-    /// no refusal to catch it. This is the one seam that can assert on it
-    /// short of the live actor check in `LibraryClientTests`.
-    func testApproveSendsDeckOperatorLabelAsActingHuman() async {
-        let sent = LockedList<String>()
-        let model = await modelFetching(
-            epics: { _ in [epic("a", maturity: "proposed")] },
-            approve: { _, actingHuman in sent.append(actingHuman) })
-        await model.approve(model.proposedEpics[0])
-        XCTAssertEqual(sent.values, [DeckOperator.label()])
     }
 
     /// An agent holds the epic, so the Library answers 409 and the row must
@@ -432,7 +435,7 @@ final class CockpitModelTests: XCTestCase {
         """
         let model = await modelFetching(
             epics: { _ in [epic("issue_01ABC", maturity: "proposed")] },
-            approve: { _, _ in throw LibraryClient.FetchError.libraryRefused(status: 409, body: held) })
+            approve: { _ in throw LibraryClient.FetchError.libraryRefused(status: 409, body: held) })
         await model.approve(model.proposedEpics[0])
         let refusal = try? XCTUnwrap(model.approvalRefusal)
         XCTAssertEqual(refusal?.epicID, "issue_01ABC")
@@ -452,7 +455,7 @@ final class CockpitModelTests: XCTestCase {
         """
         let model = await modelFetching(
             epics: { _ in [epic("issue_01ABC", maturity: "proposed")] },
-            approve: { _, _ in throw LibraryClient.FetchError.libraryRefused(status: 400, body: gap) })
+            approve: { _ in throw LibraryClient.FetchError.libraryRefused(status: 400, body: gap) })
         await model.approve(model.proposedEpics[0])
         let refusal = try? XCTUnwrap(model.approvalRefusal)
         XCTAssertEqual(refusal?.epicID, "issue_01ABC")
@@ -467,7 +470,7 @@ final class CockpitModelTests: XCTestCase {
     func testAMissingCapabilitySurfacesOnTheRow() async {
         let model = await modelFetching(
             epics: { _ in [epic("issue_01ABC", maturity: "proposed")] },
-            approve: { _, _ in
+            approve: { _ in
                 throw LibraryClient.FetchError.libraryRefused(
                     status: 403, body: #"{"error":"this identity lacks 'epic.approve'"}"#)
             })
@@ -489,7 +492,7 @@ final class CockpitModelTests: XCTestCase {
         """
         let model = await modelFetching(
             epics: { _ in [epic("issue_01ABC", maturity: "proposed")] },
-            approve: { _, _ in throw LibraryClient.FetchError.libraryRefused(status: 409, body: noCourse) })
+            approve: { _ in throw LibraryClient.FetchError.libraryRefused(status: 409, body: noCourse) })
         await model.approve(model.proposedEpics[0])
         let refusal = try? XCTUnwrap(model.approvalRefusal)
         XCTAssertEqual(refusal?.epicID, "issue_01ABC")
@@ -503,7 +506,7 @@ final class CockpitModelTests: XCTestCase {
         let attempts = CallCounter()
         let model = await modelFetching(
             epics: { read in read < 2 ? [epic("a", maturity: "proposed")] : [] },
-            approve: { _, _ in
+            approve: { _ in
                 if attempts.next() == 1 {
                     throw LibraryClient.FetchError.libraryRefused(
                         status: 400, body: #"{"error":"an epic cannot be approved while it has no specification"}"#)
@@ -522,7 +525,7 @@ final class CockpitModelTests: XCTestCase {
     /// `approve`.
     private func modelFetchingForDecline(
         epics: @escaping @Sendable (Int) -> [LibraryClient.Epic],
-        decline: @escaping @Sendable (String, String) throws -> Void
+        decline: @escaping @Sendable (String) throws -> Void
     ) async -> CockpitModel {
         let model = CockpitModel()
         let reads = CallCounter()
@@ -531,7 +534,7 @@ final class CockpitModelTests: XCTestCase {
             LibraryClient.CorrectionsQueue(items: [], total: 0, truncated: false, childParents: [:])
         }
         model.fetchEpics = { _, _ in epics(reads.next()) }
-        model.declineEpic = { _, id, actingHuman, _ in try decline(id, actingHuman) }
+        model.declineEpic = { _, id, _, _, _ in try decline(id); return .wrote }
         await model.refresh(target: TestHost.unreachableTarget, product: "convivy-deck")
         return model
     }
@@ -542,11 +545,27 @@ final class CockpitModelTests: XCTestCase {
         let reasons = LockedList<String>()
         let model = await modelFetchingForDecline(
             epics: { _ in [epic("a", maturity: "proposed"), epic("b", maturity: "proposed")] },
-            decline: { _, _ in })
-        model.declineEpic = { _, _, _, reason in reasons.append(reason ?? "<none>") }
+            decline: { _ in })
+        model.declineEpic = { _, _, reason, _, _ in reasons.append(reason ?? "<none>"); return .wrote }
         await model.decline(model.proposedEpics[0], reason: "Signpost is retired")
         await model.decline(model.proposedEpics[1])
         XCTAssertEqual(reasons.values, ["Signpost is retired", "<none>"])
+    }
+
+    /// The same actor assertion `testApproveSendsDeckOperatorLabelAsActingHuman`
+    /// makes, over Decline.
+    func testDeclineSendsDeckOperatorLabelAsActingHuman() async {
+        let model = CockpitModel()
+        let sent = LockedList<String>()
+        model.fetchCourse = { _, _ in nil }
+        model.fetchQueue = { _, _ in
+            LibraryClient.CorrectionsQueue(items: [], total: 0, truncated: false, childParents: [:])
+        }
+        model.fetchEpics = { _, _ in [epic("a", maturity: "proposed")] }
+        model.declineEpic = { _, _, _, _, actingHuman in sent.append(actingHuman); return .wrote }
+        await model.refresh(target: TestHost.unreachableTarget, product: "convivy-deck")
+        await model.decline(model.proposedEpics[0])
+        XCTAssertEqual(sent.values, [DeckOperator.label()])
     }
 
     /// With no project ever resolved (`lastFetched` is nil), Decline is a
@@ -554,7 +573,7 @@ final class CockpitModelTests: XCTestCase {
     /// `testApproveWithNoResolvedTargetDoesNothing` exercises for Approve.
     func testDeclineWithNoResolvedTargetDoesNothing() async {
         let model = CockpitModel()
-        model.declineEpic = { _, _, _, _ in XCTFail("the write must not run without a target") }
+        model.declineEpic = { _, _, _, _, _ in XCTFail("the write must not run without a target"); return .wrote }
         await model.decline(epic("issue_01ABC", maturity: "proposed"))
         XCTAssertNil(model.declineRefusal)
         XCTAssertNil(model.decliningEpicID)
@@ -570,24 +589,13 @@ final class CockpitModelTests: XCTestCase {
                 read == 1 ? [epic("a", maturity: "proposed"), epic("b", maturity: "proposed")]
                           : [epic("a", maturity: "declined"), epic("b", maturity: "proposed")]
             },
-            decline: { id, _ in written.append(id) })
+            decline: { id in written.append(id) })
         XCTAssertEqual(model.proposedEpics.map(\.id), ["a", "b"])
         await model.decline(model.proposedEpics[0])
         XCTAssertEqual(written.values, ["a"])
         XCTAssertEqual(model.proposedEpics.map(\.id), ["b"])
         XCTAssertNil(model.declineRefusal)
         XCTAssertNil(model.decliningEpicID)
-    }
-
-    /// The same actor assertion `testApproveSendsDeckOperatorLabelAsActingHuman`
-    /// pins for Approve, for Decline.
-    func testDeclineSendsDeckOperatorLabelAsActingHuman() async {
-        let sent = LockedList<String>()
-        let model = await modelFetchingForDecline(
-            epics: { _ in [epic("a", maturity: "proposed")] },
-            decline: { _, actingHuman in sent.append(actingHuman) })
-        await model.decline(model.proposedEpics[0])
-        XCTAssertEqual(sent.values, [DeckOperator.label()])
     }
 
     /// The 409 this route can send that Approve cannot: an approved
@@ -600,7 +608,7 @@ final class CockpitModelTests: XCTestCase {
         """
         let model = await modelFetchingForDecline(
             epics: { _ in [epic("issue_01ABC", maturity: "proposed")] },
-            decline: { _, _ in throw LibraryClient.FetchError.libraryRefused(status: 409, body: blocked) })
+            decline: { _ in throw LibraryClient.FetchError.libraryRefused(status: 409, body: blocked) })
         await model.decline(model.proposedEpics[0])
         let refusal = try? XCTUnwrap(model.declineRefusal)
         XCTAssertEqual(refusal?.epicID, "issue_01ABC")
@@ -616,7 +624,7 @@ final class CockpitModelTests: XCTestCase {
         let attempts = CallCounter()
         let model = await modelFetchingForDecline(
             epics: { read in read < 2 ? [epic("a", maturity: "proposed")] : [] },
-            decline: { _, _ in
+            decline: { _ in
                 if attempts.next() == 1 {
                     throw LibraryClient.FetchError.libraryRefused(
                         status: 403, body: #"{"error":"this identity lacks 'epic.approve'"}"#)
@@ -635,11 +643,11 @@ final class CockpitModelTests: XCTestCase {
     func testARefusalFromOneControlClearsWhenTheOtherIsPressed() async {
         let model = await modelFetchingForDecline(
             epics: { _ in [epic("a", maturity: "proposed")] },
-            decline: { _, _ in
+            decline: { _ in
                 throw LibraryClient.FetchError.libraryRefused(
                     status: 409, body: #"{"error":"decline refused"}"#)
             })
-        model.approveEpic = { _, _, _ in
+        model.approveEpic = { _, _, _, _ in
             throw LibraryClient.FetchError.libraryRefused(status: 403, body: #"{"error":"approve refused"}"#)
         }
         await model.approve(model.proposedEpics[0])
@@ -657,11 +665,11 @@ final class CockpitModelTests: XCTestCase {
     func testAPressOnOneRowLeavesAnotherRowsRefusal() async {
         let model = await modelFetchingForDecline(
             epics: { _ in [epic("a", maturity: "proposed"), epic("b", maturity: "proposed")] },
-            decline: { _, _ in
+            decline: { _ in
                 throw LibraryClient.FetchError.libraryRefused(
                     status: 409, body: #"{"error":"decline refused"}"#)
             })
-        model.approveEpic = { _, _, _ in }
+        model.approveEpic = { _, _, _, _ in .wrote }
         let a = model.proposedEpics.first { $0.id == "a" }!
         let b = model.proposedEpics.first { $0.id == "b" }!
         await model.decline(a)
@@ -685,9 +693,10 @@ final class CockpitModelTests: XCTestCase {
     func testItemPaneApproveWritesToItsOwnHostWithNoCockpitFetch() async {
         let model = CockpitModel()
         let written = LockedList<SSHTarget>()
-        model.approveEpic = { host, _, _ in written.append(host) }
+        model.approveEpic = { host, _, _, _ in written.append(host); return .wrote }
         let outcome = await model.writeApprovalFromItemPane(
-            .approve, epicID: "issue_01ABC", host: TestHost.secondaryTarget)
+            .approve, epicID: "issue_01ABC", host: TestHost.secondaryTarget,
+            snapshot: LibraryClient.ItemActSnapshot())
         XCTAssertEqual(outcome, .wrote)
         XCTAssertEqual(written.values, [TestHost.secondaryTarget])
     }
@@ -696,21 +705,51 @@ final class CockpitModelTests: XCTestCase {
     func testItemPaneDeclineWritesToItsOwnHostWithNoCockpitFetch() async {
         let model = CockpitModel()
         let written = LockedList<SSHTarget>()
-        model.declineEpic = { host, _, _, _ in written.append(host) }
+        model.declineEpic = { host, _, _, _, _ in written.append(host); return .wrote }
         let outcome = await model.writeApprovalFromItemPane(
-            .decline, epicID: "issue_01ABC", host: TestHost.secondaryTarget)
+            .decline, epicID: "issue_01ABC", host: TestHost.secondaryTarget,
+            snapshot: LibraryClient.ItemActSnapshot())
         XCTAssertEqual(outcome, .wrote)
         XCTAssertEqual(written.values, [TestHost.secondaryTarget])
     }
 
-    /// Same acting-human source as the Proposals region's own write.
+    /// **THE ACTOR THIS EPIC EXISTS TO NAME.** The Library records whatever
+    /// string reaches it as `acting_human` with no way to check it, so
+    /// `writeApprovalFromItemPane` sending anything other than
+    /// `DeckOperator.label()` — the macOS session Deck is running in — would
+    /// misattribute every approval with no refusal to catch it. This is the
+    /// one seam that can assert on it short of the live actor check in
+    /// `LibraryClientTests`.
     func testItemPaneWriteSendsDeckOperatorLabelAsActingHuman() async {
         let model = CockpitModel()
         let sent = LockedList<String>()
-        model.approveEpic = { _, _, actingHuman in sent.append(actingHuman) }
+        model.approveEpic = { _, _, _, actingHuman in sent.append(actingHuman); return .wrote }
         _ = await model.writeApprovalFromItemPane(
-            .approve, epicID: "issue_01ABC", host: TestHost.secondaryTarget)
+            .approve, epicID: "issue_01ABC", host: TestHost.secondaryTarget,
+            snapshot: LibraryClient.ItemActSnapshot())
         XCTAssertEqual(sent.values, [DeckOperator.label()])
+    }
+
+    /// `.signingUnavailable` surfaces as the certificate message, the same
+    /// one every signed act's control shows for it.
+    func testItemPaneWriteWithNoCertificateShowsTheCertificateMessage() async {
+        let model = CockpitModel()
+        model.approveEpic = { _, _, _, _ in .signingUnavailable }
+        let outcome = await model.writeApprovalFromItemPane(
+            .approve, epicID: "issue_01ABC", host: TestHost.secondaryTarget,
+            snapshot: LibraryClient.ItemActSnapshot())
+        XCTAssertEqual(outcome, .refused(LibraryClient.signedActNeedsCertificateMessage))
+    }
+
+    /// A cancelled Touch ID prompt is its own outcome, never read as a
+    /// refusal — nothing alarming shows for it.
+    func testItemPaneWriteCancelledIsItsOwnOutcome() async {
+        let model = CockpitModel()
+        model.declineEpic = { _, _, _, _, _ in .cancelled }
+        let outcome = await model.writeApprovalFromItemPane(
+            .decline, epicID: "issue_01ABC", host: TestHost.secondaryTarget,
+            snapshot: LibraryClient.ItemActSnapshot())
+        XCTAssertEqual(outcome, .cancelled)
     }
 
     /// A press that arrives while another approve/decline is already in
@@ -723,20 +762,22 @@ final class CockpitModelTests: XCTestCase {
         let writes = LockedList<String>()
         let started = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
-        model.approveEpic = { _, id, _ in
+        model.approveEpic = { _, id, _, _ in
             writes.append(id)
             started.signal()
             release.wait()
+            return .wrote
         }
-        model.declineEpic = { _, _, _, _ in XCTFail("the second press must not write") }
+        model.declineEpic = { _, _, _, _, _ in XCTFail("the second press must not write"); return .wrote }
 
         let first = Task {
-            await model.writeApprovalFromItemPane(.approve, epicID: "a", host: TestHost.target)
+            await model.writeApprovalFromItemPane(
+                .approve, epicID: "a", host: TestHost.target, snapshot: LibraryClient.ItemActSnapshot())
         }
         await Task.detached { blockOn(started) }.value
 
         let second = await model.writeApprovalFromItemPane(
-            .decline, epicID: "b", host: TestHost.secondaryTarget)
+            .decline, epicID: "b", host: TestHost.secondaryTarget, snapshot: LibraryClient.ItemActSnapshot())
         XCTAssertEqual(second, .notAttempted("Another approval or decline is already in flight."))
         XCTAssertEqual(writes.values, ["a"], "the in-flight press must be the only write")
 
@@ -749,12 +790,13 @@ final class CockpitModelTests: XCTestCase {
     /// Proposals region's own write gets.
     func testItemPaneWriteRefusalSurfacesTheLibrarysMessage() async {
         let model = CockpitModel()
-        model.declineEpic = { _, _, _, _ in
+        model.declineEpic = { _, _, _, _, _ in
             throw LibraryClient.FetchError.libraryRefused(
                 status: 409, body: #"{"error":"issue_01ABC has an approved sub-epic"}"#)
         }
         let outcome = await model.writeApprovalFromItemPane(
-            .decline, epicID: "issue_01ABC", host: TestHost.secondaryTarget)
+            .decline, epicID: "issue_01ABC", host: TestHost.secondaryTarget,
+            snapshot: LibraryClient.ItemActSnapshot())
         XCTAssertEqual(outcome, .refused("issue_01ABC has an approved sub-epic"))
     }
 
@@ -765,9 +807,10 @@ final class CockpitModelTests: XCTestCase {
     func testItemPaneWriteRefetchesProposalsOnlyWhenACockpitProjectIsResolved() async {
         let noCockpit = CockpitModel()
         noCockpit.fetchEpics = { _, _ in XCTFail("no project is resolved; nothing to refetch"); return [] }
-        noCockpit.approveEpic = { _, _, _ in }
+        noCockpit.approveEpic = { _, _, _, _ in .wrote }
         let outcome = await noCockpit.writeApprovalFromItemPane(
-            .approve, epicID: "issue_01ABC", host: TestHost.secondaryTarget)
+            .approve, epicID: "issue_01ABC", host: TestHost.secondaryTarget,
+            snapshot: LibraryClient.ItemActSnapshot())
         XCTAssertEqual(outcome, .wrote)
 
         let reads = CallCounter()
@@ -778,11 +821,39 @@ final class CockpitModelTests: XCTestCase {
         }
         withCockpit.fetchEpics = { _, _ in reads.next() == 1 ? [] : [epic("still-proposed", maturity: "proposed")] }
         await withCockpit.refresh(target: TestHost.unreachableTarget, product: "convivy-deck")
-        withCockpit.approveEpic = { _, _, _ in }
+        withCockpit.approveEpic = { _, _, _, _ in .wrote }
         let secondOutcome = await withCockpit.writeApprovalFromItemPane(
-            .approve, epicID: "issue_01XYZ", host: TestHost.secondaryTarget)
+            .approve, epicID: "issue_01XYZ", host: TestHost.secondaryTarget,
+            snapshot: LibraryClient.ItemActSnapshot())
         XCTAssertEqual(secondOutcome, .wrote)
         XCTAssertEqual(withCockpit.proposedEpics.map(\.id), ["still-proposed"], "the refetch ran")
+    }
+
+    /// `.needsFreshRead` (library-protocol `stale`/replayed) is the only
+    /// outcome besides `.wrote` that re-fetches this region's epics — the
+    /// row must redraw what the Library now holds before a second press, and
+    /// nothing is ever resent on its own. Mirrors `testItemPaneWriteRefetchesProposalsOnlyWhenACockpitProjectIsResolved`'s
+    /// shape for the `.wrote` branch.
+    func testItemPaneWriteOnNeedsFreshReadRefetchesAndResendsNothing() async {
+        let model = CockpitModel()
+        let writes = LockedList<String>()
+        model.fetchCourse = { _, _ in nil }
+        model.fetchQueue = { _, _ in
+            LibraryClient.CorrectionsQueue(items: [], total: 0, truncated: false, childParents: [:])
+        }
+        let reads = CallCounter()
+        model.fetchEpics = { _, _ in reads.next() == 1 ? [] : [epic("still-proposed", maturity: "proposed")] }
+        await model.refresh(target: TestHost.unreachableTarget, product: "convivy-deck")
+        model.approveEpic = { _, id, _, _ in
+            writes.append(id)
+            return .needsFreshRead("The item changed. Reopen it and press Approve again.")
+        }
+        let outcome = await model.writeApprovalFromItemPane(
+            .approve, epicID: "issue_01XYZ", host: TestHost.secondaryTarget,
+            snapshot: LibraryClient.ItemActSnapshot())
+        XCTAssertEqual(outcome, .needsFreshRead("The item changed. Reopen it and press Approve again."))
+        XCTAssertEqual(writes.values, ["issue_01XYZ"], "exactly one write — nothing is resent")
+        XCTAssertEqual(model.proposedEpics.map(\.id), ["still-proposed"], "the refetch ran")
     }
 
     // MARK: - Expansion is per entry
@@ -1009,6 +1080,22 @@ final class CockpitModelTests: XCTestCase {
         model.noteScrollAnchor(CockpitView.coursePanelID)
         model.noteScrollAnchor(CockpitView.pullRequestsPanelID)
         XCTAssertEqual(model.scrollAnchorPanelID, CockpitView.pullRequestsPanelID)
+    }
+
+    /// Noting the anchor that is already stored publishes nothing. The
+    /// cockpit calls this on every scroll frame, and an unconditional
+    /// `@Published` write redrew the whole cockpit once per frame (CQ·213).
+    func testNotingTheSameAnchorAgainDoesNotPublish() {
+        let model = CockpitModel()
+        model.noteScrollAnchor(CockpitView.coursePanelID)
+        var publishes = 0
+        let subscription = model.objectWillChange.sink { publishes += 1 }
+        model.noteScrollAnchor(CockpitView.coursePanelID)
+        model.noteScrollAnchor(CockpitView.coursePanelID)
+        XCTAssertEqual(publishes, 0, "an unchanged anchor must not publish")
+        model.noteScrollAnchor(CockpitView.pullRequestsPanelID)
+        XCTAssertEqual(publishes, 1, "a new anchor publishes once")
+        subscription.cancel()
     }
 
     /// Unaffected by a manual refresh — `expandedEntries`' own survival

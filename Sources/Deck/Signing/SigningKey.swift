@@ -61,6 +61,25 @@ enum SigningKeyFingerprint {
     }
 }
 
+/// This Mac's stored signing key together with the certificate that matches
+/// it — the pair a signed write needs, loaded the way `EditorPane.signAndSubmit`
+/// loads them inline: nil for either when there is no stored key, no stored
+/// certificate, or the certificate certifies a different key. Loading never
+/// prompts; only a later call to `SigningKey.sign(_:reason:)` does.
+enum SigningCredentials {
+    static func loadMatching(
+        keyStore: SigningKeyStore = SigningKeyStore(
+            fileURL: SigningKeyStore.defaultFileURL(), factory: SecureEnclaveSigningKeyFactory()),
+        certificateStore: SigningCertificateStore = SigningCertificateStore(
+            fileURL: SigningCertificateStore.defaultFileURL())
+    ) -> (key: SigningKey, certificatePEM: String)? {
+        guard let key = try? keyStore.load() else { return nil }
+        let spki = CertificateSigningRequest.subjectPublicKeyInfo(x963: key.publicKeyX963)
+        guard let certificatePEM = certificateStore.loadPEM(forSPKI: spki) else { return nil }
+        return (key, certificatePEM)
+    }
+}
+
 /// Keeps one key per Mac in a file, and reuses it until it is deleted.
 ///
 /// WHY A FILE AND NOT THE KEYCHAIN. What is stored is the Enclave's

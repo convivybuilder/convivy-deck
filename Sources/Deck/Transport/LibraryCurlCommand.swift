@@ -21,6 +21,14 @@ enum LibraryCurlCommand {
         let method: String
         let path: String
         let tokenFile: String
+        /// The three signed item-act headers (`LibraryClient.LibraryActHeaders`,
+        /// library-protocol "Signed item acts"), read back the same way
+        /// `extractMethod` reads `-X`: `nil` on every GET/PUT template and on
+        /// a POST that carries no act, which is what makes their absence a
+        /// normal case rather than a parse failure.
+        let actEnvelope: String?
+        let actSignature: String?
+        let actCertificate: String?
     }
 
     /// `nil` when `command` does not carry the base-URL marker or the
@@ -31,7 +39,11 @@ enum LibraryCurlCommand {
         guard let path = extractPath(command), let tokenFile = extractTokenFile(command) else {
             return nil
         }
-        return Parsed(method: extractMethod(command) ?? "GET", path: path, tokenFile: tokenFile)
+        return Parsed(
+            method: extractMethod(command) ?? "GET", path: path, tokenFile: tokenFile,
+            actEnvelope: extractHeaderValue(command, name: "Envelope"),
+            actSignature: extractHeaderValue(command, name: "Signature"),
+            actCertificate: extractHeaderValue(command, name: "Certificate"))
     }
 
     private static func extractPath(_ command: String) -> String? {
@@ -58,5 +70,18 @@ enum LibraryCurlCommand {
         let afterMarker = command[marker.upperBound...]
         guard let endSpace = afterMarker.firstIndex(of: " ") else { return nil }
         return String(afterMarker[..<endSpace])
+    }
+
+    /// `remoteWriteCommand`'s `-H 'Library-Act-<name>: <value>' ` — `name`
+    /// one of `Envelope`, `Signature`, `Certificate`. The value is always
+    /// standard base64 (`LibraryActHeaders`'s own doc: no single quote,
+    /// backtick, `$`, or whitespace), so reading up to the closing `'` is
+    /// exact, the same technique `extractPath` uses for its own closing `"`.
+    private static func extractHeaderValue(_ command: String, name: String) -> String? {
+        let marker = "-H 'Library-Act-\(name): "
+        guard let markerRange = command.range(of: marker) else { return nil }
+        let afterMarker = command[markerRange.upperBound...]
+        guard let endQuote = afterMarker.firstIndex(of: "'") else { return nil }
+        return String(afterMarker[..<endQuote])
     }
 }

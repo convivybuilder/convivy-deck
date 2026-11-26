@@ -186,7 +186,7 @@ struct TerminalPaneView: NSViewRepresentable {
 
             // NO GATE WAIT HERE (CQ·165). A pane's ssh process opens its own
             // connection (`ControlPath=none` in `sshArguments`/
-            // `BuilderServerInstall.arguments`) rather than riding the shared
+            // `BuilderServerInstall.setupArguments`) rather than riding the shared
             // ControlMaster `SSHConnectionGate` bounds, so it is no longer one
             // of the sessions sshd's `MaxSessions` caps on that socket, and has
             // nothing to queue for.

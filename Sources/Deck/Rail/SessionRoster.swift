@@ -246,6 +246,32 @@ struct SessionRoster: Equatable {
 
     var pinnedCount: Int { entries.filter(\.isPinned).count }
 
+    /// The working directory the host's own crew spec serves for `entry`,
+    /// if any — the value `CrewMerge.applying`/`applyingToCatalog` already
+    /// folded into `entry.workingDirectory` ahead of whatever was
+    /// configured locally. Settings uses this to tell a row whose folder it
+    /// actually controls from one where the host is the authority and an
+    /// edit would be ignored.
+    func servedWorkingDirectory(for entry: RosterEntry, hosts: [HostEntry], defaultHost: String?) -> String? {
+        if entry.isPinned {
+            return CrewMerge.match(entry.asCrew, in: servedCrews, hosts: hosts, defaultHost: defaultHost)?.workingDirectory
+        }
+        return CrewMerge.catalogMatch(entry.asLaunchableSession, in: servedCrews, hosts: hosts, defaultHost: defaultHost)?.workingDirectory
+    }
+
+    /// The matched spec's own `theme`, the same lookup `servedWorkingDirectory`
+    /// makes — this is how a Settings row answers `ThemeConfiguration.theme
+    /// (forSession:fallbackParent:servedTheme:)`'s `servedTheme` closure,
+    /// since `RosterEntry` itself never carries this field (see `Crew
+    /// .servedTheme`'s doc: it is server-owned and must never round-trip
+    /// through anything this roster persists).
+    func servedTheme(for entry: RosterEntry, hosts: [HostEntry], defaultHost: String?) -> String? {
+        if entry.isPinned {
+            return CrewMerge.match(entry.asCrew, in: servedCrews, hosts: hosts, defaultHost: defaultHost)?.theme
+        }
+        return CrewMerge.catalogMatch(entry.asLaunchableSession, in: servedCrews, hosts: hosts, defaultHost: defaultHost)?.theme
+    }
+
     /// Keyed by `ref`, NOT `id`: two crews of one name on different hosts
     /// share `id`, and a bare-id lookup would always resolve to whichever
     /// came first — see `RosterEntry.ref`'s doc.

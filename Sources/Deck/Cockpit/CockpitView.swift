@@ -152,6 +152,24 @@ struct CockpitView: View {
     /// resolved, `pullRequests` has been cleared (`PRLadderModel.refresh`),
     /// and this reason is the only honest thing the panel can say.
     var pullRequestsUnresolvedReason: String? = nil
+    /// The merge/close affordance's own state — `issue_01M1HQMDZ8TG2KVK7JG6P7YK7T`.
+    /// A fresh, default-seamed instance for every call site that does not
+    /// name one, including every existing render test that predates this
+    /// item: `hosts` defaults to `[]` and `servedSessionsReason` stays
+    /// `nil` until something sets it, so the panel draws exactly the button
+    /// it would with no served-sessions refusal in play, never a crash or a
+    /// hang from an unconfigured seam.
+    ///
+    /// **NOT `@ObservedObject`, DELIBERATELY.** `CockpitView` is a value-type
+    /// `View` rebuilt on nearly every render; a default-constructed
+    /// `@ObservedObject` would mint and discard a fresh `MergePressModel`
+    /// (and its Combine publisher) on every one of those rebuilds for no
+    /// reason. `ContentView`'s own `@StateObject var mergeModel` is the one
+    /// place this is actually observed; it owns the instance, re-evaluates
+    /// its own body when `states` changes, and that is what rebuilds
+    /// `CockpitView` with the fresh state — this property only needs to
+    /// read it.
+    var mergeModel: MergePressModel = MergePressModel()
     /// Opens the reviews pane for one Pull Requests panel row — a row's
     /// tap, away from the `#N` text's own tap (which opens the PR on
     /// GitHub). `nil` draws the rows with no row-level tap at all, the same
@@ -363,16 +381,31 @@ struct CockpitView: View {
     /// a panel this pass never had to know about (a future documents-in-hand
     /// or PRs-open panel) is placed correctly the moment it registers a
     /// frame through the same mechanism.
-    @State private var panelFrames: [String: CGRect] = [:]
+    ///
+    /// **KEPT OUT OF SWIFTUI'S STATE, DELIBERATELY.** Frames are reported in
+    /// the `ScrollView`'s own space, so every panel's frame changes on every
+    /// scroll frame. Writing them to an `@State` re-evaluated this whole
+    /// view once per frame and made scrolling crawl (CQ·213,
+    /// issue_01M8836NJ6VK1QH5MJBC6F87QF). The box is a reference that never
+    /// changes identity, so mutating it redraws nothing. Only
+    /// `topmostPanelID` below, which changes when a different panel reaches
+    /// the top, is state.
+    @State private var scrollMeasurements = ScrollMeasurements()
 
-    /// The `ScrollView`'s own visible height, in the same units
-    /// `panelFrames` reports in — `topmostVisiblePanelID`'s other half of
-    /// "does this panel intersect the viewport." Measured off the
+    /// The panel index's "here" entry: the topmost panel visible in the
+    /// viewport, written only when it differs from the stored value.
+    @State private var topmostPanelID: String?
+
+    /// The last reported panel frames and the `ScrollView`'s own visible
+    /// height, in the same units. The height is measured off the
     /// `ScrollView` itself via `ScrollViewportHeightPreferenceKey` rather
     /// than taken from a `GeometryReader` wrapping the whole view, because
-    /// the header now sits outside the `ScrollView` (see `body`) and no
-    /// longer shares its height.
-    @State private var scrollViewportHeight: CGFloat = 0
+    /// the header sits outside the `ScrollView` (see `body`) and does not
+    /// share its height.
+    final class ScrollMeasurements {
+        var panelFrames: [String: CGRect] = [:]
+        var viewportHeight: CGFloat = 0
+    }
 
     /// The coordinate space `panelSection` measures frames in and the
     /// `ScrollView` publishes — named rather than `.global` so a panel's
@@ -480,7 +513,7 @@ struct CockpitView: View {
         }
     }
 
-    /// Reports the `ScrollView`'s own size up to `scrollViewportHeight` —
+    /// Reports the `ScrollView`'s own size up to `scrollMeasurements.viewportHeight` —
     /// same `Color.clear` + `GeometryReader` shape as `PanelFramePreferenceKey`,
     /// scoped to the `ScrollView`'s `.background` so what it measures is the
     /// viewport, not the whole pane.
@@ -567,22 +600,21 @@ struct CockpitView: View {
                     }
                 )
                 .coordinateSpace(name: Self.scrollCoordinateSpaceName)
-                // Preference diffing is Equatable-keyed ([String: CGRect] is
-                // Equatable since CGRect is), so this callback — and the
-                // @State write and the redraw it triggers — fires only when
-                // a reported frame actually changed, not on every poll tick
-                // that leaves layout untouched. See the PR body for the
-                // full per-update cost accounting.
+                // This callback fires on every scroll frame, because a
+                // scroll moves every panel's frame in this space. It writes
+                // only the reference box and, when a different panel has
+                // reached the top, `topmostPanelID`, so scrolling within one
+                // panel redraws nothing (CQ·213).
                 .onPreferenceChange(PanelFramePreferenceKey.self) { newFrames in
-                    panelFrames = newFrames
-                    noteScrollAnchor(frames: newFrames, viewportHeight: scrollViewportHeight)
+                    scrollMeasurements.panelFrames = newFrames
+                    updateTopmostPanel()
                 }
                 // The viewport's height can arrive after the frames do; until
-                // it does no panel counts as visible, so the anchor is noted
-                // again here or a first render would never save one.
+                // it does no panel counts as visible, so the topmost panel is
+                // recomputed here too or a first render would never find one.
                 .onPreferenceChange(ScrollViewportHeightPreferenceKey.self) { newHeight in
-                    scrollViewportHeight = newHeight
-                    noteScrollAnchor(frames: panelFrames, viewportHeight: newHeight)
+                    scrollMeasurements.viewportHeight = newHeight
+                    updateTopmostPanel()
                 }
                 // `onAppear` covers a reveal that presented the cockpit
                 // (the column was showing another occupant, so this view
@@ -676,10 +708,16 @@ struct CockpitView: View {
     /// Written only when a panel is actually measured: while
     /// `unresolvedReason` blanks the pane, `frames` is empty and the last
     /// good anchor is left alone rather than cleared.
-    private func noteScrollAnchor(frames: [String: CGRect], viewportHeight: CGFloat) {
+    private func updateTopmostPanel() {
         guard let here = CockpitView.topmostVisiblePanelID(
-            order: panelIDs, frames: frames, viewportHeight: viewportHeight
+            order: panelIDs,
+            frames: scrollMeasurements.panelFrames,
+            viewportHeight: scrollMeasurements.viewportHeight
         ) else { return }
+        if here != topmostPanelID { topmostPanelID = here }
+        // Called on every frame, so the model's own equality guard is what
+        // keeps it from publishing; calling it unconditionally re-saves the
+        // anchor after the model clears it on a crew switch.
         model.noteScrollAnchor(here)
     }
 
@@ -939,10 +977,11 @@ struct CockpitView: View {
         return documents.count
     }
 
-    /// How many of the panel's merged rows are `.readyToMerge` — the number
+    /// How many of the panel's merged rows offer Merge (`.readyToMerge` or
+    /// `.readyToMergeWithoutCI`) — the number
     /// that asks for a decision, not how many rows the panel draws (which
     /// the reader can already see by looking at the list below it). A
-    /// `readyToMerge` row is always open, so `orderedForDisplay`'s
+    /// row that offers Merge is always open, so `orderedForDisplay`'s
     /// recent-closed cut can never drop one; filtering the raw `results`
     /// is equivalent to filtering the displayed rows. `nil` when no repo
     /// has ever produced a real result — every repo still loading, wholly
@@ -953,7 +992,7 @@ struct CockpitView: View {
     /// not the whole panel").
     nonisolated static func pullRequestsCount(_ panel: PullRequestsPanel?) -> Int? {
         guard hasAnyLadderReading(panel) else { return nil }
-        return mergedLadder(panel).results.filter { $0.position == .readyToMerge }.count
+        return mergedLadder(panel).results.filter { $0.position.offersMerge }.count
     }
 
     /// How many rows the panel draws in total, after `orderedForDisplay`'s
@@ -1163,17 +1202,20 @@ struct CockpitView: View {
 
     // MARK: - Pull Requests
     //
-    // NO MERGE OR CLOSE AFFORDANCE ANYWHERE IN THIS SECTION, per the epic's
-    // own "not in this epic" boundary — that stays true. The one exception is
-    // the `#N` number, which opens the PR's GitHub page
-    // (`PRLadderRow.githubURL`, issue_01M2P4JJFW5CE8FT0ZTASR6KN5) as the
-    // explicitly temporary placeholder for the merge affordance the epic
-    // still blocks. The rest of the row opens the reviews pane
+    // THE MERGE/CLOSE AFFORDANCE IS `MergePRRow`, MOUNTED BELOW A ROW'S OWN
+    // CONTENT (`issue_01M1HQMDZ8TG2KVK7JG6P7YK7T`) — the epic's own
+    // boundary that used to keep this section free of it is gone now that
+    // E11·3 is what builds it. The `#N` number still opens the PR's GitHub
+    // page (`PRLadderRow.githubURL`, issue_01M2P4JJFW5CE8FT0ZTASR6KN5), and
+    // the rest of the row still opens the reviews pane
     // (`onSelectPullRequest`, issue_01M3830X3DXRZDJFB8657YRCMK) on a tap of
     // its own, the same nested tap-within-tap shape `courseEntryRow` and the
     // corrections-queue row already use for their own click targets, and the
     // whole row opts out of `.textSelection(.enabled)` (see `body`) for the
-    // same reason those two do.
+    // same reason those two do. `MergePRRow` sits BELOW that whole tappable
+    // region, as a plain sibling outside its `.contentShape`/`.onTapGesture`,
+    // so a click on one of its own buttons or its github.com link never
+    // also reaches `onSelectPullRequest`.
 
     /// A named unresolved reason, real rows (with a per-repo failure note
     /// alongside for any followed repo whose own latest fetch could not be
@@ -1416,92 +1458,120 @@ struct CockpitView: View {
     private func pullRequestRow(
         _ row: PRLadder.LadderResult, showsRepoMark: Bool, chip: PullRequestWorkItemChip?
     ) -> some View {
-        let presentation = PRLadderRow.present(row.position)
-        let dotColor = PRLadderRow.dotColor(row.position)
+        let position = mergeModel.drawnPosition(for: row)
+        let presentation = PRLadderRow.present(position)
+        let dotColor = PRLadderRow.dotColor(position)
         let githubURL = PRLadderRow.githubURL(repo: row.repo, number: row.number)
         let repoMark = showsRepoMark ? PRLadderRow.repoMark(row.repo) : nil
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                // The same leading column `courseEntryRow`'s glyph draws in —
-                // 14pt-wide, `.icon`-sized, baseline-aligned with the row's
-                // first line — so a PR row and a Course row read as the same
-                // shape of line, one a stoplight and the other a phase glyph.
-                Image(systemName: "circle.fill")
-                    .frameFont(.icon)
-                    .foregroundStyle(Color(ThemeRecipe.prDotInk(dotColor, appearance: appearance,
-                                                                    on: indexSurface)))
-                    .frame(width: 14, alignment: .center)
-                    .help(presentation.label)
-                if let chip {
-                    Text(chip.key)
-                        .frameFont(.caption)
-                        .foregroundStyle(Color(ThemeRecipe.workItemChipInk(on: indexSurface)))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 3)
-                                .strokeBorder(Color(ThemeRecipe.workItemChipInk(on: indexSurface)).opacity(0.4))
-                        )
-                        .help(chip.tooltip)
-                        .onTapGesture {
-                            model.revealFromPullRequestChip(itemID: chip.scrollTargetID, isEpic: chip.isEpic)
-                        }
-                        .textSelection(.disabled)
-                }
-                if let repoMark {
-                    Text(repoMark)
-                        .frameFont(.caption)
-                        .foregroundStyle(secondaryInk)
-                        .lineLimit(1)
-                        .help(row.repo)
-                }
-                Group {
-                    if let githubURL {
-                        Text("#\(row.number)")
-                            .underline()
-                            .onTapGesture { NSWorkspace.shared.open(githubURL) }
-                            .help("Open #\(row.number) on GitHub")
+        return VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    // The same leading column `courseEntryRow`'s glyph draws
+                    // in — 14pt-wide, `.icon`-sized, baseline-aligned with
+                    // the row's first line — so a PR row and a Course row
+                    // read as the same shape of line, one a stoplight and
+                    // the other a phase glyph.
+                    Image(systemName: "circle.fill")
+                        .frameFont(.icon)
+                        .foregroundStyle(Color(ThemeRecipe.prDotInk(dotColor, appearance: appearance,
+                                                                        on: indexSurface)))
+                        .frame(width: 14, alignment: .center)
+                        .help(presentation.label)
+                    if let chip {
+                        Text(chip.key)
+                            .frameFont(.caption)
+                            .foregroundStyle(Color(ThemeRecipe.workItemChipInk(on: indexSurface)))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .strokeBorder(Color(ThemeRecipe.workItemChipInk(on: indexSurface)).opacity(0.4))
+                            )
+                            .help(chip.tooltip)
+                            .onTapGesture {
+                                model.revealFromPullRequestChip(itemID: chip.scrollTargetID, isEpic: chip.isEpic)
+                            }
                             .textSelection(.disabled)
-                    } else {
-                        Text("#\(row.number)")
+                    }
+                    if let repoMark {
+                        Text(repoMark)
+                            .frameFont(.caption)
+                            .foregroundStyle(secondaryInk)
+                            .lineLimit(1)
+                            .help(row.repo)
+                    }
+                    Group {
+                        if let githubURL {
+                            Text("#\(row.number)")
+                                .underline()
+                                .onTapGesture { NSWorkspace.shared.open(githubURL) }
+                                .help("Open #\(row.number) on GitHub")
+                                .textSelection(.disabled)
+                        } else {
+                            Text("#\(row.number)")
+                        }
+                    }
+                    .frameFont(.label).foregroundStyle(secondaryInk).monospacedDigit()
+                    Text(row.title ?? "(untitled)")
+                        .frameFont(.body)
+                        .strikethrough(presentation.isTerminal)
+                        .foregroundStyle(presentation.isTerminal ? secondaryInk : AnyShapeStyle(.primary))
+                        .lineLimit(2)
+                        .help(CockpitView.libraryTooltip(row.title ?? "(untitled)"))
+                }
+                HStack(spacing: 6) {
+                    if let author = row.author {
+                        Text(author).frameFont(.caption).foregroundStyle(secondaryInk)
+                    }
+                    Text(presentation.label)
+                        .frameFont(.caption)
+                        .fontWeight(presentation.severity == .neutral ? .regular : .semibold)
+                        .foregroundStyle(pullRequestSeverityInk(presentation.severity))
+                    if let staleLabel = PRLadderRow.staleReviewsLabel(row.staleReviewCount) {
+                        Text(staleLabel).frameFont(.caption).foregroundStyle(secondaryInk).italic()
                     }
                 }
-                .frameFont(.label).foregroundStyle(secondaryInk).monospacedDigit()
-                Text(row.title ?? "(untitled)")
-                    .frameFont(.body)
-                    .strikethrough(presentation.isTerminal)
-                    .foregroundStyle(presentation.isTerminal ? secondaryInk : AnyShapeStyle(.primary))
-                    .lineLimit(2)
-                    .help(CockpitView.libraryTooltip(row.title ?? "(untitled)"))
+                // Indented under the title, past the dot column and its
+                // spacing (14 + 6 = 20) — the same "aligns under the title"
+                // shape `epicDetail` gives the Course's own expansion.
+                .padding(.leading, 20)
             }
-            HStack(spacing: 6) {
-                if let author = row.author {
-                    Text(author).frameFont(.caption).foregroundStyle(secondaryInk)
-                }
-                Text(presentation.label)
-                    .frameFont(.caption)
-                    .fontWeight(presentation.severity == .neutral ? .regular : .semibold)
-                    .foregroundStyle(pullRequestSeverityInk(presentation.severity))
-                if let staleLabel = PRLadderRow.staleReviewsLabel(row.staleReviewCount) {
-                    Text(staleLabel).frameFont(.caption).foregroundStyle(secondaryInk).italic()
-                }
-            }
-            // Indented under the title, past the dot column and its
-            // spacing (14 + 6 = 20) — the same "aligns under the title"
-            // shape `epicDetail` gives the Course's own expansion.
-            .padding(.leading, 20)
+            .contentShape(Rectangle())
+            // The same nested-gesture shape `courseEntryRow`'s tap/`Button`
+            // split already relies on: the `#N` text's own `.onTapGesture`
+            // above sits deeper in the tree and wins a tap on itself, so
+            // this row-level gesture only ever fires for a tap elsewhere on
+            // the row.
+            .onTapGesture { onSelectPullRequest?(row) }
+            // Opts out of the container-level `.textSelection(.enabled)` —
+            // see this section's own header comment.
+            .textSelection(.disabled)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                CockpitView.pullRequestRowAccessibilityLabel(row, position: position, repoMark: repoMark, chip: chip))
+            // OUTSIDE the tappable content above and its own
+            // `.contentShape`, deliberately — a click on one of
+            // `MergePRRow`'s own buttons or its github.com link must never
+            // also fire `onSelectPullRequest`.
+            mergePRRow(for: row)
         }
-        .contentShape(Rectangle())
-        // The same nested-gesture shape `courseEntryRow`'s tap/`Button` split
-        // already relies on: the `#N` text's own `.onTapGesture` above sits
-        // deeper in the tree and wins a tap on itself, so this row-level
-        // gesture only ever fires for a tap elsewhere on the row.
-        .onTapGesture { onSelectPullRequest?(row) }
-        // Opts out of the container-level `.textSelection(.enabled)` — see
-        // this section's own header comment.
-        .textSelection(.disabled)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(CockpitView.pullRequestRowAccessibilityLabel(row, repoMark: repoMark, chip: chip))
+    }
+
+    /// `MergePRRow`, wired to `mergeModel` for one row — split out of
+    /// `pullRequestRow` so that function's own body stays readable.
+    @ViewBuilder
+    private func mergePRRow(for row: PRLadder.LadderResult) -> some View {
+        MergePRRow(
+            row: row, state: mergeModel.displayState(for: row), appearance: appearance,
+            advice: PreMergeAdvice.fetch(), servedSessionsReason: mergeModel.servedSessionsReason,
+            pastedTokenStored: mergeModel.pastedTokenStored,
+            onRemoveToken: { Task { await mergeModel.removePastedToken() } },
+            onBeginMerge: { mergeModel.beginMergeConfirmation(for: row) },
+            onBeginClose: { mergeModel.beginCloseConfirmation(for: row) },
+            onConfirmMerge: { Task { await mergeModel.confirmMerge(for: row) } },
+            onConfirmClose: { Task { await mergeModel.confirmClose(for: row) } },
+            onCancel: { mergeModel.cancel(for: row) },
+            onSaveToken: { token in Task { await mergeModel.savePastedToken(token, for: row) } })
     }
 
     /// `pullRequestRow`'s own accessibility label, pulled into a plain
@@ -1515,9 +1585,9 @@ struct CockpitView: View {
     /// accessibility label naming the position, and add the work item key
     /// to it."
     private static func pullRequestRowAccessibilityLabel(
-        _ row: PRLadder.LadderResult, repoMark: String?, chip: PullRequestWorkItemChip?
+        _ row: PRLadder.LadderResult, position: PRLadder.Position, repoMark: String?, chip: PullRequestWorkItemChip?
     ) -> String {
-        let presentation = PRLadderRow.present(row.position)
+        let presentation = PRLadderRow.present(position)
         var parts: [String] = []
         if let repoMark { parts.append(repoMark) }
         parts.append("PR #\(row.number), \(row.title ?? "untitled")")
@@ -1556,7 +1626,7 @@ struct CockpitView: View {
     /// **The frame report sits on the whole section, header included** —
     /// collapsing shrinks what `panelSection` reports, so a panel's
     /// neighbours below it naturally slide up in the next geometry pass
-    /// with no extra wiring: `topmostVisiblePanelID` re-reads `panelFrames`
+    /// with no extra wiring: `topmostVisiblePanelID` re-reads the frames
     /// from a `PreferenceKey`, not a snapshot taken once.
     @ViewBuilder
     private func panelSection<Trailing: View, Content: View>(
@@ -1617,16 +1687,14 @@ struct CockpitView: View {
     /// and not re-litigated here.**
     ///
     /// **Gated on `unresolvedReason == nil`.** No panel renders while a
-    /// crew is unresolved, so `panelFrames` — a `@State` that outlives that
-    /// transition — could otherwise hold stale frames from before the
+    /// crew is unresolved, so `topmostPanelID` — a `@State` that outlives that
+    /// transition — could otherwise name a panel from before the
     /// crew was deselected and draw entries with no matching `.id` for
     /// `scrollProxy.scrollTo` to find.
     @ViewBuilder
     private func panelIndex(scrollProxy: ScrollViewProxy) -> some View {
         if unresolvedReason == nil {
-            let hereID = CockpitView.topmostVisiblePanelID(
-                order: panelIDs, frames: panelFrames, viewportHeight: scrollViewportHeight
-            )
+            let hereID = topmostPanelID
             PanelIndexFlowLayout {
                 ForEach(panelIDs, id: \.self) { id in
                     panelIndexEntry(id: id, isHere: id == hereID, scrollProxy: scrollProxy)
@@ -1813,7 +1881,7 @@ struct CockpitView: View {
         case coursePanelID:
             guard let courseEntries, !courseEntries.isEmpty else { return nil }
             let settled = courseEntries.filter {
-                let treatment = rowTreatment(state: $0.state, resolution: $0.resolution)
+                let treatment = rowTreatment($0)
                 return treatment == .done || treatment == .closedNotDone
             }.count
             return "\(settled)/\(courseEntries.count)"
@@ -2252,7 +2320,7 @@ struct CockpitView: View {
     /// (completed or not — a reader looking at what was just passed wants
     /// the same detail as one still ahead) toggles its expansion.
     private func courseEntryRow(_ entry: LibraryClient.CourseEntry) -> some View {
-        let treatment = CockpitView.rowTreatment(state: entry.state, resolution: entry.resolution)
+        let treatment = CockpitView.rowTreatment(entry)
         let progress = CockpitView.childProgress(model.childrenByEntry[entry.id])
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: treatment.glyphName)
@@ -2430,6 +2498,20 @@ struct CockpitView: View {
         return (state == nil || state == "open") ? .ahead : .inProgress
     }
 
+    /// An epic's own row on the Course. `state` decides it as for any row,
+    /// except that an `open` epic whose `epicState` reads `in_progress` is
+    /// under way: nobody holds the epic, but its children are being worked
+    /// or are all fixed. A missing or unrecognised `epicState` keeps the
+    /// `state`-only reading. Child rows never carry `epic_state` and keep
+    /// calling `rowTreatment(state:resolution:)`.
+    nonisolated static func rowTreatment(_ entry: LibraryClient.CourseEntry) -> RowTreatment {
+        let treatment = rowTreatment(state: entry.state, resolution: entry.resolution)
+        if treatment == .ahead, entry.state == "open", entry.epicState == "in_progress" {
+            return .inProgress
+        }
+        return treatment
+    }
+
     /// The three runs `coursePanel` draws: a leading run of closed epics
     /// collapsed behind an up-arrow affordance, a trailing run of unstarted
     /// epics collapsed behind a count, and everything in between shown
@@ -2467,7 +2549,7 @@ struct CockpitView: View {
     nonisolated static func coursePartition(
         _ entries: [LibraryClient.CourseEntry]
     ) -> CoursePartition {
-        let treatments = entries.map { rowTreatment(state: $0.state, resolution: $0.resolution) }
+        let treatments = entries.map { rowTreatment($0) }
 
         var headRunEnd = 0
         while headRunEnd < treatments.count,
@@ -2719,7 +2801,8 @@ struct CockpitView: View {
     private func epicFields(_ entry: LibraryClient.CourseEntry) -> some View {
         if let definitionOfDone = entry.definitionOfDone, !definitionOfDone.isEmpty {
             clampedCaption(
-                Text("Done when: ").fontWeight(.semibold) + Text(definitionOfDone),
+                Text("Done when: ").fontWeight(.semibold)
+                    + Text(LinkedText.attributedString(definitionOfDone)),
                 full: "Done when: \(definitionOfDone)", role: .body)
         }
         if let needsFirst = CockpitView.needsFirstText(entry.prerequisites) {
@@ -2757,12 +2840,12 @@ struct CockpitView: View {
     nonisolated static func prerequisiteFragment(_ entry: LibraryClient.PrerequisiteEntry) -> Text {
         switch entry {
         case .item(_, let title, let state):
-            let text = Text(state.map { "\(title) (\($0))" } ?? title)
+            let text = Text(LinkedText.attributedString(state.map { "\(title) (\($0))" } ?? title))
             return LibraryClient.terminalWorkStates.contains(state ?? "") ? text.strikethrough() : text
         case .missingItem:
             return Text(missingPrerequisiteLabel)
         case .text(let text, let met, _, _):
-            let rendered = Text(text)
+            let rendered = Text(LinkedText.attributedString(text))
             return met ? rendered.strikethrough() : rendered
         }
     }

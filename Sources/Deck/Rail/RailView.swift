@@ -1193,7 +1193,13 @@ struct RailView: View {
     /// does: an agent-less discovered child resolves to `.terminalOnly`,
     /// which has no Stop control in the pane, so the row is its only way
     /// out — the same reason gap 1 wired a hover Stop into "OTHER SESSIONS"
-    /// in the first place, one section over.
+    /// in the first place, one section over. Also carries `onPromote`,
+    /// through the same `onRequestPromoteSession` → `SessionPromotion.derive`
+    /// → confirm → `ThemeStore.addCrew` path `otherSessionRow` uses: a
+    /// discovered child is as promotable as an "OTHER SESSIONS" row, since
+    /// promotion only reads the session itself. Never passed for a pinned
+    /// child (already has a crew by config) or the crew's own primary
+    /// session (never reaches this function — see `rowsContent`).
     @ViewBuilder
     private func discoveredChildRow(
         for discovered: DiscoveredSession, crew: Crew, indent: CGFloat = RailChildRow.indent,
@@ -1210,6 +1216,7 @@ struct RailView: View {
                      isTerminalOnly: isTerminalOnly(ref),
                      isLast: isLast,
                      onStop: { onStopDiscoveredSession(ref) },
+                     onPromote: { onRequestPromoteSession(discovered) },
                      indent: indent,
                      isCollapsed: isCollapsed,
                      meter: rowMeter(ref, isTerminalOnly: isTerminalOnly(ref)),

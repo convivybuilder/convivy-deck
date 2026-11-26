@@ -54,6 +54,16 @@ struct ServedCrew: Identifiable, Equatable {
     let specHost: String?
     let project: String?
     let bead: String?
+    /// The crew's Deck colour, one of the ten catalog names — see
+    /// `platform/contracts/session-agent-api`'s `crews` section, `theme`
+    /// row. Server-owned: there is no local override for this field, unlike
+    /// `project`/`bead`, so a value is kept only when it names a real
+    /// catalog theme (`ThemeCatalog.named`) and is `nil` for anything else —
+    /// a wrong case, an unknown name, the wrong JSON type, or the key simply
+    /// absent — the same "field costs itself, never the row" discipline
+    /// `workingDirectory` follows via `validateWorkingDirectory`. Never
+    /// derived.
+    let theme: String?
     /// The GitHub `owner/repo` this crew's Pull Requests panel follows, if
     /// the spec names exactly one — see `Crew.repo`. UNDOCUMENTED IN
     /// `platform/contracts/session-agent-api` as of this field's
@@ -100,7 +110,7 @@ struct ServedCrew: Identifiable, Equatable {
          workingDirectory: String? = nil, sessionId: String? = nil,
          specHost: String? = nil, project: String? = nil, bead: String? = nil, repo: String? = nil,
          repos: [String]? = nil, sessions: [Child] = [], derived: [String] = [],
-         shape: String? = nil, documents: [String] = []) {
+         shape: String? = nil, documents: [String] = [], theme: String? = nil) {
         self.crewId = crewId
         self.host = host
         self.displayName = displayName
@@ -115,6 +125,7 @@ struct ServedCrew: Identifiable, Equatable {
         self.derived = derived
         self.shape = shape
         self.documents = documents
+        self.theme = theme
     }
 
     /// The list a reader actually wants: the plural `repos` key when it
@@ -195,7 +206,8 @@ struct ServedCrew: Identifiable, Equatable {
                 derived: (dict["derived"] as? [Any])?.compactMap { $0 as? String } ?? [],
                 shape: dict["shape"] as? String,
                 documents: (dict["documents"] as? [Any])?.compactMap { $0 as? String }
-                    .compactMap(validateDocumentEntry) ?? []))
+                    .compactMap(validateDocumentEntry) ?? [],
+                theme: (dict["theme"] as? String).flatMap { ThemeCatalog.named($0) != nil ? $0 : nil }))
         }
         return out
     }

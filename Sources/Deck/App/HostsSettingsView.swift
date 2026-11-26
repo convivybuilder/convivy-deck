@@ -45,14 +45,27 @@ struct HostsSettingsView: View {
     /// Declining clears it; the host stays, and its row keeps the action.
     @State private var installOffer: HostEntry?
 
-    /// The host whose install action was taken, presenting the install
-    /// sheet — the single entry point CQ·160 replaces with a terminal pane
-    /// that runs the installer over the host's ssh connection.
-    @State private var installRequest: HostEntry?
+    /// The host whose setup action was taken, and the reading it was taken
+    /// on — the single entry point CQ·160/CQ·200 replaces with a terminal
+    /// pane that runs the reading's steps over the host's ssh connection.
+    /// The reading rides along so the sheet composes its argv from the
+    /// reading the person just got, never a fresh one of its own.
+    private struct SetupRequest {
+        let entry: HostEntry
+        let reading: PreInstallReading
+        /// Reserved once, at the moment this request is created, never
+        /// recomputed on a later render of `installSheet(for:)` — the same
+        /// reason `reading` rides along rather than being read fresh: the
+        /// pane's argv and its Open-line watcher must agree on one number
+        /// for the setup's whole life. nil when reservation failed, which
+        /// falls back to no forwarding rather than blocking setup.
+        let githubAppPort: UInt16?
+    }
+    @State private var installRequest: SetupRequest?
 
-    /// Hosts whose pre-install check is running, and the last not-ready
-    /// reading per host (CQ·159). A `.ready` reading is never stored: it
-    /// goes straight to `installRequest`.
+    /// Hosts whose pre-install check is running, and the last reading per
+    /// host that starts nothing (CQ·159). A reading with setup steps is
+    /// never stored: it goes straight to `installRequest`.
     @State private var preInstallChecking: Set<String> = []
     @State private var preInstallReadings: [String: PreInstallReading] = [:]
 
@@ -136,24 +149,24 @@ struct HostsSettingsView: View {
             get: { installRequest != nil },
             set: { if !$0 { installRequest = nil } })
         ) {
-            if let entry = installRequest {
-                installSheet(for: entry)
+            if let request = installRequest {
+                installSheet(for: request)
             }
         }
         .alert(
-            "Install Builder\u{2019}s server on \u{201c}\(installOffer?.name ?? "")\u{201d}?",
+            "Set up \u{201c}\(installOffer?.name ?? "")\u{201d}?",
             isPresented: Binding(
                 get: { installOffer != nil },
                 set: { if !$0 { installOffer = nil } })
         ) {
             Button("Not Now", role: .cancel) { installOffer = nil }
-            Button("Install\u{2026}") {
+            Button("Set Up\u{2026}") {
                 if let entry = installOffer { beginInstall(entry) }
                 installOffer = nil
             }
         } message: {
             Text("\(installOffer?.name ?? "This host") has no Builder server, so it has no crews "
-                 + "or steward yet. You can install it later from the host\u{2019}s row.")
+                 + "or steward yet. You can set it up later from the host\u{2019}s row.")
         }
         .sheet(item: $pairing) { request in
             HostPairingSheet(target: request.target) { outcome in
@@ -289,6 +302,61 @@ struct HostsSettingsView: View {
         createSteward(on: entry)
     }
 
+    /// After the setup pane reports success on `entry`: create its steward
+    /// unless that host already has one, whatever crews other hosts run
+    /// (`StewardCrew.shouldCreateAfterSetup`).
+    ///
+    /// FETCHES THE HOST'S CREWS ROOT FIRST, as `addHost` does. A host added
+    /// before Builder was installed on it answered the add-time fetch with
+    /// "not installed", so its entry has no root, and building the steward
+    /// from the global fallback put it outside the Builder root the setup
+    /// just created, which session-agent refuses with "--create-dir path must
+    /// be under <root>" (Linux setup check, 2026-11-24, where the steward
+    /// landed in the account's home). When the fetch fails and the entry has no
+    /// root of its own, nothing is created and the row says why
+    /// (`HostsSettingsView.entryForStewardAfterSetup`).
+    private func createStewardAfterSetup(on entry: HostEntry) {
+        guard !store.stewardCreateInFlight,
+              StewardCrew.shouldCreateAfterSetup(
+                onHost: entry.name, crews: rail, hosts: hosts, defaultHost: configuration.defaultHost)
+        else { return }
+        store.stewardCreateInFlight = true
+        let target = SSHTarget(user: entry.user, host: entry.address)
+        Task {
+            let fetched = await Task.detached {
+                Result { try SessionAgent.crewsRoot(target: target) }
+            }.value
+            store.stewardCreateInFlight = false
+            guard let landed = HostsSettingsView.entryForStewardAfterSetup(
+                fetchedRoot: try? fetched.get(), hostNamed: entry.name, in: store)
+            else {
+                store.saveError = "Could not create the steward crew: \(entry.name) did not report its " +
+                    "Builder root after setup. Set Crews root for \(entry.name) in Settings › Hosts, " +
+                    "then run setup again."
+                return
+            }
+            createSteward(on: landed)
+        }
+    }
+
+    /// The entry the steward is created against after a setup: the host's
+    /// freshly fetched root landed on it, or, when the fetch failed, the live
+    /// entry only if it already carries a root of its own. `nil` means there
+    /// is no root to create under, so creating would fall back to a
+    /// directory outside the Builder root the setup made.
+    @MainActor
+    static func entryForStewardAfterSetup(
+        fetchedRoot: String?, hostNamed name: String, in store: ThemeStore
+    ) -> HostEntry? {
+        if let landed = applyingFetchedRoot(fetchedRoot, toHostNamed: name, in: store) {
+            return landed
+        }
+        guard let live = store.configuration.hosts.first(where: { $0.name == name }),
+              let root = live.crewsRoot, !root.isEmpty
+        else { return nil }
+        return live
+    }
+
     /// Runs `StewardCrew.create` off the main actor — an ssh round trip
     /// must not freeze Settings — then either adds the row and surfaces the
     /// post-creation note (success), or surfaces what happened through the
@@ -306,7 +374,8 @@ struct HostsSettingsView: View {
             forHostName: entry.name, hosts: configuration.hosts,
             defaultHost: configuration.defaultHost, globalCrewsRoot: configuration.crewsRoot)
         let directory = StewardCrew.directory(crewsRoot: crewsRoot)
-        let existingCrews = rail
+        let existingCrews = StewardCrew.crewsOnHost(
+            entry.name, crews: rail, hosts: hosts, defaultHost: configuration.defaultHost)
         Task {
             let outcome = await StewardCrew.attemptCreate(
                 target: target, directory: directory, existingCrews: existingCrews)
@@ -325,10 +394,13 @@ struct HostsSettingsView: View {
         }
     }
 
-    /// The install action's gate (CQ·159): checks Claude Code's sign-in and,
-    /// on a Mac, the desktop login before anything is offered to run. Only
-    /// `.ready` opens the install; any other reading stays on the host's
-    /// detail panel until the next attempt.
+    /// The setup action's gate (CQ·159): checks Claude Code's sign-in and,
+    /// on a Mac, the desktop login before anything is offered to run. A
+    /// reading that needs setup steps opens the pane on exactly that
+    /// reading; `.desktopLoggedOut` and `.couldNotCheck` start nothing and
+    /// stay on the host's detail panel until the next attempt. Re-running
+    /// this check on every attempt, rather than reusing an earlier reading,
+    /// is how a retry after a partial setup skips the steps already done.
     private func beginInstall(_ entry: HostEntry) {
         guard !preInstallChecking.contains(entry.name) else { return }
         preInstallChecking.insert(entry.name)
@@ -338,32 +410,38 @@ struct HostsSettingsView: View {
         Task {
             let reading = await Task.detached { PreInstallCheck.run(target: target) }.value
             preInstallChecking.remove(entry.name)
-            if reading.allowsInstall {
-                installRequest = entry
+            if reading.allowsSetup {
+                let port = try? BuilderServerInstall.reserveGithubAppPort()
+                installRequest = SetupRequest(entry: entry, reading: reading, githubAppPort: port)
             } else {
                 preInstallReadings[entry.name] = reading
             }
         }
     }
 
-    /// The install sheet for `entry` (CQ·160). The argv is built here from
-    /// the host's validated target and nothing else; a target that fails
-    /// validation gets no terminal at all.
+    /// The setup sheet for `request` (CQ·160/CQ·200). The argv is built
+    /// here from `request.reading`'s steps and the host's validated target
+    /// and nothing else; a target that fails validation gets no terminal at
+    /// all.
     @ViewBuilder
-    private func installSheet(for entry: HostEntry) -> some View {
+    private func installSheet(for request: SetupRequest) -> some View {
+        let entry = request.entry
         let target = SSHTarget(user: entry.user, host: entry.address)
-        if let arguments = try? BuilderServerInstall.arguments(target: target) {
+        if let arguments = try? BuilderServerInstall.setupArguments(
+            target: target, steps: request.reading.setupSteps, githubAppPort: request.githubAppPort) {
             BuilderServerInstallSheet(
                 hostName: entry.name,
                 arguments: arguments,
                 theme: configuration.theme(forSession: .localShell),
                 appearance: configuration.appearance(for: .terminal, systemIsDark: colorScheme == .dark),
                 typography: configuration.typography,
+                githubAppPort: BuilderServerInstall.forwardedPort(
+                    steps: request.reading.setupSteps, requested: request.githubAppPort),
                 verify: {
                     await railState.refresh()
                     return railState.builderServerState[target] == .installed
                 },
-                onInstalled: { createStewardIfNeeded(after: entry) })
+                onInstalled: { createStewardAfterSetup(on: entry) })
         } else {
             Text("\(entry.name)\u{2019}s user or address is not usable for ssh.")
                 .padding(20)
@@ -574,13 +652,13 @@ struct HostsSettingsView: View {
                 HStack(spacing: 8) {
                     Label("\(entry.name) has no Builder server.", systemImage: "shippingbox")
                         .font(.caption).foregroundStyle(.orange)
-                    Button(preInstallChecking.contains(entry.name) ? "Checking\u{2026}" : "Install Builder Server\u{2026}") {
+                    Button(preInstallChecking.contains(entry.name) ? "Checking\u{2026}" : "Set Up\u{2026}") {
                         beginInstall(entry)
                     }
                     .disabled(preInstallChecking.contains(entry.name))
                 }
-                if let reading = preInstallReadings[entry.name] {
-                    Label(reading.explanation(hostName: entry.name), systemImage: "exclamationmark.triangle")
+                if let reading = preInstallReadings[entry.name], let explanation = reading.explanation(hostName: entry.name) {
+                    Label(explanation, systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

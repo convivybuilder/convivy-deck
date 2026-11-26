@@ -1,8 +1,29 @@
 import Foundation
 
-/// What the pre-install check found on a host (E22, CQ·159). Only `.ready`
-/// lets the install start; every other reading is shown to the person as
-/// what is missing and what they do about it.
+/// One step of the setup pane's composed remote command (E22, CQ·200).
+/// `PreInstallReading.setupSteps` picks which steps a host needs; a step
+/// here is the exact command text that runs, with nothing of Deck's own.
+enum SetupStep: Equatable, Sendable {
+    case installClaudeCode
+    case signIntoClaudeCode
+    case installBuilderServer
+
+    var command: String {
+        switch self {
+        case .installClaudeCode:
+            return "curl -fsSL https://claude.ai/install.sh | bash"
+        case .signIntoClaudeCode:
+            return "claude auth login"
+        case .installBuilderServer:
+            return BuilderServerInstall.command
+        }
+    }
+}
+
+/// What the pre-install check found on a host (E22, CQ·159). `setupSteps`
+/// decides what the setup pane runs; `.desktopLoggedOut` and
+/// `.couldNotCheck` start nothing and are shown to the person as what is
+/// missing and what they do about it.
 enum PreInstallReading: Equatable, Sendable {
     case ready
     case claudeNotInstalled
@@ -11,21 +32,35 @@ enum PreInstallReading: Equatable, Sendable {
     case claudeSignedOut(String)
     case desktopLoggedOut
     /// The check itself failed (ssh, a timeout): no evidence either way,
-    /// so the install does not start.
+    /// so setup does not start.
     case couldNotCheck(String)
 
-    var allowsInstall: Bool { self == .ready }
-
-    /// One sentence saying what is missing and what the person does.
-    func explanation(hostName: String) -> String {
+    /// The steps the setup pane runs, in order, skipping what this reading
+    /// says the host already has. Empty for the two readings that start
+    /// nothing.
+    var setupSteps: [SetupStep] {
         switch self {
         case .ready:
-            return "\(hostName) is ready for the install."
+            return [.installBuilderServer]
+        case .claudeSignedOut:
+            return [.signIntoClaudeCode, .installBuilderServer]
         case .claudeNotInstalled:
-            return "Claude Code is not installed on \(hostName). Install it there and sign in, then try again."
-        case .claudeSignedOut(let text):
-            let said = text.isEmpty ? "" : " It said: \(text)"
-            return "Claude Code on \(hostName) is not signed in. Run claude there and sign in, then try again.\(said)"
+            return [.installClaudeCode, .signIntoClaudeCode, .installBuilderServer]
+        case .desktopLoggedOut, .couldNotCheck:
+            return []
+        }
+    }
+
+    var allowsSetup: Bool { !setupSteps.isEmpty }
+
+    /// One sentence saying what blocked the check and what the person does,
+    /// for a reading that starts nothing. `nil` for a reading that starts a
+    /// setup step instead — the pane installs Claude Code and signs it in
+    /// itself, so the person is never told to do either by hand.
+    func explanation(hostName: String) -> String? {
+        switch self {
+        case .ready, .claudeNotInstalled, .claudeSignedOut:
+            return nil
         case .desktopLoggedOut:
             return "Nobody is logged in at \(hostName)\u{2019}s desktop. Log in to this account at the Mac\u{2019}s "
                 + "own screen, then try again."
@@ -57,10 +92,20 @@ enum PreInstallCheck {
     /// `claude` in `~/.local/bin`, which a stock Debian account adds to PATH
     /// only in `.profile`. Run bare, `claude` was not found on such a host
     /// and the check reported it not installed (live install check 2,
-    /// 2026-10-20). A login shell is also what tmux gives the sessions that
-    /// will run `claude` after the install, so the check sees their PATH.
+    /// 2026-10-20).
+    ///
+    /// `~/.local/bin` GOES ON PATH HERE TOO, the same as in the setup chain
+    /// (`BuilderServerInstall.chain`), because on a Mac a login shell does
+    /// not have it. Measured on a clone of a fresh macOS 26.6.2 account,
+    /// 2026-11-06: Anthropic's installer succeeded and printed a note that
+    /// the folder is not on PATH, it wrote no shell profile, and this check
+    /// exited 127. A retry would then install Claude Code again on every
+    /// attempt, where E22 says a retry skips the steps already done. Keeping
+    /// `claude` on the PATH of later crew sessions is Builder's installer's
+    /// job, which the setup runs after this check.
     /// `$SHELL` is expanded by the remote shell; the text is fixed.
-    static let claudeCommand = #"exec "$SHELL" -lc 'claude -p ok --max-turns 1 --model haiku'"#
+    static let claudeCommand =
+        #"exec "$SHELL" -lc 'export PATH="$HOME/.local/bin:$PATH"; claude -p ok --max-turns 1 --model haiku'"#
 
     static func claudeArguments(
         target: SSHTarget,

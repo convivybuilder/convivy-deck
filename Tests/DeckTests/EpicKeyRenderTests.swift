@@ -211,7 +211,7 @@ final class EpicKeyRenderTests: XCTestCase {
     /// with no live target to reach.
     private func proposalModelWithDeclineRefusal() async -> CockpitModel {
         let model = await proposalModelWithControls()
-        model.declineEpic = { _, _, _, _ in
+        model.declineEpic = { _, _, _, _, _ in
             throw LibraryClient.FetchError.libraryRefused(status: 409, body: """
             {"error":"issue_EPIC has an approved sub-epic, issue_01CHILD, and cannot be declined"}
             """)

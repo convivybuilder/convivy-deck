@@ -435,6 +435,8 @@ enum ThemeRecipe {
         case (.inReview, .dark): return primerInReviewDark
         case (.draftOrUnknown, .light): return primerDraftLight
         case (.draftOrUnknown, .dark): return primerDraftDark
+        case (.held, .light): return primerHeldLight
+        case (.held, .dark): return primerHeldDark
         }
     }
 
@@ -467,6 +469,11 @@ enum ThemeRecipe {
     // #a67a00 read as brown beside `inCI` (operator, 2026-10-08).
     private static let primerInReviewLight = parseHexColor("b78a23")!
     private static let primerInReviewDark = parseHexColor("d9ad36")!
+    // Held (`agentctl pr-hold`) takes GitHub Primer's accent blue — a hue
+    // none of the other PR-state inks use, so a row intentionally paused
+    // never reads as a review colour, a CI colour, or ready.
+    private static let primerHeldLight = parseHexColor("0969da")!
+    private static let primerHeldDark = parseHexColor("2f81f7")!
 
     // MARK: - Variants
 

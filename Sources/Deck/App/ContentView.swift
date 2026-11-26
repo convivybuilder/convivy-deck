@@ -765,7 +765,14 @@ struct ContentView: View {
             ?? crews.first { $0.ref == key }.flatMap {
                 RailNesting.nestingParent(of: $0, in: crews, hosts: hosts, defaultHost: defaultHost)
             }
-        return configuration.theme(forSession: key, fallbackParent: parent?.ref)
+        // A session that is itself a crew row answers from its own
+        // `servedTheme` here; a child's ref matches nothing in `crews`
+        // (only top-level rows are in it), so this answers `nil` for one
+        // directly and the `fallbackParent` recursion asks again for the
+        // owning crew's ref — see `theme(forSession:fallbackParent:
+        // servedTheme:)`'s doc.
+        return configuration.theme(forSession: key, fallbackParent: parent?.ref,
+                                   servedTheme: { ref in crews.first { $0.ref == ref }?.servedTheme })
     }
 
     /// The rail carries a `SessionRef`; the local shell uses a reserved ref
@@ -1242,6 +1249,34 @@ struct ContentView: View {
                 .repos.map { (owner: $0.owner, repoName: $0.repoName) }
             await prLadderModel.refresh(target: target, repos: repos)
         }
+        // The merge affordance's own wiring, kept in step with the same
+        // resolved target `prLadderModel` just refreshed against — the
+        // Individuator's forwarding socket for a `/merge-reports` report is
+        // reached on that same host (`MergeReportClient`'s own doc: Deck's
+        // own machine serves no sessions, so the forwarding socket lives on
+        // whichever configured host does). `hosts` is read fresh every time
+        // this key fires, matching `railState.track`'s own "no relaunch
+        // needed" discipline for `configuration.hosts`.
+        .task(id: cockpitRefreshKey) {
+            mergeModel.hosts = configuration.hosts
+            if let target = cockpitProjectAndTarget?.target {
+                mergeModel.reportMerge = { repo, number, mergeCommitSha in
+                    MergeReportClient.send(
+                        repo: repo, number: number, mergeCommitSha: mergeCommitSha,
+                        transport: MergeReportClient.liveTransport(target: target))
+                }
+            } else {
+                mergeModel.reportMerge = { _, _, _ in .reportFailed(reason: "no host is configured for this crew") }
+            }
+            mergeModel.onLadderChanged = { [prLadderModel] in
+                Task { await prLadderModel.reload() }
+            }
+        }
+        // A Hosts edit must reach the next press without waiting for
+        // `cockpitRefreshKey`: 0003 checks the configured hosts at every press.
+        .onChange(of: configuration.hosts) { _, hosts in
+            mergeModel.hosts = hosts
+        }
         // The session pane's PR chip's own fallback fetch — see
         // `sessionReviewChipLadder`'s doc. Keyed on
         // `sessionReviewChipRefreshKey` rather than `cockpitRefreshKey`: the
@@ -1612,6 +1647,12 @@ struct ContentView: View {
     /// `sessionReviewChipFetchTarget`'s doc for the reuse-vs-fallback
     /// decision itself.
     @StateObject private var sessionReviewChipLadder = PRLadderModel()
+    /// The merge/close affordance's own state, one instance for the window's
+    /// life — `issue_01M1HQMDZ8TG2KVK7JG6P7YK7T`. `hosts`/`reportMerge`/
+    /// `onLadderChanged` are wired below, keyed on `cockpitRefreshKey` exactly
+    /// as `prLadderModel`'s own refresh is, since both need the same
+    /// resolved target.
+    @StateObject private var mergeModel = MergePressModel()
 
     /// Drives the rail's bead-progress pane. Kept separate from
     /// `cockpitModel` rather than folded in — see `BeadProgressModel`'s doc
@@ -1625,6 +1666,23 @@ struct ContentView: View {
     /// cached cwd. Nil while unresolved or for a session with no reported
     /// cwd, which opens the shell in the remote home.
     @State private var sessionCwd: [SessionRef: String] = [:]
+
+    /// Sessions whose cwd lookup `resolveShellCwd` has finished, found or
+    /// not. The shell pane waits until its selection is in here or has a
+    /// cached cwd, because the scratch shell's tmux session takes its
+    /// directory only when it is created: a pane spawned before the lookup
+    /// answers creates that session in the remote home and keeps it there on
+    /// every later attach (the operator, 2026-11-24). Recording completion,
+    /// rather than a pending flag set when the lookup starts, also covers
+    /// the render that draws the pane before `.onChange` starts the lookup.
+    @State private var shellCwdLookedUp: Set<SessionRef> = []
+
+    /// Sessions with a `resolveShellCwd` lookup still running. Three call
+    /// sites can start one on the same transition (the two `.onChange`
+    /// handlers and `shellPane`'s own `.task`), and this makes the later
+    /// ones no-ops, so a session switch sends one `session-agent state`
+    /// round trip rather than two.
+    @State private var shellCwdInFlight: Set<SessionRef> = []
 
     /// The document viewer's refresh button (CQ·185): bumped on each
     /// press so `FileViewerPane`'s `.task(id:)` refires for the same ref,
@@ -1655,6 +1713,7 @@ struct ContentView: View {
             let newRef = SessionRef(host: rename.crewHost, name: rename.to)
             if selection == oldRef { selection = newRef }
             if let cwd = sessionCwd.removeValue(forKey: oldRef) { sessionCwd[newRef] = cwd }
+            if shellCwdLookedUp.remove(oldRef) != nil { shellCwdLookedUp.insert(newRef) }
             if showingTerminal.remove(oldRef) != nil { showingTerminal.insert(newRef) }
             if staleTerminalRequests.remove(oldRef) != nil { staleTerminalRequests.insert(newRef) }
             if let launch = launchPending.removeValue(forKey: oldRef) { launchPending[newRef] = launch }
@@ -2549,8 +2608,9 @@ struct ContentView: View {
     /// wording can be tested without building a `Result`.
     ///
     /// `hostLabel` is the session's own actually-resolved `SSHTarget` (a
-    /// promotable session is always an "OTHER SESSIONS" row, so it carries
-    /// its host directly rather than through a crew — see
+    /// promotable session is a discovered row, either under "OTHER SESSIONS"
+    /// or nested under a crew, and carries its own host directly, never the
+    /// crew's — see
     /// `HostResolution.hostName(for:hosts:)`), named for the same reason
     /// `removeCrewMessage`'s `hostLabel` is: naming Convivy's own machine in
     /// text a stranger reads is what `deck/specs/running-deck-as-someone-else`
@@ -3366,14 +3426,18 @@ struct ContentView: View {
     /// back as success. `writeApprovalFromItemPane` writes to the host the
     /// caller names, so it needs no fix here beyond passing the pane's own
     /// host through.
-    private func approveEpicFromItemPane(_ epicID: String, host: SSHTarget) async -> CockpitModel.ApprovalWriteOutcome {
-        await cockpitModel.writeApprovalFromItemPane(.approve, epicID: epicID, host: host)
+    private func approveEpicFromItemPane(
+        _ epicID: String, host: SSHTarget, snapshot: LibraryClient.ItemActSnapshot
+    ) async -> CockpitModel.ApprovalWriteOutcome {
+        await cockpitModel.writeApprovalFromItemPane(.approve, epicID: epicID, host: host, snapshot: snapshot)
     }
 
     /// The Decline counterpart to `approveEpicFromItemPane`, for the same
     /// reason.
-    private func declineEpicFromItemPane(_ epicID: String, host: SSHTarget) async -> CockpitModel.ApprovalWriteOutcome {
-        await cockpitModel.writeApprovalFromItemPane(.decline, epicID: epicID, host: host)
+    private func declineEpicFromItemPane(
+        _ epicID: String, host: SSHTarget, snapshot: LibraryClient.ItemActSnapshot
+    ) async -> CockpitModel.ApprovalWriteOutcome {
+        await cockpitModel.writeApprovalFromItemPane(.decline, epicID: epicID, host: host, snapshot: snapshot)
     }
 
     /// Opens the item detail pane for one corrections-queue row —
@@ -3477,6 +3541,18 @@ struct ContentView: View {
     /// inside the conversation pane (`onDeckOpen`) both funnel through here,
     /// so an item link clicked from either place opens the item pane rather
     /// than being mistaken for a file.
+    /// The link route for the Slate and the cockpit's native panes
+    /// (`LinkedText`): a `deck-open:` reference opens here through
+    /// `openViewer`, exactly as one clicked in the conversation pane does, and
+    /// a web address opens through `ExternalLink`. `target` is the host the
+    /// pane reads from; the cockpit's panes read from the selected crew's host.
+    private func nativePaneLinkAction(target explicitTarget: SSHTarget? = nil) -> OpenURLAction {
+        DeckLinkRouting.action(hosts: configuration.hosts) { origin in
+            guard let target = explicitTarget ?? selection.flatMap({ hostTarget(for: $0) }) else { return }
+            openViewer(origin, target: target)
+        }
+    }
+
     private func openViewer(_ ref: DeckOpenRef.Origin, target: SSHTarget) {
         if case .item(let id) = ref {
             Task { await revealOrOpenItem(id: id, target: target) }
@@ -3604,9 +3680,19 @@ struct ContentView: View {
     /// session's host does not resolve to anything: a scratch shell belongs
     /// to a session on a real machine, and there is no sensible one to
     /// attach to without either.
+    ///
+    /// While the selection's cwd is still being looked up, the pane draws
+    /// nothing and starts that lookup itself. `.onChange` covers a switch of
+    /// selection or column, but not a Shell column already showing when Deck
+    /// launches, which fires neither.
     @ViewBuilder
     private var shellPane: some View {
-        if let selection, let target = hostTarget(for: selection) {
+        if let selection, hostTarget(for: selection) != nil,
+           ContentView.shellAwaitsCwd(cached: sessionCwd[selection],
+                                      lookupFinished: shellCwdLookedUp.contains(selection)) {
+            Spacer(minLength: 0)
+                .task(id: selection) { resolveShellCwd() }
+        } else if let selection, let target = hostTarget(for: selection) {
             TerminalPaneView(
                 target: .remoteShell(session: selection.name,
                                      workingDirectory: sessionCwd[selection],
@@ -3619,6 +3705,14 @@ struct ContentView: View {
         } else {
             Spacer(minLength: 0)
         }
+    }
+
+    /// Whether the shell pane must wait before spawning: while no cwd is
+    /// cached and the lookup has not finished. A finished lookup that found
+    /// no cwd answers `false`, so the shell opens in the remote home rather
+    /// than waiting forever.
+    static func shellAwaitsCwd(cached: String?, lookupFinished: Bool) -> Bool {
+        cached == nil && !lookupFinished
     }
 
     /// The Shell tab's band. The shell runs on the selected session's host, so
@@ -3688,14 +3782,22 @@ struct ContentView: View {
     /// shell pane opens where the agent is working. Off the main actor — one
     /// ssh round trip must not stall the toggle.
     private func resolveShellCwd() {
-        guard let session = selection,
-              (try? validateTmuxSessionName(session.name)) != nil,
-              let target = hostTarget(for: session) else { return }
+        guard let session = selection else { return }
+        guard (try? validateTmuxSessionName(session.name)) != nil,
+              let target = hostTarget(for: session) else {
+            // Nothing to ask, so the lookup is finished: the pane must not
+            // wait on an answer that will never come.
+            shellCwdLookedUp.insert(session)
+            return
+        }
+        guard shellCwdInFlight.insert(session).inserted else { return }
         Task {
             let cwd: String? = await Task.detached {
                 (try? SessionAgent.state(target: target, session: session.name))?.cwd
             }.value
             if let cwd { sessionCwd[session] = cwd }
+            shellCwdLookedUp.insert(session)
+            shellCwdInFlight.remove(session)
         }
     }
 
@@ -3811,11 +3913,13 @@ struct ContentView: View {
                            placeLine: restStatePlaceLine,
                            checkoutDocuments: checkoutDocumentsPanel, pullRequests: pullRequestsPanel,
                            pullRequestsUnresolvedReason: pullRequestsUnresolvedReason,
+                           mergeModel: mergeModel,
                            onSelectPullRequest: openReviewRecords,
                            onRefresh: {
                                reloadCheckoutDocuments()
                                reloadPullRequests()
                            })
+                .environment(\.openURL, nativePaneLinkAction())
             case .board:
                 // The board IS the cockpit, drawing `boardPanelIDs`, so its
                 // Course and Proposals are fetched and drawn exactly as a
@@ -3835,6 +3939,7 @@ struct ContentView: View {
                            proposalsUnresolvedReason: cockpitUnresolvedReason,
                            documents: .init(paths: restStateDocumentPaths, onOpen: openRestStateDocument),
                            onSelectPullRequest: openReviewRecords)
+                .environment(\.openURL, nativePaneLinkAction())
             case .service:
                 ServiceCrewPanel(
                     unresolvedReason: restStateSessionUnresolvedReason,
@@ -3875,8 +3980,8 @@ struct ContentView: View {
                 id: id, target: target, appearance: appearance(for: .document),
                 onClose: closeNestedColumnOccupant,
                 onOpenItem: { newId in openNestedColumnOccupant(.item(id: newId, target: target)) },
-                onApprove: { epicID in await approveEpicFromItemPane(epicID, host: target) },
-                onDecline: { epicID in await declineEpicFromItemPane(epicID, host: target) })
+                onApprove: { epicID, snapshot in await approveEpicFromItemPane(epicID, host: target, snapshot: snapshot) },
+                onDecline: { epicID, snapshot in await declineEpicFromItemPane(epicID, host: target, snapshot: snapshot) })
         case .run(let runId):
             RunDetailPane(
                 detail: RunDetail.make(runId: runId, runs: selectedAgentRuns,
@@ -3885,6 +3990,7 @@ struct ContentView: View {
                 fetched: runFetchedDocumentsModel.state,
                 onOpenDocument: openCheckoutDocument,
                 onClose: closeNestedColumnOccupant)
+                .environment(\.openURL, nativePaneLinkAction())
                 // Remember each listed run's detail, so the pane still has
                 // it after the run leaves the list (see `RunDetail.make`).
                 .onChange(of: selectedAgentRuns, initial: true) { _, runs in
@@ -3912,6 +4018,7 @@ struct ContentView: View {
                       place: "\(session) on \(target.host)",
                       sends: slateSends,
                       probedName: { railState.probedMachineName(for: $0) })
+                .environment(\.openURL, nativePaneLinkAction(target: target))
         }
     }
 

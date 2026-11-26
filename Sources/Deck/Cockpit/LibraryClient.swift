@@ -83,9 +83,10 @@ enum LibraryClient {
         /// A product name or Library id failed `validateLibraryProduct`/
         /// `validateLibraryId` before it could reach argv.
         case invalidInput(String)
-        /// `acting_human` failed `validateActingHuman` before `approveEpic`
-        /// built a request — carries the operator-facing reason directly,
-        /// since there is no id or JSON body here to derive one from.
+        /// `acting_human` failed `validateActingHuman` before a signed act's
+        /// body could be built — carries the operator-facing reason
+        /// directly, since there is no id or JSON body here to derive one
+        /// from.
         case invalidActingHuman(String)
         /// A model or reason failed `itemModelBody`'s bounds before a request
         /// was built; carries the operator-facing reason.
@@ -204,6 +205,14 @@ enum LibraryClient {
         let shortDescription: String?
         let type: String?
         let state: String?
+        /// The epic's own progress, `GET /courses/{id}`'s `epic_state`:
+        /// `not_started`, `in_progress`, `completed` or `canceled` on the
+        /// running Library (2026-11-07). `state` is the work-item state and
+        /// stays `open` on an epic nobody holds even while its children are
+        /// being worked or are all fixed, so `CockpitView.rowTreatment(_:)`
+        /// reads this to draw such an epic as under way. Absent on epics
+        /// that predate the field; `nil` keeps the `state`-only reading.
+        let epicState: String?
         let maturity: String?
         let resolution: String?
         /// The six fields below all arrive on the same `GET /courses/{id}`
@@ -254,7 +263,7 @@ enum LibraryClient {
         /// which would silently drop every existing call site (including
         /// every test in `LibraryClientTests`) that predates them.
         init(id: String, title: String, shortDescription: String? = nil,
-             type: String? = nil, state: String? = nil,
+             type: String? = nil, state: String? = nil, epicState: String? = nil,
              maturity: String? = nil, resolution: String? = nil, body: String? = nil,
              specification: String? = nil, definitionOfDone: String? = nil, severity: String? = nil,
              needs: [String] = [], claimedBy: String? = nil, claimExpired: Bool = false,
@@ -265,6 +274,7 @@ enum LibraryClient {
             self.shortDescription = shortDescription
             self.type = type
             self.state = state
+            self.epicState = epicState
             self.maturity = maturity
             self.resolution = resolution
             self.body = body
@@ -299,9 +309,12 @@ enum LibraryClient {
         /// the one epic whose interior the cockpit expands inline, per
         /// `deck/bead/deck` §"The work": "the state of items in any epic
         /// that is not fully unstarted or closed."
+        ///
+        /// An `open` epic whose `epicState` reads `in_progress` counts: its
+        /// children are under way though nobody holds the epic itself.
         var isInProgress: Bool {
             guard let state, !isCompleted else { return false }
-            return state != "open"
+            return state != "open" || epicState == "in_progress"
         }
     }
 
@@ -779,6 +792,18 @@ enum LibraryClient {
     /// reads (`proposedEpics(from:)`). All three degrade to `nil` like every
     /// other field here, and so does `key`, which the same region now draws
     /// beside the title.
+    ///
+    /// **`definitionOfDone` and `modelChoice` EXIST SO THE PROPOSALS REGION
+    /// CAN SIGN A SNAPSHOT IT ACTUALLY DISPLAYED (CQ·209).** `GET
+    /// /items?type=epic` carries every other item field the same way `GET
+    /// /items/{id}` does (confirmed against the running Library the same way
+    /// `specification`'s own decoding was), so reading it here costs nothing
+    /// and gives `LibraryClient.ItemActSnapshot(epic:)` the fields
+    /// `CorrectionDetail` already had and `Epic` previously lacked — never a
+    /// second read made at the moment of the Touch ID press. Without
+    /// `modelChoice`, a proposed epic with a model set from `ItemDetailPane`
+    /// would always sign an empty `model` line from the Proposals region and
+    /// the Library's own state check would refuse the act 409 `stale`.
     struct Epic: Equatable, Identifiable {
         let id: String
         let state: String?
@@ -788,10 +813,14 @@ enum LibraryClient {
         let title: String?
         let maturity: String?
         let specification: String?
+        let definitionOfDone: String?
         /// The stable key a PR row's chip carries, `"E39"` for an epic with
         /// no child under it — see `CourseEntry.key`'s doc for the full
         /// vocabulary. `nil` when this Library predates the field.
         let key: String?
+        /// The operator's model choice, or `nil` for none — see
+        /// `ItemActSnapshot(epic:)`.
+        let modelChoice: ModelChoice?
 
         /// Written out for the reason `QueueItem.init` is: a synthesized
         /// memberwise init would make `title`, `maturity` and `specification`
@@ -799,7 +828,8 @@ enum LibraryClient {
         /// none of them.
         init(id: String, state: String?, resolution: String?, createdAt: String?,
              resolvedAt: String?, title: String? = nil, maturity: String? = nil,
-             specification: String? = nil, key: String? = nil) {
+             specification: String? = nil, definitionOfDone: String? = nil, key: String? = nil,
+             modelChoice: ModelChoice? = nil) {
             self.id = id
             self.state = state
             self.resolution = resolution
@@ -808,7 +838,9 @@ enum LibraryClient {
             self.title = title
             self.maturity = maturity
             self.specification = specification
+            self.definitionOfDone = definitionOfDone
             self.key = key
+            self.modelChoice = modelChoice
         }
 
         /// A terminal outcome under any resolution, the same vocabulary
@@ -1170,10 +1202,12 @@ enum LibraryClient {
     /// the shared one every read and `reorderCourse` still use. `itemId`
     /// reaches this unvalidated at the call site's discretion, same as every
     /// other per-route builder in this section; `approveEpicArguments` is the
-    /// only caller and validates first via `validateLibraryId`.
-    static func itemApproveRemoteCommand(itemId: String) -> String {
+    /// only caller and validates first via `validateLibraryId`. `act` carries
+    /// this Touch ID press's signature — every call is now a signed act, so
+    /// unlike `remoteWriteCommand`'s own `act` this is required, not optional.
+    static func itemApproveRemoteCommand(itemId: String, act: LibraryActHeaders) -> String {
         remoteWriteCommand(method: "POST", path: "/items/\(itemId)/approve",
-                           tokenFile: WorkingCopyStore.libraryApprovalTokenFile)
+                           tokenFile: WorkingCopyStore.libraryApprovalTokenFile, act: act)
     }
 
     /// `POST /items/{id}/decline` — the write `declineEpic` sends, under the
@@ -1183,20 +1217,22 @@ enum LibraryClient {
     /// `itemId` reaches this unvalidated at the call site's discretion, same
     /// as every other per-route builder in this section;
     /// `declineEpicArguments` is the only caller and validates first via
-    /// `validateLibraryId`.
-    static func itemDeclineRemoteCommand(itemId: String) -> String {
+    /// `validateLibraryId`. `act` is required, for the reason
+    /// `itemApproveRemoteCommand`'s doc gives.
+    static func itemDeclineRemoteCommand(itemId: String, act: LibraryActHeaders) -> String {
         remoteWriteCommand(method: "POST", path: "/items/\(itemId)/decline",
-                           tokenFile: WorkingCopyStore.libraryApprovalTokenFile)
+                           tokenFile: WorkingCopyStore.libraryApprovalTokenFile, act: act)
     }
 
     /// `POST /items/{id}/model` — the write `setItemModel` sends, under Deck's
     /// own credential (`libraryApprovalTokenFile`, the one that resolves as
     /// actor `deck`), exactly as Approve does. `itemId` reaches this
     /// unvalidated; `itemModelArguments` is the only caller and validates
-    /// first via `validateLibraryId`.
-    static func itemModelRemoteCommand(itemId: String) -> String {
+    /// first via `validateLibraryId`. `act` is required, for the reason
+    /// `itemApproveRemoteCommand`'s doc gives.
+    static func itemModelRemoteCommand(itemId: String, act: LibraryActHeaders) -> String {
         remoteWriteCommand(method: "POST", path: "/items/\(itemId)/model",
-                           tokenFile: WorkingCopyStore.libraryApprovalTokenFile)
+                           tokenFile: WorkingCopyStore.libraryApprovalTokenFile, act: act)
     }
 
     /// `PUT /courses/{id}/order` — the write `reorderCourse` sends.
@@ -1206,6 +1242,34 @@ enum LibraryClient {
     /// `validateLibraryId`.
     static func courseOrderRemoteCommand(courseId: String) -> String {
         remotePUTCommand(path: "/courses/\(courseId)/order")
+    }
+
+    /// `PUT /themes/palette` — the write `ThemePublisher` sends, CQ·211.
+    /// Takes no argument: the path names no caller-supplied value, unlike
+    /// every other write builder in this section.
+    ///
+    /// UNDER THE THEME-ONLY CREDENTIAL (`libraryThemeTokenFile`, actor
+    /// `deck-theme`, holding `theme.write` alone); see that constant's doc.
+    /// The first release sent both theme writes under the shared
+    /// `libraryTokenFile`, which holds no `theme.write`, and on 2026-11-16
+    /// the Library refused the palette and all twenty project writes 403
+    /// after Deck relaunched on the laptop.
+    static func themesPaletteRemoteCommand() -> String {
+        remoteWriteCommand(method: "PUT", path: "/themes/palette",
+                           tokenFile: WorkingCopyStore.libraryThemeTokenFile)
+    }
+
+    /// `PUT /projects/{slug}/theme` — the write `ThemePublisher` sends,
+    /// CQ·211. `slug` reaches this unvalidated at the call site's
+    /// discretion, same as `courseOrderRemoteCommand`'s `courseId`;
+    /// `projectThemeArguments` is the only caller and validates first via
+    /// `validateLibraryProduct` — a slug is a Library product name's own
+    /// shape (comment 7443 on issue_01M7G7W6JJ7XHSD5ACZ32X2A09: "must be a
+    /// registry project slug exactly"). Sent under the theme-only
+    /// credential, for the reason `themesPaletteRemoteCommand`'s doc gives.
+    static func projectThemeRemoteCommand(slug: String) -> String {
+        remoteWriteCommand(method: "PUT", path: "/projects/\(slug)/theme",
+                           tokenFile: WorkingCopyStore.libraryThemeTokenFile)
     }
 
     /// No caller-supplied input reaches this path, unlike every other
@@ -1347,14 +1411,17 @@ enum LibraryClient {
     // unquoting would expand an operator's `$(rm -rf ~)` identically.
     // Charset-validating free text the way an id is validated is not an
     // option, since the point of free text is that it says something.
-    // `approveEpic`'s body now carries one such field, `acting_human`
-    // (`DeckOperator.label()`, built from the macOS session's own username
-    // and hostname rather than typed by anyone, but reaching this channel
-    // under the identical threat model — neither is charset-restricted, and
-    // a mischievous account name is exactly the case this channel exists
-    // for); `reorderCourse` still sends only a version and Library ids. Both
-    // use this channel so a future write with real operator-typed text
-    // inherits the same safety rather than reaching for a heredoc.
+    // Every one of `approveEpic`, `declineEpic` and `setItemModel` carries
+    // `acting_human` (`DeckOperator.label()`, built from the macOS session's
+    // own username and hostname rather than typed by anyone, but reaching
+    // this channel under the identical threat model — neither is
+    // charset-restricted, and a mischievous account name is exactly the
+    // case this channel exists for); `declineEpic` and `setItemModel` also
+    // carry a decline reason or a model-choice reason, typed by the
+    // operator with no charset restriction. `reorderCourse` still sends
+    // only a version and Library ids. All three use this channel so a
+    // future write with real operator-typed text inherits the same safety
+    // rather than reaching for a heredoc.
     //
     // THE FIX: OPERATOR TEXT NEVER TOUCHES A SHELL STRING AT ALL. It travels
     // as the actual process stdin `SessionAgent.run(_:stdin:)` writes and ssh
@@ -1414,21 +1481,50 @@ enum LibraryClient {
         remoteWriteCommand(method: "PUT", path: path)
     }
 
+    /// A signed item act's three headers (library-protocol "Signed item
+    /// acts"), each the standard base64 of its own bytes — `envelope` the
+    /// `LibraryItemActSignature.bytes` text, `signature` the DER ECDSA
+    /// signature over it, `certificate` the signing certificate's DER.
+    ///
+    /// **SAFE TO EMBED LITERALLY IN A SINGLE-QUOTED `-H` FLAG, UNLIKE A POST
+    /// BODY.** Standard base64's alphabet is `A-Za-z0-9+/=` — no single
+    /// quote, backtick, `$`, or whitespace — so unlike the operator-typed
+    /// free text `remoteWriteCommand`'s own comment warns about, these three
+    /// values never need the stdin-pipe indirection that guards a POST body;
+    /// `remoteWriteCommand` below embeds them straight into the command
+    /// string the same way it already embeds the fixed `Library-Protocol`
+    /// and `Content-Type` headers.
+    struct LibraryActHeaders: Equatable {
+        let envelope: String
+        let signature: String
+        let certificate: String
+    }
+
     /// `method` is one of a few fixed literals from the callers above and
     /// never operator text, so it can sit in the command string like `path`.
     /// `tokenFile` defaults to `WorkingCopyStore.libraryTokenFile`, the same
     /// default `remoteGETCommand` takes and for the same reason —
-    /// `itemApproveRemoteCommand` is the one write that passes
-    /// `WorkingCopyStore.libraryApprovalTokenFile` explicitly.
+    /// approve, decline and model choice pass
+    /// `WorkingCopyStore.libraryApprovalTokenFile` explicitly, and the two
+    /// theme writes pass `WorkingCopyStore.libraryThemeTokenFile`. `act`, when
+    /// given, adds the three signed-act headers — see `LibraryActHeaders`'s
+    /// doc for why they are safe to embed here unlike the body.
     private static func remoteWriteCommand(
-        method: String, path: String, tokenFile: String = WorkingCopyStore.libraryTokenFile
+        method: String, path: String, tokenFile: String = WorkingCopyStore.libraryTokenFile,
+        act: LibraryActHeaders? = nil
     ) -> String {
-        "{ printf 'header = \"Authorization: Bearer %s\"\\n' " +
+        let actHeaders = act.map {
+            "-H 'Library-Act-Envelope: \($0.envelope)' " +
+            "-H 'Library-Act-Signature: \($0.signature)' " +
+            "-H 'Library-Act-Certificate: \($0.certificate)' "
+        } ?? ""
+        return "{ printf 'header = \"Authorization: Bearer %s\"\\n' " +
         "\"$(cat \(tokenFile) 2>/dev/null)\"; " +
         "printf 'data-binary = \"@-\"\\n'; cat; } | " +
         "curl -sS -w '\\n%{http_code}' " +
         "-H 'Library-Protocol: 1' " +
         "-H 'Content-Type: application/json' " +
+        actHeaders +
         "--config - -X \(method) " +
         "\"\(WorkingCopyStore.libraryBaseURLExpression)\(path)\""
     }
@@ -1480,6 +1576,7 @@ enum LibraryClient {
                 shortDescription: item["short_description"] as? String,
                 type: item["type"] as? String,
                 state: item["state"] as? String,
+                epicState: item["epic_state"] as? String,
                 maturity: item["maturity"] as? String,
                 resolution: item["resolution"] as? String,
                 body: item["body"] as? String,
@@ -1906,7 +2003,9 @@ enum LibraryClient {
                         title: item["title"] as? String,
                         maturity: item["maturity"] as? String,
                         specification: item["specification"] as? String,
-                        key: item["key"] as? String)
+                        definitionOfDone: item["definition_of_done"] as? String,
+                        key: item["key"] as? String,
+                        modelChoice: decodeModelChoice(item["model_choice"]))
         }
     }
 
@@ -2267,13 +2366,188 @@ enum LibraryClient {
         return object
     }
 
+    // MARK: - Signed item acts (library-protocol "Signed item acts", kb PR #1293)
+
+    /// What became of a signed item act — approve, decline, or a model
+    /// choice. `.wrote` is the Library's own 200. `.signingUnavailable`
+    /// collapses every reason nothing could honestly be signed — no stored
+    /// key, no stored certificate, or a certificate whose validity window
+    /// does not include this moment — into one case, because the control
+    /// shows the same words either way. `.cancelled` is a dismissed Touch ID
+    /// prompt: nothing was signed and nothing was sent. `.refused` is the
+    /// Library's own answer to a request it did receive, in words — the one
+    /// refusal case `KnowledgeBase.SignedSaveOutcome` establishes for a
+    /// signed write, so a genuine transport failure or a local validation
+    /// error (an unusable id) still throws rather than hiding in this enum.
+    ///
+    /// `.needsFreshRead` is its own case rather than folded into `.refused`:
+    /// a 409 `stale` (what was signed no longer matches what the Library
+    /// holds) and a 403 `proof-refused`/`replayed` (this exact proof was
+    /// already used) both mean the act was never applied and the caller
+    /// must re-read the item and redraw it before a person can press again
+    /// — never resend the same proof, since each press signs afresh. Every
+    /// caller treats this the same way `.refused` is shown (the message is
+    /// for a person to read) but additionally re-reads the item it just
+    /// signed over, so the next press is over what the Library holds now.
+    enum SignedActOutcome: Equatable {
+        case wrote
+        case signingUnavailable
+        case cancelled
+        case refused(String)
+        case needsFreshRead(String)
+    }
+
+    /// What `performSignedAct` signs over — the specification, definition of
+    /// done, maturity and model the PERSON SAW, taken from the item a caller
+    /// already has displayed, never a read made at the moment of the press.
+    ///
+    /// **WHY THIS MUST BE A SNAPSHOT THE CALLER OWNS, NOT A FRESH READ HERE.**
+    /// The contract's signed-act envelope exists so the Library can refuse
+    /// with 409 `stale` when the signed fields no longer match its own
+    /// record (library-protocol "Signed item acts"). A read made right
+    /// before signing can never disagree with the Library's own state at
+    /// that instant, so `stale` could never fire and a person could approve
+    /// text the screen in front of them never showed — the signature would
+    /// attest to a read Deck just made for itself, not to what a person
+    /// looked at before pressing. Each caller therefore builds this from
+    /// whichever displayed model it already holds: `ItemDetailPane`'s loaded
+    /// `CorrectionDetail`, or the Proposals region's own `Epic` once it
+    /// carries a definition of done (see `Epic.definitionOfDone`'s doc).
+    struct ItemActSnapshot: Equatable {
+        let specification: String?
+        let definitionOfDone: String?
+        let maturity: String?
+        let model: String?
+
+        init(specification: String? = nil, definitionOfDone: String? = nil,
+             maturity: String? = nil, model: String? = nil) {
+            self.specification = specification
+            self.definitionOfDone = definitionOfDone
+            self.maturity = maturity
+            self.model = model
+        }
+
+        /// From an `ItemDetailPane`'s own loaded item — the shape every
+        /// `ItemDetailModel` write (`approve`, `decline`, `setModel`,
+        /// `clearModel`) takes its snapshot from.
+        init(detail: CorrectionDetail) {
+            self.init(specification: detail.specification, definitionOfDone: detail.definitionOfDone,
+                      maturity: detail.maturity, model: detail.modelChoice?.model)
+        }
+
+        /// From the Proposals region's own displayed `Epic` row.
+        init(epic: Epic) {
+            self.init(specification: epic.specification, definitionOfDone: epic.definitionOfDone,
+                      maturity: epic.maturity, model: epic.modelChoice?.model)
+        }
+    }
+
+    /// What every one of the three controls says for `.signingUnavailable`.
+    static let signedActNeedsCertificateMessage =
+        "This act needs a signing certificate. Open Settings › Signing to add one."
+
+    /// Signs the act's envelope over the snapshot the caller already has
+    /// displayed, and sends it — the one core `approveEpic`, `declineEpic`,
+    /// and `setItemModel` all share.
+    ///
+    /// **SIGNS WHAT THE PERSON SAW, NEVER A FRESH READ.** An earlier version
+    /// of this function read the item fresh right before signing, which
+    /// meant the signed fields could never disagree with the Library's own
+    /// state at that instant — the 409 `stale` refusal this contract defines
+    /// could never fire, and a person could approve text the screen in
+    /// front of them never showed. `snapshot` is `ItemActSnapshot`'s own
+    /// doc: it is the specification, definition of done, maturity and model
+    /// the caller's own displayed item carries, built once when that item
+    /// was drawn, never re-read at the press. The one-touch-ID-press-per-call
+    /// contract still holds: this function issues exactly one write.
+    ///
+    /// `signingKey`/`certificatePEM` are already resolved by the caller —
+    /// `CockpitModel`'s and `ItemDetailPane`'s own write closures call
+    /// `SigningCredentials.loadMatching()` first and return `.signingUnavailable`
+    /// themselves, without reaching here, when there is no stored key, no
+    /// stored certificate, or a certificate for a different key — the same
+    /// split `EditorPane.signAndSubmit` draws against `KnowledgeBase.submit`'s
+    /// own `signingKey`/`certificatePEM` parameters. What this function still
+    /// checks is the one thing a caller cannot know in advance: whether the
+    /// certificate's validity window covers this moment. A test passes a
+    /// software key and a `CertificateFixture`-built certificate directly,
+    /// never touching the real Keychain or Secure Enclave. `transport`
+    /// defaults to a real ssh/curl round trip through `LibraryTransportDispatch`
+    /// at the three call sites below; a test substitutes a fake and asserts
+    /// on exactly what it was asked to send, the same seam `KBSignedSave.submit`'s
+    /// own `run` parameter is.
+    ///
+    /// `signedAt` is taken as `now` immediately before the Touch ID call,
+    /// not before any read — the window the signature's own `signed-at`
+    /// should measure is "how long ago was this pressed", not "how long ago
+    /// was the item last read".
+    private static func performSignedAct(
+        target: SSHTarget, action: LibraryItemActSignature.Action, itemId: String,
+        body: [String: Any], signReason: String, snapshot: ItemActSnapshot,
+        signingKey: SigningKey, certificatePEM: String, now: Date,
+        remoteCommand: (LibraryActHeaders) -> String,
+        transport: ([String], String?) throws -> Data
+    ) throws -> SignedActOutcome {
+        guard let certificate = try? SigningCertificate.parse(fileData: Data(certificatePEM.utf8)),
+              now >= certificate.notBefore, now <= certificate.notAfter else {
+            return .signingUnavailable
+        }
+
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let envelope = try LibraryItemActSignature.bytes(
+            action: action, itemId: itemId, specification: snapshot.specification,
+            definitionOfDone: snapshot.definitionOfDone, maturity: snapshot.maturity,
+            model: snapshot.model, bodyBytes: bodyData, signedAt: now)
+
+        let signature: Data
+        do {
+            signature = try signingKey.sign(envelope, reason: signReason)
+        } catch SigningKeyError.cancelled {
+            return .cancelled
+        }
+
+        let act = LibraryActHeaders(
+            envelope: envelope.base64EncodedString(), signature: signature.base64EncodedString(),
+            certificate: certificate.der.base64EncodedString())
+        let argv = arguments(target: target, remoteCommand: remoteCommand(act), controlPath: defaultControlPath())
+        let bodyString = String(data: bodyData, encoding: .utf8) ?? "{}"
+        do {
+            _ = try refusedOr200Body(try transport(argv, bodyString))
+        } catch FetchError.libraryRefused(let status, let refusalBody) {
+            let error = FetchError.libraryRefused(status: status, body: refusalBody)
+            let message = approvalRefusalMessage(error)
+            if requiresFreshRead(status: status, body: refusalBody) {
+                return .needsFreshRead(message)
+            }
+            return .refused(message)
+        }
+        return .wrote
+    }
+
+    /// Whether a refusal means the act was never applied because what was
+    /// signed no longer matches what the Library holds, or because this
+    /// exact proof was already used — the two shapes that mean "re-read the
+    /// item and redraw it", never "resend the same proof" (library-protocol
+    /// "Signed item acts", review round): a 409 `{"error":"stale"}`, or a
+    /// 403 `{"error":"proof-refused","reason":"replayed"}`.
+    private static func requiresFreshRead(status: Int, body: String) -> Bool {
+        guard let object = body.data(using: .utf8)
+            .flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) else { return false }
+        if status == 409, object["error"] as? String == "stale" { return true }
+        if status == 403, object["error"] as? String == "proof-refused", object["reason"] as? String == "replayed" {
+            return true
+        }
+        return false
+    }
+
     // MARK: - Write: approving a proposed epic
 
     /// The Library's own bound on `acting_human` — `store.MAX_ACTOR`,
     /// confirmed 200 against the deployed Library's source (`store.py:474`,
     /// 2026-09-22). Checked here so an over-length value refuses locally,
-    /// before it reaches curl, rather than reaching the Library for the
-    /// identical 403.
+    /// before it reaches curl — and, for a signed act, before the Touch ID
+    /// prompt that `performSignedAct` would otherwise show for a write the
+    /// Library would refuse with the identical 403 anyway.
     static let maxActingHumanLength = 200
 
     /// `acting_human`, trimmed and bound-checked the same way the Library's
@@ -2282,6 +2556,13 @@ enum LibraryClient {
     /// or throws `FetchError.invalidActingHuman` with a
     /// words-an-operator-can-read reason — never a generic "invalid input",
     /// since there is no id or JSON here to point at instead.
+    ///
+    /// **THE LIBRARY RUNNING TODAY STILL REQUIRES `acting_human` ON EVERY
+    /// WRITE.** The signed-act route (`convivy/library#374`) that makes it
+    /// optional is not yet deployed, so every one of the three callers below
+    /// keeps sending it — the Library's own §2.2/§6.2 says a body may still
+    /// carry it even once the route ships, and the signature already covers
+    /// the field since it is part of the body `performSignedAct` hashes.
     static func validateActingHuman(_ value: String, for action: String = "approval") throws -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -2295,73 +2576,85 @@ enum LibraryClient {
         return trimmed
     }
 
-    /// The body `approveEpic` sends, and the whole of what it sends but for
-    /// `acting_human`.
-    ///
-    /// **A bare `{maturity, acting_human}` write approves a proposed epic;
-    /// nothing else has to travel with it.** Read against the Library's
-    /// `_approval_invariant` and `_do_approve` (`app.py`):
-    ///
-    /// - The demotion that forces `approved` back to `proposed` fires through
-    ///   `_revokes_approval`, whose first line returns false unless the item's
-    ///   CURRENT maturity is `approved`. A proposed epic carries no approval to
-    ///   revoke, so resending `approved` here is not the "keeping `approved`
-    ///   across a revoking change" case that comment names.
-    /// - The only gate this write meets is the one every epic approval meets:
-    ///   the stored `specification` and `definition_of_done` must both be
-    ///   non-empty (`_spec_gaps`), or the route answers 400. That refusal is
-    ///   the Library telling the operator the epic is not ready, so Deck
-    ///   surfaces its text and does not try to satisfy it. An epic refused
-    ///   this way is not editable from Deck — it is approved as it stands or
-    ///   not at all, so nothing in Deck offers to edit its specification.
-    /// - `owner` is not sent. With no live lease on the epic the route holds it
-    ///   for this one write (`_hold_for_write`), so Deck takes no checkout and
-    ///   leaves no lease behind.
+    /// The body `approveEpic` sends, and the whole of what it sends.
+    /// `acting_human` still travels on every signed act — the running
+    /// Library predates the route that makes it optional
+    /// (`validateActingHuman`'s own doc) — and the signature covers it like
+    /// any other byte of the body. `owner` is not sent. With no live lease
+    /// on the epic the route holds it for this one write
+    /// (`_hold_for_write`), so Deck takes no checkout and leaves no lease
+    /// behind.
     static func approveEpicBody(actingHuman: String) -> [String: Any] {
         ["maturity": approvedMaturity, "acting_human": actingHuman]
     }
 
     /// `approveEpic`'s argv, validated first: an id that fails
     /// `validateLibraryId` throws here and reaches no command string. Split
-    /// out so a test can prove that without an ssh target. `acting_human`
-    /// travels in the body, not argv, so it needs no such gate here —
-    /// `approveEpic` validates it separately, via `validateActingHuman`.
+    /// out so a test can prove that without an ssh target. `act` is this
+    /// Touch ID press's signature, required on every call now that approve
+    /// is always a signed act.
     static func approveEpicArguments(
-        target: SSHTarget, itemId: String, controlPath: String = defaultControlPath()
+        target: SSHTarget, itemId: String, act: LibraryActHeaders, controlPath: String = defaultControlPath()
     ) throws -> [String] {
         guard let safeId = validateLibraryId(itemId) else {
             throw FetchError.invalidInput(itemId)
         }
-        return arguments(target: target, remoteCommand: itemApproveRemoteCommand(itemId: safeId),
+        return arguments(target: target, remoteCommand: itemApproveRemoteCommand(itemId: safeId, act: act),
                          controlPath: controlPath)
     }
 
     /// Promotes one epic from `proposed` to `approved` and places it on its
     /// product's live Course, with no agent involved — `POST
     /// /items/{id}/approve`, under the approval credential
-    /// (`WorkingCopyStore.libraryApprovalTokenFile`). Synchronous and
-    /// blocking, like every fetch here; callers run it off the main actor.
+    /// (`WorkingCopyStore.libraryApprovalTokenFile`), signed over `snapshot`
+    /// — the specification, definition of done and maturity the caller's
+    /// own displayed item carries, never a fresh read (`performSignedAct`'s
+    /// doc). Synchronous and blocking, like every fetch here; callers run
+    /// it off the main actor.
     ///
-    /// `actingHuman` is checked locally first (`validateActingHuman`) and
-    /// throws `FetchError.invalidActingHuman` with an operator-facing reason
-    /// rather than reaching the Library for a 403 it could have caught
-    /// itself. Past that, a refusal throws `FetchError.libraryRefused`,
-    /// which `approvalRefusalMessage` turns into words for the operator: a
-    /// 409 while another session holds the epic or the product has no live
-    /// Course, a 400 while the epic lacks a specification or definition of
-    /// done, a 403 while the credential lacks `epic.approve` or
-    /// `course.write`.
-    static func approveEpic(target: SSHTarget, itemId: String, actingHuman: String) throws {
-        let argv = try approveEpicArguments(target: target, itemId: itemId)
-        let trimmed = try validateActingHuman(actingHuman)
-        _ = try postJSON(target: target, argv: argv, body: approveEpicBody(actingHuman: trimmed))
+    /// `actingHuman` is checked locally first (`validateActingHuman`), before
+    /// the certificate check or the Touch ID prompt `performSignedAct` would
+    /// otherwise show for a write the Library would refuse anyway. Past
+    /// that, a refusal from the Library comes back as `.refused` or
+    /// `.needsFreshRead`, never a throw — see `SignedActOutcome`'s doc —
+    /// and `approvalRefusalMessage` turns its text into words for the
+    /// operator: a 409 while another session holds the epic, the product
+    /// has no live Course, or the signed snapshot no longer matches what
+    /// the Library holds (`stale`); a 400 while the epic lacks a
+    /// specification or definition of done; a 403 while the credential
+    /// lacks `epic.approve` or `course.write`, or while the signature
+    /// itself is refused (`proof-refused`, including a replayed proof). An
+    /// id that fails validation, or a transport failure, still throws.
+    static func approveEpic(
+        target: SSHTarget, itemId: String, snapshot: ItemActSnapshot, actingHuman: String,
+        signingKey: SigningKey, certificatePEM: String,
+        now: Date = Date(),
+        transport: (([String], String?) throws -> Data)? = nil
+    ) throws -> SignedActOutcome {
+        guard let safeId = validateLibraryId(itemId) else {
+            throw FetchError.invalidInput(itemId)
+        }
+        let trimmedActingHuman = try validateActingHuman(actingHuman)
+        let send = transport ?? { argv, stdin in
+            try LibraryTransportDispatch.run(target: target, argv: argv, stdin: stdin)
+        }
+        return try performSignedAct(
+            target: target, action: .approve, itemId: safeId,
+            body: approveEpicBody(actingHuman: trimmedActingHuman),
+            signReason: "Approve \(safeId) in the Library", snapshot: snapshot, signingKey: signingKey,
+            certificatePEM: certificatePEM, now: now,
+            remoteCommand: { act in itemApproveRemoteCommand(itemId: safeId, act: act) }, transport: send)
     }
 
     /// What the Approve button says when the write did not land. The Library's
     /// refusals name what failed (§8), so this passes that text through, and
     /// for a 409 `reason: "held"` it names the holder and the expiry from the
     /// lease the refusal carries, since "held by someone" leaves the operator
-    /// nothing to act on.
+    /// nothing to act on. A `proof-refused` 403 and a `stale` 409 — the two
+    /// shapes a signed act's own verification can answer with — get their own
+    /// reason-specific words rather than the generic `error` pass-through,
+    /// since that field is a code (`"proof-refused"`, `"stale"`) on both,
+    /// not readable text.
     ///
     /// `now`, `timeZone` and `locale` are parameters so a test can pin the
     /// clock; the expiry shows a date only when it is not today.
@@ -2382,6 +2675,14 @@ enum LibraryClient {
                     return "Held by \(holder)\(until). \(retry) again once they release it."
                 }
             }
+            if status == 403, object?["error"] as? String == "proof-refused" {
+                return proofRefusedMessage(object)
+            }
+            if status == 409, object?["error"] as? String == "stale" {
+                let changed = (object?["changed"] as? [String])?.joined(separator: ", ")
+                return "The item changed (\(changed ?? "something Deck signed")) after it was read for "
+                    + "this signature. Reopen it and press \(retry) again."
+            }
             if let message = object?["error"] as? String { return message }
             return "The Library refused (\(status)): \(body)"
         case FetchError.invalidInput(let value):
@@ -2393,17 +2694,50 @@ enum LibraryClient {
         }
     }
 
+    /// The words for a `{"error":"proof-refused","reason":R}` 403 — the
+    /// signature verification's own refusals, distinct from a credential
+    /// simply lacking the capability (which reaches the generic pass-through
+    /// above instead, since that text is already readable).
+    private static func proofRefusedMessage(_ object: [String: Any]?) -> String {
+        switch object?["reason"] as? String {
+        case "malformed":
+            return "The signed envelope was not in the shape the Library expects."
+        case "window":
+            return "The signature's time is outside the window the Library accepts. "
+                + "Check this Mac's clock and sign again."
+        case "certificate":
+            return "The signing certificate is not one the Library recognizes."
+        case "not-active":
+            let status = object?["certificate_status"] as? String ?? "not active"
+            return "The signing certificate is \(status). Renew it in Settings › Signing."
+        case "signature":
+            return "The signature does not verify against the certificate."
+        case "mismatch":
+            return "The signed envelope does not match this request."
+        case "inputs":
+            return "The signed fields do not match what the Library has on file."
+        case "missing":
+            return "This request carried no signed proof, and this credential may not act without one."
+        case "replayed":
+            return "This signature was already used; each press signs a new one. "
+                + "Reopen the item to see its current state and press again."
+        default:
+            return "The Library refused the signature."
+        }
+    }
+
     // MARK: - Write: declining a proposed epic
 
     /// The body `declineEpic` sends, and the whole of what it sends. `POST
     /// /items/{id}/decline` sets `maturity` to `declined` itself
     /// (library/decisions/0005), so unlike `approveEpicBody` this carries no
-    /// `maturity` key — `acting_human` is the one fact the write needs to
-    /// attest. `owner` is not sent, for the same reason `approveEpicBody`
-    /// omits it: a live lease does not block this route, so Deck takes none.
-    /// `reason` is the operator's one line, which the Library records on the
-    /// decline and on every child it closes; a blank one is omitted, since
-    /// the route treats it as absent.
+    /// `maturity` key — `acting_human` is the one fact every decline must
+    /// still attest, for the reason `approveEpicBody`'s doc gives. `owner`
+    /// is not sent, for the same reason `approveEpicBody` omits it: a live
+    /// lease does not block this route, so Deck takes none. `reason` is the
+    /// operator's one line, which the Library records on the decline and on
+    /// every child it closes; a blank one is omitted, since the route
+    /// treats it as absent.
     static func declineEpicBody(actingHuman: String, reason: String? = nil) -> [String: Any] {
         var body: [String: Any] = ["acting_human": actingHuman]
         if let trimmed = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
@@ -2416,30 +2750,47 @@ enum LibraryClient {
     /// `validateLibraryId` throws here and reaches no command string.
     /// Mirrors `approveEpicArguments` exactly.
     static func declineEpicArguments(
-        target: SSHTarget, itemId: String, controlPath: String = defaultControlPath()
+        target: SSHTarget, itemId: String, act: LibraryActHeaders, controlPath: String = defaultControlPath()
     ) throws -> [String] {
         guard let safeId = validateLibraryId(itemId) else {
             throw FetchError.invalidInput(itemId)
         }
-        return arguments(target: target, remoteCommand: itemDeclineRemoteCommand(itemId: safeId),
+        return arguments(target: target, remoteCommand: itemDeclineRemoteCommand(itemId: safeId, act: act),
                          controlPath: controlPath)
     }
 
     /// Ends a proposed epic's consideration — `POST /items/{id}/decline`,
-    /// under the approval credential. The Library refuses with 409 on
-    /// anything but a proposed epic (library/decisions/0005): an approved
-    /// epic's refusal hints at `/repropose`, and an epic with an approved
-    /// sub-epic names that sub-epic. Synchronous and blocking, like
-    /// `approveEpic`; callers run it off the main actor.
+    /// under the approval credential, signed over `snapshot` the same way
+    /// `approveEpic` is. The Library refuses with 409 on anything but a
+    /// proposed epic (library/decisions/0005): an approved epic's refusal
+    /// hints at `/repropose`, and an epic with an approved sub-epic names
+    /// that sub-epic. Synchronous and blocking, like `approveEpic`; callers
+    /// run it off the main actor.
     ///
     /// `actingHuman` is checked locally first (`validateActingHuman`), the
-    /// same guard `approveEpic` applies. A refusal throws
-    /// `FetchError.libraryRefused`, which `declineRefusalMessage` turns into
-    /// words for the operator.
-    static func declineEpic(target: SSHTarget, itemId: String, actingHuman: String, reason: String? = nil) throws {
-        let argv = try declineEpicArguments(target: target, itemId: itemId)
-        let trimmed = try validateActingHuman(actingHuman, for: "decline")
-        _ = try postJSON(target: target, argv: argv, body: declineEpicBody(actingHuman: trimmed, reason: reason))
+    /// same guard `approveEpic` applies, before either the certificate check
+    /// or the Touch ID prompt. A refusal comes back as `.refused` or
+    /// `.needsFreshRead`, the same cases `approveEpic` returns, turned into
+    /// words by `declineRefusalMessage`.
+    static func declineEpic(
+        target: SSHTarget, itemId: String, reason: String? = nil, snapshot: ItemActSnapshot, actingHuman: String,
+        signingKey: SigningKey, certificatePEM: String,
+        now: Date = Date(),
+        transport: (([String], String?) throws -> Data)? = nil
+    ) throws -> SignedActOutcome {
+        guard let safeId = validateLibraryId(itemId) else {
+            throw FetchError.invalidInput(itemId)
+        }
+        let trimmedActingHuman = try validateActingHuman(actingHuman, for: "decline")
+        let send = transport ?? { argv, stdin in
+            try LibraryTransportDispatch.run(target: target, argv: argv, stdin: stdin)
+        }
+        return try performSignedAct(
+            target: target, action: .decline, itemId: safeId,
+            body: declineEpicBody(actingHuman: trimmedActingHuman, reason: reason),
+            signReason: "Decline \(safeId) in the Library", snapshot: snapshot, signingKey: signingKey,
+            certificatePEM: certificatePEM, now: now,
+            remoteCommand: { act in itemDeclineRemoteCommand(itemId: safeId, act: act) }, transport: send)
     }
 
     /// What the Decline control says when the write did not land — the
@@ -2460,8 +2811,9 @@ enum LibraryClient {
     /// The body `setItemModel` sends. `model` nil clears the choice and is
     /// sent as an explicit JSON null, because an absent `model` is a 400. A
     /// blank reason is omitted, since the Library stores it as absent anyway.
-    /// `owner` is never sent: with no live lease the route holds the item for
-    /// this one write, so Deck takes no checkout, as with Approve.
+    /// `acting_human` still travels, for the reason `approveEpicBody`'s doc
+    /// gives. `owner` is never sent: with no live lease the route holds the
+    /// item for this one write, so Deck takes no checkout, as with Approve.
     ///
     /// Bounds are checked here so an over-length value refuses locally with
     /// words instead of reaching the Library for the same 400.
@@ -2494,29 +2846,47 @@ enum LibraryClient {
     /// `setItemModel`'s argv, validated first: an id that fails
     /// `validateLibraryId` throws here and reaches no command string.
     static func itemModelArguments(
-        target: SSHTarget, itemId: String, controlPath: String = defaultControlPath()
+        target: SSHTarget, itemId: String, act: LibraryActHeaders, controlPath: String = defaultControlPath()
     ) throws -> [String] {
         guard let safeId = validateLibraryId(itemId) else {
             throw FetchError.invalidInput(itemId)
         }
-        return arguments(target: target, remoteCommand: itemModelRemoteCommand(itemId: safeId),
+        return arguments(target: target, remoteCommand: itemModelRemoteCommand(itemId: safeId, act: act),
                          controlPath: controlPath)
     }
 
-    /// Sets, or with `model` nil clears, the model on one work item. Whether
-    /// the change is permitted is the Library's decision (the item.model
-    /// capability, terminal states, leases); Deck sends the request and
-    /// shows the answer. Nothing here dispatches anything or touches a run
-    /// already dispatched. Synchronous and blocking; callers run it off the
-    /// main actor. A refusal throws `FetchError.libraryRefused`, which
-    /// `modelChoiceRefusalMessage` turns into words.
+    /// Sets, or with `model` nil clears, the model on one work item, signed
+    /// over `snapshot` the same way `approveEpic` is. Whether the change is
+    /// permitted is the Library's decision (the item.model capability,
+    /// terminal states, leases); Deck sends the request and shows the
+    /// answer. Nothing here dispatches anything or touches a run already
+    /// dispatched. Synchronous and blocking; callers run it off the main
+    /// actor.
+    ///
+    /// `actingHuman` is checked locally first (`validateActingHuman`), the
+    /// same guard `approveEpic` applies, before either the certificate check
+    /// or the Touch ID prompt. A refusal comes back as `.refused` or
+    /// `.needsFreshRead`, turned into words by `modelChoiceRefusalMessage`.
     static func setItemModel(
-        target: SSHTarget, itemId: String, model: String?, reason: String?, actingHuman: String
-    ) throws {
-        let argv = try itemModelArguments(target: target, itemId: itemId)
-        let trimmed = try validateActingHuman(actingHuman, for: "change")
-        let body = try itemModelBody(model: model, reason: reason, actingHuman: trimmed)
-        _ = try postJSON(target: target, argv: argv, body: body)
+        target: SSHTarget, itemId: String, model: String?, reason: String?, snapshot: ItemActSnapshot,
+        actingHuman: String,
+        signingKey: SigningKey, certificatePEM: String,
+        now: Date = Date(),
+        transport: (([String], String?) throws -> Data)? = nil
+    ) throws -> SignedActOutcome {
+        guard let safeId = validateLibraryId(itemId) else {
+            throw FetchError.invalidInput(itemId)
+        }
+        let trimmedActingHuman = try validateActingHuman(actingHuman, for: "change")
+        let body = try itemModelBody(model: model, reason: reason, actingHuman: trimmedActingHuman)
+        let send = transport ?? { argv, stdin in
+            try LibraryTransportDispatch.run(target: target, argv: argv, stdin: stdin)
+        }
+        return try performSignedAct(
+            target: target, action: .model, itemId: safeId, body: body,
+            signReason: "Set \(safeId)'s model in the Library", snapshot: snapshot, signingKey: signingKey,
+            certificatePEM: certificatePEM, now: now,
+            remoteCommand: { act in itemModelRemoteCommand(itemId: safeId, act: act) }, transport: send)
     }
 
     /// What the model control says when the write did not land: the
@@ -2753,6 +3123,66 @@ enum LibraryClient {
     ) throws {
         let argv = try reorderCourseArguments(target: target, courseId: courseId)
         _ = try postJSON(target: target, argv: argv, body: courseOrderBody(version: version, entries: entries))
+    }
+
+    // MARK: - Deck theme publishing (CQ·211)
+
+    /// `themesPaletteRemoteCommand`'s argv — no caller-supplied input, so
+    /// unlike `reorderCourseArguments` there is nothing here to validate.
+    static func themesPaletteArguments(
+        target: SSHTarget, controlPath: String = defaultControlPath()
+    ) -> [String] {
+        arguments(target: target, remoteCommand: themesPaletteRemoteCommand(), controlPath: controlPath)
+    }
+
+    /// The whole body `putThemePalette` sends — `catalog` and `themes`
+    /// exactly, the shape library#380 requires (comment 7443 on
+    /// issue_01M7G7W6JJ7XHSD5ACZ32X2A09).
+    static func themesPaletteBody(catalog: String, themes: [String: Any]) -> [String: Any] {
+        ["catalog": catalog, "themes": themes]
+    }
+
+    /// `PUT /themes/palette`. Synchronous and blocking, like every write
+    /// here; `ThemePublisher` runs this off the main actor. Throws
+    /// `FetchError.libraryRefused` on anything but 200 — including the 403
+    /// every call gets until the Library grants Deck's credential
+    /// `theme.write` (comment 7424/7441 on the same issue), which is expected
+    /// rather than a bug. Callers must not retry a refusal in a loop; see
+    /// `ThemePublisher`.
+    static func putThemePalette(target: SSHTarget, catalog: String, themes: [String: Any]) throws {
+        let argv = themesPaletteArguments(target: target)
+        _ = try postJSON(target: target, argv: argv, body: themesPaletteBody(catalog: catalog, themes: themes))
+    }
+
+    /// `projectThemeRemoteCommand`'s argv, validated first: a slug that
+    /// fails `validateLibraryProduct` throws here and reaches no command
+    /// string — the same discipline `reorderCourseArguments` follows for a
+    /// Course id.
+    static func projectThemeArguments(
+        target: SSHTarget, slug: String, controlPath: String = defaultControlPath()
+    ) throws -> [String] {
+        guard let safeSlug = validateLibraryProduct(slug) else {
+            throw FetchError.invalidInput(slug)
+        }
+        return arguments(target: target, remoteCommand: projectThemeRemoteCommand(slug: safeSlug),
+                         controlPath: controlPath)
+    }
+
+    /// The whole body `putProjectTheme` sends.
+    static func projectThemeBody(theme: String, source: String) -> [String: Any] {
+        ["theme": theme, "source": source]
+    }
+
+    /// `PUT /projects/{slug}/theme`. Synchronous and blocking, like every
+    /// write here; `ThemePublisher` runs this off the main actor. **A 400
+    /// here means "not published", never proof the slug does not exist** —
+    /// comment 7441 on issue_01M7G7W6JJ7XHSD5ACZ32X2A09: a private slug
+    /// answers exactly like an unknown one, so the route cannot be probed
+    /// for which private crews exist. Callers must not retry a refusal in a
+    /// loop; see `ThemePublisher`.
+    static func putProjectTheme(target: SSHTarget, slug: String, theme: String, source: String) throws {
+        let argv = try projectThemeArguments(target: target, slug: slug)
+        _ = try postJSON(target: target, argv: argv, body: projectThemeBody(theme: theme, source: source))
     }
 
     /// Whether a refusal is the Library saying the Course moved since it was

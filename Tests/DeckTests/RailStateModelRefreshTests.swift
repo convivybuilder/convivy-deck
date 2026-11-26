@@ -408,6 +408,61 @@ final class RailStateModelRefreshTests: XCTestCase {
         XCTAssertEqual(notified.values, [fast], "the unknown tick must not have raised a second alert")
         XCTAssertEqual(model.desktopSessionKnownState[fast], .loggedOut, "the known state must survive the unknown reading")
     }
+
+    // MARK: - theme publishing (CQ·211)
+
+    /// `publishThemes` fires with THIS host's own served crews, right after
+    /// they are merged into `servedCrews` — not the whole merged dictionary,
+    /// and not called at all for a host whose `crews` fetch answered
+    /// nothing (`ThemePublisher`'s own doc explains why one host's reading
+    /// is what "the host the Library client talks to" means here).
+    func testPublishThemesFiresWithThisHostsOwnServedCrewsOnATick() async {
+        let model = RailStateModel()
+        let crewRef = SessionRef(host: "fast", name: "deck")
+        model.sessions = [crewRef]
+        model.resolveHost = { [fast] _ in fast }
+        model.fetchStates = { _, _ in [:] }
+        model.fetchDiscovered = { _ in [] }
+        model.fetchServedCrews = { [fast] target in
+            target == fast ? [ServedCrew(crewId: "deck", host: fast, project: "convivy-deck")] : []
+        }
+        model.fetchRunRegister = { _ in [:] }
+        model.fetchProbe = { _ in throw SessionAgent.AgentError.failed("no probe in this test") }
+        model.fetchDesktopSession = { _ in .unknown }
+
+        let published = PublishedThemeCalls()
+        model.publishThemes = { target, crews in published.record(target, crews) }
+        await model.refresh()
+
+        let calls = published.values
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.target, fast)
+        XCTAssertEqual(calls.first?.crews.map(\.crewId), ["deck"])
+    }
+
+    /// A host whose `crews` fetch answered nothing this tick (a transport
+    /// failure, or simply no crews served) gives `publishThemes` nothing to
+    /// fire on — matching the "a row-level empty list is a real answer,
+    /// only `nil` leaves the host's entries standing" rule `servedCrews`
+    /// itself follows.
+    func testPublishThemesDoesNotFireForAHostWhoseCrewsFetchFailed() async {
+        let model = RailStateModel()
+        let crewRef = SessionRef(host: "fast", name: "deck")
+        model.sessions = [crewRef]
+        model.resolveHost = { [fast] _ in fast }
+        model.fetchStates = { _, _ in [:] }
+        model.fetchDiscovered = { _ in [] }
+        model.fetchServedCrews = { _ in throw SessionAgent.AgentError.failed("ssh: connect timed out") }
+        model.fetchRunRegister = { _ in [:] }
+        model.fetchProbe = { _ in throw SessionAgent.AgentError.failed("no probe in this test") }
+        model.fetchDesktopSession = { _ in .unknown }
+
+        let published = PublishedThemeCalls()
+        model.publishThemes = { target, crews in published.record(target, crews) }
+        await model.refresh()
+
+        XCTAssertTrue(published.values.isEmpty)
+    }
 }
 
 /// Records every target `fetchStates` was actually called with, so a test
@@ -427,6 +482,26 @@ private final class CalledTargets: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return targets
+    }
+}
+
+/// Records every `(target, crews)` pair `RailStateModel.publishThemes` was
+/// actually called with — the same recorder shape as `CalledTargets`, for a
+/// seam that also carries the served-crews list.
+private final class PublishedThemeCalls: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [(target: SSHTarget, crews: [ServedCrew])] = []
+
+    func record(_ target: SSHTarget, _ crews: [ServedCrew]) {
+        lock.lock()
+        calls.append((target, crews))
+        lock.unlock()
+    }
+
+    var values: [(target: SSHTarget, crews: [ServedCrew])] {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
     }
 }
 

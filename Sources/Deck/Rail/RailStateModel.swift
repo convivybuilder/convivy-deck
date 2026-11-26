@@ -250,6 +250,18 @@ final class RailStateModel: ObservableObject {
         try SessionAgent.servedCrews(target: target)
     }
 
+    /// Publishes Deck's theme catalog and each project's resolved theme to
+    /// the Library — CQ·211. Called once per host per tick, right after that
+    /// host's served crews answer and are merged in below; a test
+    /// substitutes a fake that records its calls rather than reaching
+    /// `ThemePublisher.shared`'s real one, the same seam discipline as
+    /// `fetchServedCrews`. `ThemePublisher.publish` itself runs off the main
+    /// actor and never blocks this call, so this closure's default is safe
+    /// to call inline.
+    var publishThemes: @Sendable (SSHTarget, [ServedCrew]) -> Void = { target, crews in
+        ThemePublisher.shared.publish(target: target, servedCrews: crews)
+    }
+
     /// The same seam as `fetchStates`, for the run register's `GET /runs`.
     var fetchRunRegister: @Sendable (SSHTarget) throws -> [String: RunModelChoice] = { target in
         try RunRegister.fetch(target: target)
@@ -627,6 +639,11 @@ final class RailStateModel: ObservableObject {
                 if let hostServedCrews {
                     publishIfChanged(\.servedCrews, RailPoll.mergedServedCrews(
                         previous: servedCrews, outcomes: [target: hostServedCrews]))
+                    // Themes publish from THIS host's own served crews, not
+                    // the whole merged dictionary — `ThemePublisher`'s doc
+                    // explains why one host's reading is what "the host the
+                    // Library client talks to" means here.
+                    publishThemes(target, hostServedCrews)
                 }
                 runChoicesByHost[target] = hostRunRegister
                 publishIfChanged(\.runChoices, runChoicesByHost.values.reduce(into: [:]) { $0.merge($1) { first, _ in first } })

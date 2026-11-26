@@ -13,11 +13,15 @@ import SwiftUI
 /// **Expanding is what makes the text selectable again, and that is the whole
 /// design.** Clamped AND selectable is precisely the combination that drew a
 /// third line over `Severity: medium` (PR #171): AppKit laid out the full
-/// string while the stack had reserved two lines' height. Collapsed, the text
-/// sits inside a `Button` label, which SwiftUI exempts from the container's
-/// inherited `.textSelection(.enabled)` — so there is nothing to overdraw and
-/// nothing competing with the tap. Expanded, the clamp is gone, so selection
-/// is safe by construction and copying is an ordinary drag.
+/// string while the stack had reserved two lines' height. Collapsed and
+/// truncated, the text sits inside a `Button` label, which SwiftUI exempts
+/// from the container's inherited `.textSelection(.enabled)` — so there is
+/// nothing to overdraw and nothing competing with the tap. Collapsed and
+/// fitting, it is plain text with selection turned off, so a link in it stays
+/// clickable while clamped text is still never selectable, including on the
+/// first frame before the truncation measurement reports. Expanded, the clamp
+/// is gone, so selection is safe by construction and copying is an ordinary
+/// drag.
 ///
 /// That retires two workarounds rather than adding a third: the reader no
 /// longer depends on the `.help` tooltip to read the rest, and no longer
@@ -61,7 +65,27 @@ struct ClampedCaption: View {
                     .buttonStyle(.plain)
                     .frameFont(role)
                     .foregroundStyle(CockpitView.secondaryInkStyle(on: statusGround))
+            } else if !isTruncated {
+                // Two lines already hold the whole value, so there is nothing
+                // to expand and nothing that can lay out past the reserved
+                // height. Plain text, then, not a disabled `Button`: a disabled
+                // button's label swallows every click, which left a link in a
+                // short "Done when:" or "Needs first:" line unreachable
+                // (convivy-deck#413, round-1 review).
+                //
+                // Selection stays OFF here, as it was inside the button.
+                // `isTruncated` reads false until `measurement` reports, so a
+                // caption that is really truncated passes through this branch
+                // for its first frame, and clamped-and-selectable is exactly
+                // the PR #171 overdraw (convivy-deck#413, round-2 review).
+                // Links do not need selection to be clicked.
+                styled
+                    .lineLimit(2)
+                    .textSelection(.disabled)
+                    .background(measurement)
             } else {
+                // Truncated: the first click on the line expands it, and its
+                // links are reachable once expanded.
                 Button {
                     isExpanded = true
                 } label: {
@@ -74,13 +98,10 @@ struct ClampedCaption: View {
                 // glyph alone — an 8pt hit area at the end of a wrapped line
                 // is not a control, and the reader is already pointing at
                 // the text they want more of.
-                .disabled(!isTruncated)
-                if isTruncated {
-                    Button("more") { isExpanded = true }
-                        .buttonStyle(.plain)
-                        .frameFont(role)
-                        .foregroundStyle(moreInk)
-                }
+                Button("more") { isExpanded = true }
+                    .buttonStyle(.plain)
+                    .frameFont(role)
+                    .foregroundStyle(moreInk)
             }
         }
         .help(tooltip)

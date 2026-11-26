@@ -42,8 +42,11 @@ enum LibraryTransportDispatch {
     }
 
     /// The production mutual-TLS path. Parses the request back out of its
-    /// own composed argv, opens (or reuses) this host's forward and bearer
-    /// token, performs the request, and re-encodes the result into the
+    /// own composed argv, opens (or reuses) this host's forward, bearer
+    /// token and `URLSession` — CQ·198's "one mutual-TLS `URLSession` per
+    /// Library host connection", kept alive by that connection's own
+    /// heartbeat rather than built fresh per request — performs the
+    /// request, and re-encodes the result into the
     /// exact `body\n%{http_code}` shape `WorkingCopyStore.splitCurlStatusResponse`
     /// already parses — **this is "response handling stays shared" from the
     /// issue body**: every decoder in `LibraryClient` and `WorkingCopyStore`
@@ -62,17 +65,17 @@ enum LibraryTransportDispatch {
         let pool = LibraryHostConnectionPool.shared
         let connection = try pool.connection(for: target)
         let token = try connection.bearerToken(tokenFile: parsed.tokenFile)
-        var headers = ["Library-Protocol": "1", "Authorization": "Bearer \(token)"]
-        if stdin != nil { headers["Content-Type"] = "application/json" }
+        let headers = requestHeaders(parsed: parsed, token: token, hasBody: stdin != nil)
         guard let baseURL = URL(string: "https://localhost:\(connection.forward.localPort)") else {
             throw LibraryMutualTLSError.transportFailed("could not build a URL for the forwarded port")
         }
+        let session = connection.session(identity: identity, anchors: anchors)
         let status: Int
         let body: Data
         do {
             (status, body) = try LibraryMutualTLSClient.perform(
                 method: parsed.method, baseURL: baseURL, path: parsed.path, headers: headers,
-                body: stdin.map { Data($0.utf8) }, identity: identity, anchors: anchors)
+                body: stdin.map { Data($0.utf8) }, session: session)
         } catch let error as LibraryMutualTLSError {
             // Drop this connection so the next call opens a fresh forward on a
             // fresh port. A forward riding a master that died or was cleared
@@ -82,11 +85,31 @@ enum LibraryTransportDispatch {
             // and keeping the forward would leave the host refused until it is
             // removed. The failure still surfaces as itself, and nothing
             // retries on the plain port.
-            pool.close(target)
+            pool.close(target, ifCurrent: connection)
             throw error
         }
         if status == 401 { throw refusal(body: body) }
         return encodeCurlStyleResponse(status: status, body: body)
+    }
+
+    /// The headers one mutual-TLS request carries — pulled out of
+    /// `runMutualTLS` as its own pure function so a test can check them
+    /// with no TLS session of its own. `Library-Protocol` and `Authorization`
+    /// always travel; `Content-Type` only with a body, the same condition
+    /// `remoteWriteCommand` puts it under. The three `Library-Act-*` headers
+    /// (`LibraryClient.LibraryActHeaders`) travel whenever `parsed` carries
+    /// them — a signed item act's POST, never a plain GET/PUT — so the
+    /// ssh/curl path and this one forward the exact same headers for the
+    /// exact same request (CQ·209: this path previously dropped all three,
+    /// since `runMutualTLS` built its header set from scratch rather than
+    /// reading them back out of `parsed`).
+    static func requestHeaders(parsed: LibraryCurlCommand.Parsed, token: String, hasBody: Bool) -> [String: String] {
+        var headers = ["Library-Protocol": "1", "Authorization": "Bearer \(token)"]
+        if hasBody { headers["Content-Type"] = "application/json" }
+        if let envelope = parsed.actEnvelope { headers["Library-Act-Envelope"] = envelope }
+        if let signature = parsed.actSignature { headers["Library-Act-Signature"] = signature }
+        if let certificate = parsed.actCertificate { headers["Library-Act-Certificate"] = certificate }
+        return headers
     }
 
     /// The Library's 8443 listener answers 401 for two different reasons,

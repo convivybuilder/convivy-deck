@@ -75,10 +75,15 @@ struct ItemDetailPane: View {
     /// never being attempted (another approve/decline already in flight) —
     /// distinguishing the last from a success is the `deck-reviewer` finding
     /// on PR #399 this type exists to close.
-    let onApprove: (String) async -> CockpitModel.ApprovalWriteOutcome
+    ///
+    /// The second argument is the snapshot to sign over — the specification,
+    /// definition of done, maturity and model this pane's own `model.detail`
+    /// carries at the moment of the press (CQ·209), built by
+    /// `ItemDetailModel.writeApproval`, never re-read here or downstream.
+    let onApprove: (String, LibraryClient.ItemActSnapshot) async -> CockpitModel.ApprovalWriteOutcome
     /// The Decline counterpart to `onApprove`, over
     /// `CockpitModel.writeApprovalFromItemPane`.
-    let onDecline: (String) async -> CockpitModel.ApprovalWriteOutcome
+    let onDecline: (String, LibraryClient.ItemActSnapshot) async -> CockpitModel.ApprovalWriteOutcome
 
     @StateObject private var model = ItemDetailModel()
     @State private var showDeclineConfirmation = false
@@ -930,10 +935,21 @@ final class ItemDetailModel: ObservableObject {
     var fetchDetail: @Sendable (SSHTarget, String) throws -> LibraryClient.CorrectionDetail = { target, id in
         try LibraryClient.fetchCorrection(target: target, id: id)
     }
-    var writeModel: @Sendable (SSHTarget, String, String?, String?, String) throws -> Void = {
-        target, id, model, reason, actingHuman in
-        try LibraryClient.setItemModel(target: target, itemId: id, model: model, reason: reason,
-                                       actingHuman: actingHuman)
+    /// Loads this Mac's stored key and matching certificate first, the same
+    /// `.signingUnavailable` boundary `CockpitModel.approveEpic` draws.
+    /// `actingHuman` is threaded in as its own argument rather than read
+    /// from `DeckOperator.label()` here, for the reason `CockpitModel.approveEpic`'s
+    /// own doc gives: it lets a test assert on exactly what `writeModelChoice`
+    /// (the one caller) computed and passed.
+    var writeModel: @Sendable (
+        SSHTarget, String, String?, String?, LibraryClient.ItemActSnapshot, String
+    ) throws -> LibraryClient.SignedActOutcome = {
+        target, id, model, reason, snapshot, actingHuman in
+        guard let credentials = SigningCredentials.loadMatching() else { return .signingUnavailable }
+        return try LibraryClient.setItemModel(
+            target: target, itemId: id, model: model, reason: reason, snapshot: snapshot,
+            actingHuman: actingHuman,
+            signingKey: credentials.key, certificatePEM: credentials.certificatePEM)
     }
     var renderDetail: @Sendable (LibraryClient.CorrectionDetail, SSHTarget, Appearance) async -> String = {
         detail, target, appearance in
@@ -1030,32 +1046,45 @@ final class ItemDetailModel: ObservableObject {
     /// the same core the cockpit's own Proposals region writes through.
     /// `write` answers with an explicit outcome (CQ·186's `deck-reviewer`
     /// finding on PR #399): a successful write reloads the item through
-    /// `refresh()` so its new maturity draws; a refusal or a not-attempted
-    /// outcome shows its message and reloads nothing.
-    func approve(using write: (String) async -> CockpitModel.ApprovalWriteOutcome) async {
+    /// `refresh()` so its new maturity draws; a refusal shows its message
+    /// and reloads nothing; `.needsFreshRead` (the signed snapshot went
+    /// stale, or the proof was replayed) shows its message AND reloads, so
+    /// the pane redraws what the Library now holds before a person presses
+    /// again; a not-attempted outcome shows its message and reloads nothing.
+    func approve(using write: (String, LibraryClient.ItemActSnapshot) async -> CockpitModel.ApprovalWriteOutcome) async {
         await writeApproval(write)
     }
 
     /// The Decline counterpart to `approve(using:)`, over
     /// `ItemDetailPane.onDecline`.
-    func decline(using write: (String) async -> CockpitModel.ApprovalWriteOutcome) async {
+    func decline(using write: (String, LibraryClient.ItemActSnapshot) async -> CockpitModel.ApprovalWriteOutcome) async {
         await writeApproval(write)
     }
 
-    private func writeApproval(_ write: (String) async -> CockpitModel.ApprovalWriteOutcome) async {
-        guard let id = cachedId, !isWritingApproval else { return }
+    private func writeApproval(
+        _ write: (String, LibraryClient.ItemActSnapshot) async -> CockpitModel.ApprovalWriteOutcome
+    ) async {
+        guard let id = cachedId, let detail, !isWritingApproval else { return }
         approvalWriteRefusal = nil
         isWritingApproval = true
         defer { isWritingApproval = false }
-        let outcome = await write(id)
+        // The snapshot signed over is this loaded item, taken now — before
+        // the Touch ID call, never re-read after it (`ItemActSnapshot`'s doc).
+        let snapshot = LibraryClient.ItemActSnapshot(detail: detail)
+        let outcome = await write(id, snapshot)
         guard cachedId == id else { return }
         switch outcome {
         case .wrote:
             await refresh()
         case .refused(let message):
             approvalWriteRefusal = message
+        case .needsFreshRead(let message):
+            approvalWriteRefusal = message
+            await refresh()
         case .notAttempted(let reason):
             approvalWriteRefusal = reason
+        case .cancelled:
+            break
         }
     }
 
@@ -1126,10 +1155,12 @@ final class ItemDetailModel: ObservableObject {
         html = page
     }
 
-    /// Sets the loaded item's model. `acting_human` is `DeckOperator.label()`
-    /// run through `LibraryClient.validateActingHuman` inside the write, the
-    /// same source Approve sends; it says a person pressed a button at this
-    /// machine and is not a verified identity.
+    /// Sets the loaded item's model — a signed act, one Touch ID press
+    /// through `LibraryClient.setItemModel`. `acting_human` is
+    /// `DeckOperator.label()`, the same label Approve sends; it says a
+    /// person pressed a button at this machine and is not a verified
+    /// identity — the signing certificate is what the Library actually
+    /// verifies.
     func setModel(_ model: String, reason: String?) async {
         await writeModelChoice(model, reason: reason)
     }
@@ -1140,27 +1171,48 @@ final class ItemDetailModel: ObservableObject {
     }
 
     private func writeModelChoice(_ chosen: String?, reason: String?) async {
-        guard let id = cachedId, let target = cachedTarget, !isWritingModel else { return }
+        guard let id = cachedId, let target = cachedTarget, let detail, !isWritingModel else { return }
         modelWriteRefusal = nil
         // The pane hides the control on a terminal item; this is the same
         // rule for a caller that reaches the model another way. The Library
         // would answer 409, and saying so first spares the round trip.
-        guard LibraryClient.canSetModel(state: detail?.state) else {
+        guard LibraryClient.canSetModel(state: detail.state) else {
             modelWriteRefusal = "This item is closed, so its model cannot be changed."
             return
         }
         isWritingModel = true
         defer { isWritingModel = false }
         let write = writeModel
+        // The snapshot signed over is this loaded item, taken now — before
+        // the Touch ID call, never re-read after it (`ItemActSnapshot`'s doc).
+        let snapshot = LibraryClient.ItemActSnapshot(detail: detail)
         let actingHuman = DeckOperator.label()
         // Each await below can return after another item has opened in this
         // pane. From then on the pane belongs to that item, so nothing about
         // this write is drawn over it.
+        let outcome: LibraryClient.SignedActOutcome
         do {
-            try await Task.detached { try write(target, id, chosen, reason, actingHuman) }.value
+            outcome = try await Task.detached { try write(target, id, chosen, reason, snapshot, actingHuman) }.value
         } catch {
             if cachedId == id { modelWriteRefusal = LibraryClient.modelChoiceRefusalMessage(error) }
             return
+        }
+        switch outcome {
+        case .wrote:
+            break
+        case .signingUnavailable:
+            if cachedId == id { modelWriteRefusal = LibraryClient.signedActNeedsCertificateMessage }
+            return
+        case .cancelled:
+            return
+        case .refused(let message):
+            if cachedId == id { modelWriteRefusal = message }
+            return
+        case .needsFreshRead(let message):
+            // The act was never applied; re-read below so the pane redraws
+            // what the Library now holds before a person presses again —
+            // never resend this proof.
+            if cachedId == id { modelWriteRefusal = message }
         }
         guard cachedId == id else { return }
         isEditingModel = false
@@ -1171,7 +1223,7 @@ final class ItemDetailModel: ObservableObject {
             guard cachedId == id else { return }
             let page = await renderDetail(fetched, target, cachedAppearance)
             guard cachedId == id else { return }
-            detail = fetched
+            self.detail = fetched
             html = page
         } catch {
             guard cachedId == id else { return }

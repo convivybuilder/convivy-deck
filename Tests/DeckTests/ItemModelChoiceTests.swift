@@ -1,6 +1,22 @@
 import XCTest
 @testable import Deck
 
+/// Counts reads from a fetch closure that runs off the main actor.
+private final class DetailReadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+    }
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
 /// The Item pane's model control: `POST /items/{id}/model`
 /// (`platform/contracts/library-protocol` §6.2), the `model_choice` it reads
 /// back, and the words a refusal or the record's attestation gets.
@@ -22,10 +38,17 @@ final class ItemModelChoiceTests: XCTestCase {
         Data("\(body)\n\(status)".utf8)
     }
 
+    /// A structurally valid, content-meaningless set of act headers — these
+    /// tests check the command's shape, not a real signature.
+    private let testAct = LibraryClient.LibraryActHeaders(envelope: "ZQ==", signature: "cw==", certificate: "Y2E=")
+    /// The operator label every body-builder test below sends as
+    /// `acting_human` (`LibraryClient.validateActingHuman`'s doc).
+    private let testActingHuman = "deck:operator@host.example"
+
     // MARK: - Request construction
 
     func testTheWriteAddressesTheModelRouteOfTheNamedItem() {
-        let command = LibraryClient.itemModelRemoteCommand(itemId: "issue_01ABC")
+        let command = LibraryClient.itemModelRemoteCommand(itemId: "issue_01ABC", act: testAct)
         XCTAssertTrue(command.contains("/items/issue_01ABC/model\""), command)
         XCTAssertTrue(command.contains("-X POST"), command)
         XCTAssertFalse(command.contains("/correct"), command)
@@ -35,7 +58,7 @@ final class ItemModelChoiceTests: XCTestCase {
     /// The Library refuses `model_choice` on `/correct` and `/revision`, so
     /// the reserved route is the only one that can carry it.
     func testTheWriteCarriesTheProtocolHeaderAndNeverArgvsTheToken() {
-        let command = LibraryClient.itemModelRemoteCommand(itemId: "issue_01ABC")
+        let command = LibraryClient.itemModelRemoteCommand(itemId: "issue_01ABC", act: testAct)
         XCTAssertTrue(command.contains("Library-Protocol: 1"))
         XCTAssertTrue(command.contains("Content-Type: application/json"))
         XCTAssertTrue(command.contains("--config -"))
@@ -45,55 +68,63 @@ final class ItemModelChoiceTests: XCTestCase {
         XCTAssertFalse(command.contains("acting_human"))
     }
 
+    /// The three signed-act headers travel on every call now that setting a
+    /// model is always a signed act.
+    func testTheWriteCarriesTheSignedActHeaders() {
+        let command = LibraryClient.itemModelRemoteCommand(itemId: "issue_01ABC", act: testAct)
+        XCTAssertTrue(command.contains("Library-Act-Envelope: ZQ=="), command)
+        XCTAssertTrue(command.contains("Library-Act-Signature: cw=="), command)
+        XCTAssertTrue(command.contains("Library-Act-Certificate: Y2E="), command)
+    }
+
     /// **THE CREDENTIAL IS DECK'S.** `agent-platform-token` is kind `agent`
     /// and cannot hold `item.model`; `library-client-token` resolves as actor
     /// `orient`. Either would make the record's `set_by_client` say the wrong
     /// client wrote the choice.
     func testTheWriteReadsTheDeckCredentialAndNoOther() {
-        let command = LibraryClient.itemModelRemoteCommand(itemId: "issue_01ABC")
+        let command = LibraryClient.itemModelRemoteCommand(itemId: "issue_01ABC", act: testAct)
         XCTAssertTrue(command.contains("cat ~/.orient-control/deck-library-token"), command)
         XCTAssertFalse(command.contains("agent-platform-token"), command)
         XCTAssertFalse(command.contains("library-client-token"), command)
         XCTAssertEqual(WorkingCopyStore.libraryApprovalTokenFile, "~/.orient-control/deck-library-token")
     }
 
-    func testSettingSendsModelReasonAndActingHumanAndNothingElse() throws {
+    func testSettingSendsModelAndReasonAndActingHumanAndNothingElse() throws {
         let body = try LibraryClient.itemModelBody(
-            model: "claude-sonnet-5", reason: "cheaper for this one", actingHuman: "deck:operator@example.com")
+            model: "claude-sonnet-5", reason: "cheaper for this one", actingHuman: testActingHuman)
         XCTAssertEqual(Set(body.keys), ["model", "reason", "acting_human"])
         XCTAssertEqual(body["model"] as? String, "claude-sonnet-5")
         XCTAssertEqual(body["reason"] as? String, "cheaper for this one")
-        XCTAssertEqual(body["acting_human"] as? String, "deck:operator@example.com")
+        XCTAssertEqual(body["acting_human"] as? String, testActingHuman)
     }
 
     /// `owner` names a checkout Deck does not take, and `person`-style keys
     /// would be a provenance claim Deck cannot back.
     func testTheBodyNeverCarriesAnOwner() throws {
-        let body = try LibraryClient.itemModelBody(model: "m", reason: "r", actingHuman: "a")
+        let body = try LibraryClient.itemModelBody(model: "m", reason: "r", actingHuman: testActingHuman)
         XCTAssertNil(body["owner"])
     }
 
     /// Clearing sends `model` as JSON null, present and not omitted: an
     /// absent `model` is a 400.
     func testClearingSendsAnExplicitNullModel() throws {
-        let body = try LibraryClient.itemModelBody(model: nil, reason: nil, actingHuman: "deck:operator@example.com")
+        let body = try LibraryClient.itemModelBody(model: nil, reason: nil, actingHuman: testActingHuman)
         XCTAssertTrue(body.keys.contains("model"))
         XCTAssertTrue(body["model"] is NSNull, "\(String(describing: body["model"]))")
         let data = try JSONSerialization.data(withJSONObject: body)
         let text = try XCTUnwrap(String(data: data, encoding: .utf8))
         XCTAssertTrue(text.contains(#""model":null"#), text)
-        XCTAssertEqual(body["acting_human"] as? String, "deck:operator@example.com")
     }
 
     /// A blank reason is stored as absent by the Library; Deck omits it
     /// rather than send a value it knows is discarded.
     func testABlankReasonIsOmitted() throws {
-        let body = try LibraryClient.itemModelBody(model: "m", reason: "   ", actingHuman: "a")
+        let body = try LibraryClient.itemModelBody(model: "m", reason: "   ", actingHuman: testActingHuman)
         XCTAssertNil(body["reason"])
     }
 
     func testTheBodyTrimsWhatItSends() throws {
-        let body = try LibraryClient.itemModelBody(model: "  claude-opus-5 ", reason: " why \n", actingHuman: "a")
+        let body = try LibraryClient.itemModelBody(model: "  claude-opus-5 ", reason: " why \n", actingHuman: testActingHuman)
         XCTAssertEqual(body["model"] as? String, "claude-opus-5")
         XCTAssertEqual(body["reason"] as? String, "why")
     }
@@ -103,8 +134,9 @@ final class ItemModelChoiceTests: XCTestCase {
     /// model is refused there as empty.
     func testTheBodyRefusesWhatTheLibraryWouldRefuse() {
         for badModel in ["", "   ", String(repeating: "m", count: LibraryClient.maxModelLength + 1)] {
-            XCTAssertThrowsError(try LibraryClient.itemModelBody(model: badModel, reason: nil, actingHuman: "a"),
-                                 "model \"\(badModel.prefix(10))\" was accepted") { error in
+            XCTAssertThrowsError(
+                try LibraryClient.itemModelBody(model: badModel, reason: nil, actingHuman: testActingHuman),
+                "model \"\(badModel.prefix(10))\" was accepted") { error in
                 guard case LibraryClient.FetchError.invalidModelChoice = error else {
                     return XCTFail("expected invalidModelChoice, got \(error)")
                 }
@@ -112,38 +144,24 @@ final class ItemModelChoiceTests: XCTestCase {
         }
         XCTAssertThrowsError(try LibraryClient.itemModelBody(
             model: "m", reason: String(repeating: "r", count: LibraryClient.maxModelReasonLength + 1),
-            actingHuman: "a"))
+            actingHuman: testActingHuman))
         XCTAssertNoThrow(try LibraryClient.itemModelBody(
             model: String(repeating: "m", count: LibraryClient.maxModelLength),
-            reason: String(repeating: "r", count: LibraryClient.maxModelReasonLength), actingHuman: "a"))
+            reason: String(repeating: "r", count: LibraryClient.maxModelReasonLength),
+            actingHuman: testActingHuman))
     }
 
     func testTheArgumentsRefuseAnIdThatCouldInjectIntoTheCommand() {
         for hostile in ["issue_01`whoami`", "a b", "x$(id)", "../model", "", "a;b"] {
             XCTAssertThrowsError(try LibraryClient.itemModelArguments(
-                target: TestHost.target, itemId: hostile), "\(hostile) was accepted") { error in
+                target: TestHost.target, itemId: hostile, act: testAct), "\(hostile) was accepted") { error in
                 guard case LibraryClient.FetchError.invalidInput = error else {
                     return XCTFail("expected invalidInput for \(hostile), got \(error)")
                 }
             }
         }
-        let args = try? LibraryClient.itemModelArguments(target: TestHost.target, itemId: "issue_01ABC")
+        let args = try? LibraryClient.itemModelArguments(target: TestHost.target, itemId: "issue_01ABC", act: testAct)
         XCTAssertTrue(args?.last?.contains("/items/issue_01ABC/model") == true)
-    }
-
-    /// `acting_human` comes from the same validator Approve uses, so a
-    /// degenerate label refuses locally before any request is built.
-    func testSettingRefusesADegenerateActingHumanLocally() {
-        for degenerate in ["", "   ", String(repeating: "a", count: LibraryClient.maxActingHumanLength + 1)] {
-            XCTAssertThrowsError(try LibraryClient.setItemModel(
-                target: TestHost.unreachableTarget, itemId: "issue_01ABC",
-                model: "m", reason: nil, actingHuman: degenerate)) { error in
-                guard case LibraryClient.FetchError.invalidActingHuman(let reason) = error else {
-                    return XCTFail("expected invalidActingHuman, got \(error)")
-                }
-                XCTAssertFalse(reason.contains("approval"), "the model control must not talk about an approval: \(reason)")
-            }
-        }
     }
 
     // MARK: - Decoding model_choice
@@ -288,15 +306,16 @@ final class ItemModelChoiceTests: XCTestCase {
         XCTAssertEqual(message, "Held by x. Approve again once they release it.")
     }
 
-    // MARK: - The pane's model: which operator, which credential path
+    // MARK: - The pane's model
 
     @MainActor
-    func testTheWriteSendsTheDeckOperatorLabelAndReloadsWhatTheLibraryReturns() async throws {
+    func testTheWriteSendsTheModelAndReasonAndReloadsWhatTheLibraryReturns() async throws {
         let model = ItemDetailModel()
         struct Sent { let id: String; let model: String?; let reason: String?; let actingHuman: String }
         let recorder = Recorder<Sent>()
-        model.writeModel = { _, id, chosen, reason, actingHuman in
+        model.writeModel = { _, id, chosen, reason, _, actingHuman in
             recorder.add(Sent(id: id, model: chosen, reason: reason, actingHuman: actingHuman))
+            return .wrote
         }
         model.fetchDetail = { _, id in
             LibraryClient.CorrectionDetail(
@@ -312,6 +331,10 @@ final class ItemModelChoiceTests: XCTestCase {
         XCTAssertEqual(sent.count, 1)
         XCTAssertEqual(sent.first?.id, "issue_01ABC")
         XCTAssertEqual(sent.first?.model, "claude-sonnet-5")
+        // THE ACTOR THIS WRITE EXISTS TO NAME: the Library records whatever
+        // string reaches it as `acting_human` with no way to check it, so
+        // anything other than `DeckOperator.label()` would misattribute the
+        // write with no refusal to catch it.
         XCTAssertEqual(sent.first?.actingHuman, DeckOperator.label())
         XCTAssertEqual(model.detail?.modelChoice?.model, "claude-sonnet-5")
         XCTAssertNil(model.modelWriteRefusal)
@@ -321,7 +344,7 @@ final class ItemModelChoiceTests: XCTestCase {
     func testClearingSendsNilAndAFailureShowsItsCauseWithoutChangingThePane() async {
         let model = ItemDetailModel()
         let recorder = Recorder<String?>()
-        model.writeModel = { _, _, chosen, _, _ in
+        model.writeModel = { _, _, chosen, _, _, _ in
             recorder.add(chosen)
             throw LibraryClient.FetchError.libraryRefused(
                 status: 409, body: #"{"error":"this item is fixed, so its model cannot be changed"}"#)
@@ -338,12 +361,58 @@ final class ItemModelChoiceTests: XCTestCase {
         XCTAssertFalse(model.isWritingModel)
     }
 
+    /// `.signingUnavailable` shows the same words every signed act's control
+    /// shows for it, and changes nothing about the loaded item.
+    @MainActor
+    func testSigningUnavailableShowsTheCertificateMessage() async {
+        let model = ItemDetailModel()
+        model.writeModel = { _, _, _, _, _, _ in .signingUnavailable }
+        model.fetchDetail = { _, id in LibraryClient.CorrectionDetail(id: id, state: "open") }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_01ABC", target: TestHost.target, appearance: .light)
+        await model.setModel("m", reason: nil)
+        XCTAssertEqual(model.modelWriteRefusal, LibraryClient.signedActNeedsCertificateMessage)
+    }
+
+    /// `.needsFreshRead` (CQ·209: a stale 409 or a replayed 403) shows its
+    /// message AND re-reads the item, so the pane redraws what the Library
+    /// now holds before a person presses Set again — never resubmitted on
+    /// its own.
+    @MainActor
+    func testNeedsFreshReadShowsItsMessageAndReReadsTheItem() async {
+        let model = ItemDetailModel()
+        model.writeModel = { _, _, _, _, _, _ in .needsFreshRead("The item changed. Reopen it and press Set again.") }
+        let detailReads = DetailReadCounter()
+        model.fetchDetail = { _, id in
+            detailReads.increment()
+            return LibraryClient.CorrectionDetail(id: id, state: "open")
+        }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_01ABC", target: TestHost.target, appearance: .light)
+        XCTAssertEqual(detailReads.value, 1)
+        await model.setModel("m", reason: nil)
+        XCTAssertEqual(model.modelWriteRefusal, "The item changed. Reopen it and press Set again.")
+        XCTAssertEqual(detailReads.value, 2, "the item was re-read after the stale/replayed refusal")
+    }
+
+    /// A cancelled Touch ID prompt shows nothing alarming.
+    @MainActor
+    func testACancelledSignatureShowsNothing() async {
+        let model = ItemDetailModel()
+        model.writeModel = { _, _, _, _, _, _ in .cancelled }
+        model.fetchDetail = { _, id in LibraryClient.CorrectionDetail(id: id, state: "open") }
+        model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
+        await model.load(id: "issue_01ABC", target: TestHost.target, appearance: .light)
+        await model.setModel("m", reason: nil)
+        XCTAssertNil(model.modelWriteRefusal)
+    }
+
     /// Nothing loaded means no target and no item to write to: the write
     /// must not run.
     @MainActor
     func testNothingIsWrittenBeforeAnItemHasLoaded() async {
         let model = ItemDetailModel()
-        model.writeModel = { _, _, _, _, _ in XCTFail("no item is loaded") }
+        model.writeModel = { _, _, _, _, _, _ in XCTFail("no item is loaded"); return .wrote }
         await model.setModel("m", reason: nil)
         XCTAssertNil(model.modelWriteRefusal)
     }
@@ -353,7 +422,7 @@ final class ItemModelChoiceTests: XCTestCase {
     @MainActor
     func testATerminalItemIsNeverWritten() async {
         let model = ItemDetailModel()
-        model.writeModel = { _, _, _, _, _ in XCTFail("a terminal item must not be written") }
+        model.writeModel = { _, _, _, _, _, _ in XCTFail("a terminal item must not be written"); return .wrote }
         model.fetchDetail = { _, id in LibraryClient.CorrectionDetail(id: id, state: "fixed") }
         model.renderDetail = { detail, _, _ in ItemDetailPane.page(for: detail, appearance: .light) }
         await model.load(id: "issue_01ABC", target: TestHost.target, appearance: .light)
@@ -397,10 +466,11 @@ final class ItemModelChoiceTests: XCTestCase {
 
         let started = expectation(description: "the write for A has started")
         let release = DispatchSemaphore(value: 0)
-        model.writeModel = { _, id, _, _, _ in
+        model.writeModel = { _, id, _, _, _, _ in
             XCTAssertEqual(id, "issue_01AAA")
             started.fulfill()
             release.wait()
+            return .wrote
         }
         let write = Task { await model.setModel("m", reason: nil) }
         await fulfillment(of: [started], timeout: 10)

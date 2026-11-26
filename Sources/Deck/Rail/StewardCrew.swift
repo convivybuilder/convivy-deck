@@ -71,6 +71,29 @@ enum StewardCrew {
         hostCount > 0 && crews.isEmpty
     }
 
+    /// After Deck's setup succeeds on a host (E22): create the steward there
+    /// unless THAT host already has one. `shouldCreate` is the first-run
+    /// rule and reads every crew on every host, so on a Deck that already
+    /// runs crews elsewhere it never fired, and a newly set-up server was
+    /// left with no steward (Linux setup check, 2026-11-08).
+    static func shouldCreateAfterSetup(
+        onHost hostName: String, crews: [Crew], hosts: [HostEntry], defaultHost: String?
+    ) -> Bool {
+        !crewsOnHost(hostName, crews: crews, hosts: hosts, defaultHost: defaultHost)
+            .contains(where: { $0.id == id })
+    }
+
+    /// The crews that live on `hostName`, resolved the way the rail resolves
+    /// a crew's host (`CrewMerge.crewHostKey`), so a crew with no host of its
+    /// own counts as the default host's. What `create` is given as
+    /// `existingCrews`, so a steward on another host never stops one here.
+    static func crewsOnHost(
+        _ hostName: String, crews: [Crew], hosts: [HostEntry], defaultHost: String?
+    ) -> [Crew] {
+        let key = CrewMerge.resolvedHostKey(forHostName: hostName, hosts: hosts, defaultHost: defaultHost)
+        return crews.filter { CrewMerge.crewHostKey(for: $0, hosts: hosts, defaultHost: defaultHost) == key }
+    }
+
     /// The host a LAUNCH-TIME create runs against. `HostsSettingsView`'s own
     /// call to `shouldCreate` always has the host it just added in hand;
     /// evaluating at launch has no such entry, so it has to pick one from

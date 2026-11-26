@@ -85,12 +85,15 @@ struct RailChildRow: View {
     /// destructive-or-structural action here already follows. Nil wherever
     /// `adoptionTargets` is empty.
     var onAdopt: ((Crew) -> Void)? = nil
-    /// "Promote to Crew…" was chosen — this row's inverse of adoption, only
-    /// ever offered on an "OTHER SESSIONS" row (`RailView.otherSessionRow`).
-    /// The shell owns the derivation (`SessionPromotion`), the confirm, and
-    /// the `ThemeStore.addCrew` call — the same division every other
-    /// structural action here already follows. Nil for a pinned or
-    /// discovered child, which already has a crew.
+    /// "Promote to Crew…" was chosen — this row's inverse of adoption,
+    /// offered on an "OTHER SESSIONS" row (`RailView.otherSessionRow`) and on
+    /// a DISCOVERED child under a crew (`RailView.discoveredChildRow`): both
+    /// are sessions no crew yet owns by name, and promotion only reads the
+    /// session itself. The shell owns the derivation (`SessionPromotion`),
+    /// the confirm, and the `ThemeStore.addCrew` call — the same division
+    /// every other structural action here already follows. Nil for a PINNED
+    /// child, which already has a crew by config, and for the crew's own
+    /// primary session.
     var onPromote: (() -> Void)? = nil
 
     /// True while the pointer is over this row — the gate on the hover

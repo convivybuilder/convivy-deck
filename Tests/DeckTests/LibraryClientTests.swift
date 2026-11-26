@@ -10,6 +10,13 @@ import Darwin
 /// Library's own repository; what is testable here is Deck's half of the
 /// seam, the same split `SessionAgentTests` documents for `session-agent`.
 final class LibraryClientTests: XCTestCase {
+    /// A structurally valid, content-meaningless set of act headers — these
+    /// tests check the command's shape, not a real signature.
+    private let testAct = LibraryClient.LibraryActHeaders(envelope: "ZQ==", signature: "cw==", certificate: "Y2E=")
+    /// The operator label every body-builder test below sends as
+    /// `acting_human` (`LibraryClient.validateActingHuman`'s doc).
+    private let testActingHuman = "deck:operator@host.example"
+
     // MARK: - The queue holds two states, and pr-open leads
 
     /// **THE COMMA FORM IS A TRAP AND THIS LOCKS THE SHAPE THAT ISN'T.**
@@ -1277,6 +1284,33 @@ final class LibraryClientTests: XCTestCase {
         XCTAssertFalse(entry.isInProgress)
     }
 
+    /// An epic nobody holds whose children are under way: `state` reads
+    /// `open`, `epic_state` reads `in_progress`.
+    func testAnOpenEntryWhoseEpicStateIsInProgressIsInProgress() {
+        let entry = LibraryClient.CourseEntry(
+            id: "x", title: "t", type: "epic", state: "open", epicState: "in_progress")
+        XCTAssertFalse(entry.isCompleted)
+        XCTAssertTrue(entry.isInProgress)
+    }
+
+    func testAnOpenEntryWhoseEpicStateIsNotStartedIsNotInProgress() {
+        let entry = LibraryClient.CourseEntry(
+            id: "x", title: "t", type: "epic", state: "open", epicState: "not_started")
+        XCTAssertFalse(entry.isInProgress)
+    }
+
+    /// The shape the running Library served on 2026-11-07, and the shape a
+    /// Course from before the field existed takes.
+    func testACourseEntryDecodesEpicStateAndDegradesToNilWhenAbsent() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"id":"course_01ABC","entries":["issue_A","issue_B"],
+         "items":[{"id":"issue_A","title":"Under way","state":"open","epic_state":"in_progress"},
+                  {"id":"issue_B","title":"Older","state":"fixed"}]}
+        """)
+        let entries = try LibraryClient.decodeCourse(raw).entries
+        XCTAssertEqual(entries.map(\.epicState), ["in_progress", nil])
+    }
+
     // MARK: - Claim status wording
 
     /// `CockpitView`'s epic-detail line, pinned here since nothing in
@@ -1956,6 +1990,19 @@ final class LibraryClientTests: XCTestCase {
         XCTAssertEqual(epics.map(\.specification), ["Do the thing", nil])
     }
 
+    /// `definitionOfDone` survives the decode the same way `specification`
+    /// does (CQ·209): the Proposals region signs over it, so it must come
+    /// off the same response the row itself is drawn from, never a second
+    /// read made at the press.
+    func testDecodesAnEpicsDefinitionOfDone() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"items":[{"id":"epic_1","state":"open","definition_of_done":"- one\\n- two"},
+                  {"id":"epic_2","state":"open"}]}
+        """)
+        let epics = try LibraryClient.decodeEpics(raw)
+        XCTAssertEqual(epics.map(\.definitionOfDone), ["- one\n- two", nil])
+    }
+
     /// The Proposals region draws this beside the title (`CockpitView.keyedTitle`),
     /// so it has to survive the decode the same way `title` does.
     func testDecodesAnEpicsKey() throws {
@@ -1986,6 +2033,20 @@ final class LibraryClientTests: XCTestCase {
         """)
         let epics = try LibraryClient.decodeEpics(raw)
         XCTAssertEqual(epics.map(\.key), [""])
+    }
+
+    /// **EXISTS SO THE PROPOSALS REGION CAN SIGN THE MODEL IT ACTUALLY
+    /// DISPLAYED.** Without this, `ItemActSnapshot(epic:)` always signs an
+    /// empty `model` line, so approving or declining an epic that carries a
+    /// model choice would always be refused 409 `stale` on `model`
+    /// (reviewer, PR #429 round 1).
+    func testDecodesAnEpicsModelChoice() throws {
+        let raw = curlResponse(status: 200, body: """
+        {"items":[{"id":"epic_1","state":"open","model_choice":{"model":"opus"}},
+                  {"id":"epic_2","state":"open"}]}
+        """)
+        let epics = try LibraryClient.decodeEpics(raw)
+        XCTAssertEqual(epics.map { $0.modelChoice?.model }, ["opus", nil])
     }
 
     // MARK: - Decode: work item records (the chip join's own read)
@@ -2106,7 +2167,7 @@ final class LibraryClientTests: XCTestCase {
     /// and no `-H Authorization` puts it in argv where `ps` on the mini would
     /// show it.
     func testTheApproveWriteCommandCarriesTheProtocolHeaderAndNeverArgvsTheToken() {
-        let command = LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC")
+        let command = LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC", act: testAct)
         XCTAssertTrue(command.contains("Library-Protocol: 1"))
         XCTAssertTrue(command.contains("Content-Type: application/json"))
         XCTAssertTrue(command.contains("--config -"))
@@ -2115,11 +2176,20 @@ final class LibraryClientTests: XCTestCase {
         XCTAssertFalse(command.contains("-H 'Authorization"))
     }
 
+    /// The three signed-act headers travel on every call now that approving
+    /// is always a signed act.
+    func testTheApproveWriteCarriesTheSignedActHeaders() {
+        let command = LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC", act: testAct)
+        XCTAssertTrue(command.contains("Library-Act-Envelope: ZQ=="), command)
+        XCTAssertTrue(command.contains("Library-Act-Signature: cw=="), command)
+        XCTAssertTrue(command.contains("Library-Act-Certificate: Y2E="), command)
+    }
+
     /// `/approve` and not `/correct`: `/correct` now refuses `maturity` by
     /// name and points here (`platform/decisions/0087`), and no other route
     /// holds an epic for this write the way `/approve` does.
     func testTheApproveWriteAddressesTheApproveRouteOfTheNamedItem() {
-        let command = LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC")
+        let command = LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC", act: testAct)
         XCTAssertTrue(command.contains("/items/issue_01ABC/approve\""))
         XCTAssertFalse(command.contains("/correct"))
         XCTAssertFalse(command.contains("/revision"))
@@ -2133,7 +2203,7 @@ final class LibraryClientTests: XCTestCase {
     /// `WorkingCopyStore.libraryApprovalTokenFile`'s doc). Every other write
     /// and every read in this file keeps reading the shared file.
     func testTheApproveWriteReadsTheApprovalCredentialAndNoOther() {
-        let command = LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC")
+        let command = LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC", act: testAct)
         XCTAssertTrue(command.contains("cat ~/.orient-control/deck-library-token"), command)
         XCTAssertFalse(command.contains("agent-platform-token"), command)
         XCTAssertFalse(command.contains("library-client-token"), command)
@@ -2150,74 +2220,14 @@ final class LibraryClientTests: XCTestCase {
 
     /// The body travels as process stdin and never enters the command string.
     func testTheApproveWriteCommandNamesNoBodyContent() {
-        let command = LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC")
+        let command = LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC", act: testAct)
         XCTAssertTrue(command.contains(#"data-binary = "@-""#))
         XCTAssertFalse(command.contains("maturity"))
         XCTAssertFalse(command.contains("acting_human"))
     }
 
-    /// The whole payload is two keys. `owner` would name a checkout Deck does
-    /// not take; sending it is a claim Deck cannot back.
-    func testTheApproveBodyIsExactlyMaturityAndActingHuman() {
-        let body = LibraryClient.approveEpicBody(actingHuman: "deck:operator@example.com")
-        XCTAssertEqual(Set(body.keys), ["maturity", "acting_human"])
-        XCTAssertEqual(body["maturity"] as? String, "approved")
-        XCTAssertEqual(body["acting_human"] as? String, "deck:operator@example.com")
-    }
+    // MARK: - validateActingHuman
 
-    func testTheApproveArgumentsCarryTheControlMasterAndAddressTheTarget() throws {
-        let target = SSHTarget(user: "operator", host: "10.0.0.5")
-        let args = try LibraryClient.approveEpicArguments(target: target, itemId: "issue_01ABC")
-        XCTAssertTrue(args.contains("ControlMaster=auto"))
-        XCTAssertTrue(args.contains("operator@10.0.0.5"))
-        XCTAssertTrue(try XCTUnwrap(args.last).contains("/items/issue_01ABC/approve"))
-    }
-
-    /// An id that fails validation throws before any command string exists, so
-    /// a hostile id read back from the Library's JSON cannot reach the mini's
-    /// shell. `approveEpic` builds its argv through this, so it inherits the
-    /// refusal.
-    func testTheApproveArgumentsRefuseAnIdThatCouldInjectIntoTheCommand() {
-        for hostile in ["issue_01`whoami`", "a b", "x$(id)", "../approve", "", "a;b"] {
-            XCTAssertThrowsError(try LibraryClient.approveEpicArguments(
-                target: TestHost.target, itemId: hostile), "\(hostile) was accepted") { error in
-                guard case LibraryClient.FetchError.invalidInput = error else {
-                    return XCTFail("expected invalidInput for \(hostile), got \(error)")
-                }
-            }
-        }
-        XCTAssertThrowsError(try LibraryClient.approveEpic(target: TestHost.target, itemId: "a b", actingHuman: "operator"))
-    }
-
-    /// A real bash runs the real command against a listener standing in for
-    /// the Library, so the request that arrives is the one the mini would
-    /// send — and carries `acting_human` unmangled, the field this write
-    /// gained over the old `/correct` body.
-    func testTheApproveBodyArrivesAtTheListenerIntact() throws {
-        try assertPOSTBodySurvivesRoundTrip(
-            command: LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC"),
-            body: LibraryClient.approveEpicBody(actingHuman: "deck:operator@example.com"),
-            field: "acting_human", expectedValue: "deck:operator@example.com",
-            expectedRequestLine: "POST /items/issue_01ABC/approve HTTP/1.1")
-    }
-
-    /// `acting_human` is operator-adjacent text reaching the same shell-safe
-    /// channel `LibraryClient.swift`'s "SHELL-SAFE POST BODIES" comment
-    /// describes — this is the hostile-content half of that guarantee,
-    /// proven against a real shell rather than asserted from the comment.
-    func testAHostileActingHumanSurvivesTheShellRoundTripUnmangled() throws {
-        let hostile = #"`whoami` $(id) "quoted" 'quoted' \backslash"#
-        let request = try captureRequest(
-            command: LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC"),
-            body: LibraryClient.approveEpicBody(actingHuman: hostile))
-        XCTAssertEqual(request.body["acting_human"] as? String, hostile)
-    }
-
-    // MARK: - Approving an epic: `acting_human`'s local bound
-
-    /// Mirrors the Library's own `identity.attested_human`: trimmed,
-    /// non-empty, no longer than `MAX_ACTOR` (200, `store.py:474`,
-    /// confirmed against the deployed Library 2026-09-22).
     func testValidateActingHumanTrimsAndAccepts() throws {
         XCTAssertEqual(try LibraryClient.validateActingHuman("  deck:operator@example.com  "), "deck:operator@example.com")
     }
@@ -2251,32 +2261,51 @@ final class LibraryClientTests: XCTestCase {
             "exactly at the bound should validate")
     }
 
-    /// `approveEpic` refuses locally before building any request — a degenerate
-    /// `actingHuman` never reaches curl, and the target need not even resolve.
-    func testApproveEpicRefusesADegenerateActingHumanLocally() {
-        for degenerate in ["", "   "] {
-            XCTAssertThrowsError(try LibraryClient.approveEpic(
-                target: TestHost.unreachableTarget, itemId: "issue_01ABC", actingHuman: degenerate)) { error in
-                guard case LibraryClient.FetchError.invalidActingHuman = error else {
-                    return XCTFail("expected invalidActingHuman for \"\(degenerate)\", got \(error)")
+    /// The whole payload is two keys: `maturity`, and `acting_human` — the
+    /// running Library still requires the latter on every write
+    /// (`LibraryClient.validateActingHuman`'s doc), signature or not.
+    /// `owner` would name a checkout Deck does not take; sending it is a
+    /// claim Deck cannot back.
+    func testTheApproveBodyCarriesMaturityAndActingHuman() {
+        let body = LibraryClient.approveEpicBody(actingHuman: testActingHuman)
+        XCTAssertEqual(Set(body.keys), ["maturity", "acting_human"])
+        XCTAssertEqual(body["maturity"] as? String, "approved")
+        XCTAssertEqual(body["acting_human"] as? String, testActingHuman)
+    }
+
+    func testTheApproveArgumentsCarryTheControlMasterAndAddressTheTarget() throws {
+        let target = SSHTarget(user: "operator", host: "10.0.0.5")
+        let args = try LibraryClient.approveEpicArguments(target: target, itemId: "issue_01ABC", act: testAct)
+        XCTAssertTrue(args.contains("ControlMaster=auto"))
+        XCTAssertTrue(args.contains("operator@10.0.0.5"))
+        XCTAssertTrue(try XCTUnwrap(args.last).contains("/items/issue_01ABC/approve"))
+    }
+
+    /// An id that fails validation throws before any command string exists, so
+    /// a hostile id read back from the Library's JSON cannot reach the mini's
+    /// shell. `approveEpic` builds its argv through this, so it inherits the
+    /// refusal — proven against the real function, with a fake key and
+    /// certificate, in `LibrarySignedActTests`.
+    func testTheApproveArgumentsRefuseAnIdThatCouldInjectIntoTheCommand() {
+        for hostile in ["issue_01`whoami`", "a b", "x$(id)", "../approve", "", "a;b"] {
+            XCTAssertThrowsError(try LibraryClient.approveEpicArguments(
+                target: TestHost.target, itemId: hostile, act: testAct), "\(hostile) was accepted") { error in
+                guard case LibraryClient.FetchError.invalidInput = error else {
+                    return XCTFail("expected invalidInput for \(hostile), got \(error)")
                 }
-            }
-        }
-        let tooLong = String(repeating: "a", count: LibraryClient.maxActingHumanLength + 1)
-        XCTAssertThrowsError(try LibraryClient.approveEpic(
-            target: TestHost.unreachableTarget, itemId: "issue_01ABC", actingHuman: tooLong)) { error in
-            guard case LibraryClient.FetchError.invalidActingHuman = error else {
-                return XCTFail("expected invalidActingHuman, got \(error)")
             }
         }
     }
 
-    /// The local refusal renders in words an operator can act on, the same
-    /// row-level shape every other refusal takes (`approvalRefusalMessage`).
-    func testADegenerateActingHumanRefusalReadsAsWordsAnOperatorCanAct() {
-        let message = LibraryClient.approvalRefusalMessage(
-            LibraryClient.FetchError.invalidActingHuman("Deck has no operator name to send with this approval."))
-        XCTAssertEqual(message, "Deck has no operator name to send with this approval.")
+    /// A real bash runs the real command against a listener standing in for
+    /// the Library, so the request that arrives is the one the mini would
+    /// send — and carries `maturity` unmangled.
+    func testTheApproveBodyArrivesAtTheListenerIntact() throws {
+        try assertPOSTBodySurvivesRoundTrip(
+            command: LibraryClient.itemApproveRemoteCommand(itemId: "issue_01ABC", act: testAct),
+            body: LibraryClient.approveEpicBody(actingHuman: testActingHuman),
+            field: "maturity", expectedValue: "approved",
+            expectedRequestLine: "POST /items/issue_01ABC/approve HTTP/1.1")
     }
 
     // MARK: - Declining a proposed epic
@@ -2284,82 +2313,72 @@ final class LibraryClientTests: XCTestCase {
     /// The body travels as process stdin and never enters the command
     /// string, same as the approve write.
     func testTheDeclineWriteCommandNamesNoBodyContent() {
-        let command = LibraryClient.itemDeclineRemoteCommand(itemId: "issue_01ABC")
+        let command = LibraryClient.itemDeclineRemoteCommand(itemId: "issue_01ABC", act: testAct)
         XCTAssertTrue(command.contains(#"data-binary = "@-""#))
         XCTAssertFalse(command.contains("acting_human"))
     }
 
-    /// Unlike `approveEpicBody`, this carries no `maturity` key — the route
-    /// sets `declined` itself (library/decisions/0005).
-    func testTheDeclineBodyIsExactlyActingHuman() {
-        let body = LibraryClient.declineEpicBody(actingHuman: "deck:operator@example.com")
+    /// With no reason, the body carries `acting_human` alone — the route
+    /// sets `declined` itself (library/decisions/0005), but `acting_human`
+    /// still travels on every write the running Library requires it on.
+    func testTheDeclineBodyIsExactlyActingHumanWithNoReason() {
+        let body = LibraryClient.declineEpicBody(actingHuman: testActingHuman)
         XCTAssertEqual(Set(body.keys), ["acting_human"])
-        XCTAssertEqual(body["acting_human"] as? String, "deck:operator@example.com")
+        XCTAssertEqual(body["acting_human"] as? String, testActingHuman)
     }
 
     /// A reason is sent trimmed; a blank one is left out, since the route
     /// treats it as absent.
     func testTheDeclineBodyCarriesATrimmedReasonAndOmitsABlankOne() {
-        let body = LibraryClient.declineEpicBody(actingHuman: "deck:operator@example.com", reason: "  Product retired  ")
+        let body = LibraryClient.declineEpicBody(actingHuman: testActingHuman, reason: "  Product retired  ")
         XCTAssertEqual(Set(body.keys), ["acting_human", "reason"])
         XCTAssertEqual(body["reason"] as? String, "Product retired")
         for blank in ["", "   ", nil] as [String?] {
-            XCTAssertEqual(Set(LibraryClient.declineEpicBody(actingHuman: "deck:operator@example.com", reason: blank).keys),
-                           ["acting_human"], "\(String(describing: blank)) must not send a reason")
+            XCTAssertEqual(Set(LibraryClient.declineEpicBody(actingHuman: testActingHuman, reason: blank).keys),
+                          ["acting_human"], "\(String(describing: blank)) must not send a reason")
         }
     }
 
-    /// The reason arrives at a stand-in Library unmangled, quotes and all.
+    /// The reason arrives at a stand-in Library unmangled, quotes and all —
+    /// the hostile-content half of the "SHELL-SAFE POST BODIES" guarantee
+    /// `LibraryClient.swift`'s own comment describes, proven against a real
+    /// shell rather than asserted from the comment.
     func testTheDeclineReasonArrivesAtTheListenerIntact() throws {
         try assertPOSTBodySurvivesRoundTrip(
-            command: LibraryClient.itemDeclineRemoteCommand(itemId: "issue_01ABC"),
-            body: LibraryClient.declineEpicBody(actingHuman: "deck:operator@example.com",
-                                                reason: "It's retired; no \"QR\" work $HOME"),
+            command: LibraryClient.itemDeclineRemoteCommand(itemId: "issue_01ABC", act: testAct),
+            body: LibraryClient.declineEpicBody(actingHuman: testActingHuman, reason: "It's retired; no \"QR\" work $HOME"),
             field: "reason", expectedValue: "It's retired; no \"QR\" work $HOME",
             expectedRequestLine: "POST /items/issue_01ABC/decline HTTP/1.1")
     }
 
+    /// A reason carrying a backtick and `$(...)` survives the shell round
+    /// trip unmangled, the hostile-content proof `testTheDeclineReasonArrivesAtTheListenerIntact`
+    /// does not cover.
+    func testAHostileDeclineReasonSurvivesTheShellRoundTripUnmangled() throws {
+        let hostile = #"`whoami` $(id) "quoted" 'quoted' \backslash"#
+        let request = try captureRequest(
+            command: LibraryClient.itemDeclineRemoteCommand(itemId: "issue_01ABC", act: testAct),
+            body: LibraryClient.declineEpicBody(actingHuman: testActingHuman, reason: hostile))
+        XCTAssertEqual(request.body["reason"] as? String, hostile)
+    }
+
     func testTheDeclineArgumentsCarryTheControlMasterAndAddressTheTarget() throws {
         let target = SSHTarget(user: "operator", host: "10.0.0.5")
-        let args = try LibraryClient.declineEpicArguments(target: target, itemId: "issue_01ABC")
+        let args = try LibraryClient.declineEpicArguments(target: target, itemId: "issue_01ABC", act: testAct)
         XCTAssertTrue(args.contains("ControlMaster=auto"))
         XCTAssertTrue(args.contains("operator@10.0.0.5"))
         XCTAssertTrue(try XCTUnwrap(args.last).contains("/items/issue_01ABC/decline"))
     }
 
     /// An id that fails validation throws before any command string exists,
-    /// the same guard `approveEpicArguments` applies.
+    /// the same guard `approveEpicArguments` applies — proven against the
+    /// real function in `LibrarySignedActTests`.
     func testTheDeclineArgumentsRefuseAnIdThatCouldInjectIntoTheCommand() {
         for hostile in ["issue_01`whoami`", "a b", "x$(id)", "../decline", "", "a;b"] {
             XCTAssertThrowsError(try LibraryClient.declineEpicArguments(
-                target: TestHost.target, itemId: hostile), "\(hostile) was accepted") { error in
+                target: TestHost.target, itemId: hostile, act: testAct), "\(hostile) was accepted") { error in
                 guard case LibraryClient.FetchError.invalidInput = error else {
                     return XCTFail("expected invalidInput for \(hostile), got \(error)")
-                }
-            }
-        }
-        XCTAssertThrowsError(try LibraryClient.declineEpic(target: TestHost.target, itemId: "a b", actingHuman: "operator"))
-    }
-
-    /// A real bash runs the real command against a listener standing in for
-    /// the Library, so `acting_human` arrives unmangled, the same proof
-    /// `testTheApproveBodyArrivesAtTheListenerIntact` runs for approve.
-    func testTheDeclineBodyArrivesAtTheListenerIntact() throws {
-        try assertPOSTBodySurvivesRoundTrip(
-            command: LibraryClient.itemDeclineRemoteCommand(itemId: "issue_01ABC"),
-            body: LibraryClient.declineEpicBody(actingHuman: "deck:operator@example.com"),
-            field: "acting_human", expectedValue: "deck:operator@example.com",
-            expectedRequestLine: "POST /items/issue_01ABC/decline HTTP/1.1")
-    }
-
-    /// `declineEpic` refuses locally before building any request, the same
-    /// guard `approveEpic` applies.
-    func testDeclineEpicRefusesADegenerateActingHumanLocally() {
-        for degenerate in ["", "   "] {
-            XCTAssertThrowsError(try LibraryClient.declineEpic(
-                target: TestHost.unreachableTarget, itemId: "issue_01ABC", actingHuman: degenerate)) { error in
-                guard case LibraryClient.FetchError.invalidActingHuman = error else {
-                    return XCTFail("expected invalidActingHuman for \"\(degenerate)\", got \(error)")
                 }
             }
         }
@@ -2762,8 +2781,8 @@ final class LibraryClientTests: XCTestCase {
 
     /// The POST builders still say POST after the shared builder gained a verb.
     func testTheApproveWriteIsStillAPost() {
-        XCTAssertTrue(LibraryClient.itemApproveRemoteCommand(itemId: "issue_1").contains("-X POST"))
-        XCTAssertFalse(LibraryClient.itemApproveRemoteCommand(itemId: "issue_1").contains("-X PUT"))
+        XCTAssertTrue(LibraryClient.itemApproveRemoteCommand(itemId: "issue_1", act: testAct).contains("-X POST"))
+        XCTAssertFalse(LibraryClient.itemApproveRemoteCommand(itemId: "issue_1", act: testAct).contains("-X PUT"))
     }
 
     func testTheOrderArgumentsRefuseACourseIdThatCouldInjectIntoTheCommand() throws {
@@ -2779,6 +2798,82 @@ final class LibraryClientTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(args.last).contains("/courses/course_1/order"))
         XCTAssertThrowsError(try LibraryClient.reorderCourse(
             target: TestHost.target, courseId: "a b", version: 1, entries: []))
+    }
+
+    // MARK: - Theme publishing writes (CQ·211)
+
+    func testTheThemesPaletteWriteIsAPutWithTheProtocolHeaderAndNeverArgvsTheToken() {
+        let command = LibraryClient.themesPaletteRemoteCommand()
+        XCTAssertTrue(command.contains("-X PUT"))
+        XCTAssertFalse(command.contains("-X POST"))
+        XCTAssertTrue(command.contains("/themes/palette\""))
+        XCTAssertTrue(command.contains("Library-Protocol: 1"))
+        XCTAssertTrue(command.contains("--config -"))
+        XCTAssertTrue(command.contains(#"data-binary = "@-""#))
+        XCTAssertFalse(command.contains("-H \"Authorization"))
+        XCTAssertFalse(command.contains("-H 'Authorization"))
+    }
+
+    /// The theme writes fire automatically, so they present the theme-only
+    /// credential: never the shared agent-platform token, which every theme
+    /// write was refused 403 under on 2026-11-16, and never actor `deck`'s
+    /// broad approval credential.
+    func testBothThemeWritesPresentTheThemeOnlyCredential() {
+        XCTAssertEqual(WorkingCopyStore.libraryThemeTokenFile, "~/.orient-control/deck-theme-token")
+        let commands = [
+            LibraryClient.themesPaletteRemoteCommand(),
+            LibraryClient.projectThemeRemoteCommand(slug: "convivy-deck"),
+        ]
+        for command in commands {
+            XCTAssertTrue(command.contains("cat \(WorkingCopyStore.libraryThemeTokenFile) "), command)
+            XCTAssertFalse(command.contains(WorkingCopyStore.libraryTokenFile), command)
+            XCTAssertFalse(command.contains(WorkingCopyStore.libraryApprovalTokenFile), command)
+        }
+        // The shared credential still carries every other unsigned write.
+        XCTAssertTrue(LibraryClient.courseOrderRemoteCommand(courseId: "course_1")
+            .contains("cat \(WorkingCopyStore.libraryTokenFile) "))
+    }
+
+    func testTheThemesPaletteBodyCarriesExactlyCatalogAndThemes() {
+        let body = LibraryClient.themesPaletteBody(
+            catalog: "deck-catalog-1",
+            themes: ["ember": ["light": ["accent": "#112233"], "dark": ["accent": "#112233"]]])
+        XCTAssertEqual(Set(body.keys), ["catalog", "themes"])
+        XCTAssertEqual(body["catalog"] as? String, "deck-catalog-1")
+    }
+
+    func testTheProjectThemeWriteIsAPutWithTheProtocolHeaderAndNeverArgvsTheToken() {
+        let command = LibraryClient.projectThemeRemoteCommand(slug: "convivy-deck")
+        XCTAssertTrue(command.contains("-X PUT"))
+        XCTAssertFalse(command.contains("-X POST"))
+        XCTAssertTrue(command.contains("/projects/convivy-deck/theme\""))
+        XCTAssertTrue(command.contains("Library-Protocol: 1"))
+        XCTAssertTrue(command.contains("--config -"))
+        XCTAssertTrue(command.contains(#"data-binary = "@-""#))
+    }
+
+    func testTheProjectThemeBodyCarriesExactlyThemeAndSource() {
+        let body = LibraryClient.projectThemeBody(theme: "gold", source: "crews-d")
+        XCTAssertEqual(Set(body.keys), ["theme", "source"])
+        XCTAssertEqual(body["theme"] as? String, "gold")
+        XCTAssertEqual(body["source"] as? String, "crews-d")
+    }
+
+    /// Same injection-resistance discipline `testTheOrderArgumentsRefuseACourseIdThatCouldInjectIntoTheCommand`
+    /// pins for a Course id — a slug reaches the command line the same way.
+    func testTheProjectThemeArgumentsRefuseASlugThatCouldInjectIntoTheCommand() throws {
+        for hostile in ["deck`whoami`", "a b", "x$(id)", "../theme", "", "a;b"] {
+            XCTAssertThrowsError(try LibraryClient.projectThemeArguments(
+                target: TestHost.target, slug: hostile), "\(hostile) was accepted") { error in
+                guard case LibraryClient.FetchError.invalidInput = error else {
+                    return XCTFail("expected invalidInput for \(hostile), got \(error)")
+                }
+            }
+        }
+        let args = try LibraryClient.projectThemeArguments(target: TestHost.target, slug: "convivy-deck")
+        XCTAssertTrue(try XCTUnwrap(args.last).contains("/projects/convivy-deck/theme"))
+        XCTAssertThrowsError(try LibraryClient.putProjectTheme(
+            target: TestHost.target, slug: "a b", theme: "gold", source: "crews-d"))
     }
 
     /// A real bash runs the real command against a listener standing in for
@@ -2916,16 +3011,16 @@ final class LibraryClientTests: XCTestCase {
         XCTAssertFalse(message.contains("Held by"), "no_live_course must not read as a held lease: \(message)")
     }
 
-    /// `acting_human` missing or blank — `identity.attested_human`'s 403,
-    /// reachable if `approveEpic`'s own local check were ever bypassed
-    /// (a stale build, a future direct caller). The row must still say
-    /// something an operator can act on rather than a raw Library string
-    /// about a field Deck itself is supposed to have filled in.
-    func testAMissingActingHumanFromTheLibraryItselfStillSaysSomething() {
+    /// The bearer token itself lacking `item.signed_act` (library-protocol
+    /// "Signed item acts") is a 403 like any other missing-capability
+    /// refusal: it passes through verbatim, the generic fallback every
+    /// reason not specially classified (`held`, `proof-refused`, `stale`)
+    /// still gets.
+    func testAMissingSignedActCapabilityStillSaysSomething() {
         let message = LibraryClient.approvalRefusalMessage(refusal(403, """
-        {"error":"acting_human is required"}
+        {"error":"this identity lacks item.signed_act"}
         """))
-        XCTAssertEqual(message, "acting_human is required")
+        XCTAssertEqual(message, "this identity lacks item.signed_act")
     }
 
     func testARefusalWithNoReadableBodyStillSaysSomething() {

@@ -55,22 +55,65 @@ final class PreInstallCheckTests: XCTestCase {
                        .claudeNotInstalled)
     }
 
-    func testOnlyReadyAllowsTheInstall() {
-        let notReady: [PreInstallReading] = [
-            .claudeNotInstalled, .claudeSignedOut("x"), .desktopLoggedOut, .couldNotCheck("x"),
-        ]
-        XCTAssertTrue(PreInstallReading.ready.allowsInstall)
-        for reading in notReady {
-            XCTAssertFalse(reading.allowsInstall, "\(reading)")
+    /// E22/CQ·200: a reading that needs a setup step allows setup now, not
+    /// only `.ready` — only the two readings with no evidence either way
+    /// start nothing.
+    func testEverySetupStepReadingAllowsSetupAndOnlyTheBlockingTwoDoNot() {
+        let allowed: [PreInstallReading] = [.ready, .claudeSignedOut("x"), .claudeNotInstalled]
+        let blocked: [PreInstallReading] = [.desktopLoggedOut, .couldNotCheck("x")]
+        for reading in allowed {
+            XCTAssertTrue(reading.allowsSetup, "\(reading)")
+        }
+        for reading in blocked {
+            XCTAssertFalse(reading.allowsSetup, "\(reading)")
         }
     }
 
-    func testEveryNotReadyReadingNamesTheHost() {
-        let readings: [PreInstallReading] = [
-            .claudeNotInstalled, .claudeSignedOut("Not logged in"), .desktopLoggedOut, .couldNotCheck("ssh failed"),
-        ]
-        for reading in readings {
-            XCTAssertTrue(reading.explanation(hostName: "kestrel").contains("kestrel"), "\(reading)")
+    /// The steps the setup pane runs, pinned per reading (E22's
+    /// specification): `.ready` only needs Builder's installer,
+    /// `.claudeSignedOut` adds the sign-in, and `.claudeNotInstalled` adds
+    /// Claude Code's own install ahead of both. The two blocking readings
+    /// start nothing.
+    func testSetupStepsArePinnedPerReading() {
+        XCTAssertEqual(PreInstallReading.ready.setupSteps, [.installBuilderServer])
+        XCTAssertEqual(PreInstallReading.claudeSignedOut("x").setupSteps,
+                       [.signIntoClaudeCode, .installBuilderServer])
+        XCTAssertEqual(PreInstallReading.claudeNotInstalled.setupSteps,
+                       [.installClaudeCode, .signIntoClaudeCode, .installBuilderServer])
+        XCTAssertEqual(PreInstallReading.desktopLoggedOut.setupSteps, [])
+        XCTAssertEqual(PreInstallReading.couldNotCheck("x").setupSteps, [])
+    }
+
+    /// A retry keeps no progress of its own, so it skips finished steps only
+    /// because the next check reads the host as it now stands: from what the
+    /// check sees after each stage of a partial setup through to the steps
+    /// the retry runs.
+    func testARetryAfterAPartialSetupStartsFromWhatTheCheckNowReads() {
+        func stepsAfterCheck(exitStatus: Int32, errorText: String) -> [SetupStep] {
+            PreInstallCheck.classifyClaude(exitStatus: exitStatus, errorText: errorText, timedOut: false).setupSteps
+        }
+        XCTAssertEqual(stepsAfterCheck(exitStatus: 127, errorText: "bash: claude: command not found"),
+                       [.installClaudeCode, .signIntoClaudeCode, .installBuilderServer],
+                       "the first step failed, so everything runs again")
+        XCTAssertEqual(stepsAfterCheck(exitStatus: 1, errorText: "Not logged in · Please run /login"),
+                       [.signIntoClaudeCode, .installBuilderServer],
+                       "Claude Code installed, so the retry starts at the sign-in")
+        XCTAssertEqual(stepsAfterCheck(exitStatus: 0, errorText: ""),
+                       [.installBuilderServer],
+                       "signed in, so the retry runs only Builder's installer")
+    }
+
+    /// Only the two readings that start nothing explain themselves to the
+    /// person; a reading that starts a setup step is never told to install
+    /// Claude Code or sign in by hand, because the pane does both.
+    func testOnlyTheBlockingReadingsExplainThemselves() {
+        let blocking: [PreInstallReading] = [.desktopLoggedOut, .couldNotCheck("ssh failed")]
+        for reading in blocking {
+            XCTAssertEqual(reading.explanation(hostName: "kestrel")?.contains("kestrel"), true, "\(reading)")
+        }
+        let setup: [PreInstallReading] = [.ready, .claudeSignedOut("Not logged in"), .claudeNotInstalled]
+        for reading in setup {
+            XCTAssertNil(reading.explanation(hostName: "kestrel"), "\(reading)")
         }
     }
 
@@ -79,26 +122,26 @@ final class PreInstallCheckTests: XCTestCase {
             target: SSHTarget(user: "builder", host: "kestrel"), controlPath: "/tmp/cm", home: "/nonexistent")
         XCTAssertTrue(argv.contains("ControlPath=/tmp/cm"))
         XCTAssertEqual(Array(argv.suffix(2)),
-                       ["builder@kestrel", #"exec "$SHELL" -lc 'claude -p ok --max-turns 1 --model haiku'"#])
+                       ["builder@kestrel",
+                        #"exec "$SHELL" -lc 'export PATH="$HOME/.local/bin:$PATH"; "#
+                            + #"claude -p ok --max-turns 1 --model haiku'"#])
     }
 
-    /// Runs the real remote command through a local `sh`, with `claude`
-    /// reachable only from the login profile, as on a stock Debian account
-    /// whose `.profile` adds `~/.local/bin`. A bare `claude` fails there
-    /// with 127, which the check read as "not installed".
-    func testTheCommandFindsAClaudeThatOnlyTheLoginProfilePutsOnPath() throws {
+    /// A temporary home holding a fake signed-in `claude` in `folder`, and a
+    /// way to run a command through a local `sh` as if over ssh from there.
+    private func homeWithClaude(in folder: String, profile: String?) throws
+        -> (home: URL, run: (String) throws -> (Int32, String)) {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("preinstall-\(UUID().uuidString)")
-        let bin = home.appendingPathComponent(".local/bin")
+        let bin = home.appendingPathComponent(folder)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: home) }
         let fake = bin.appendingPathComponent("claude")
         try "#!/bin/sh\necho signed-in\n".write(to: fake, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
-        try "PATH=\"$HOME/.local/bin:$PATH\"\n"
-            .write(to: home.appendingPathComponent(".profile"), atomically: true, encoding: .utf8)
-
-        func run(_ command: String) throws -> (Int32, String) {
+        if let profile {
+            try profile.write(to: home.appendingPathComponent(".profile"), atomically: true, encoding: .utf8)
+        }
+        return (home, { command in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", command]
@@ -110,9 +153,29 @@ final class PreInstallCheckTests: XCTestCase {
             process.waitUntilExit()
             let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             return (process.terminationStatus, text)
-        }
+        })
+    }
 
+    /// `claude` in a folder only the login profile adds, so the login shell
+    /// is what finds it. A bare `claude` fails there with 127, which the
+    /// check read as "not installed" (live install check 2, 2026-10-20).
+    func testTheCommandFindsAClaudeThatOnlyTheLoginProfilePutsOnPath() throws {
+        let (home, run) = try homeWithClaude(in: "tools/bin", profile: "PATH=\"$HOME/tools/bin:$PATH\"\n")
+        defer { try? FileManager.default.removeItem(at: home) }
         XCTAssertEqual(try run("claude -p ok").0, 127, "control: a bare claude is not on the non-login PATH")
+        let (status, output) = try run(PreInstallCheck.claudeCommand)
+        XCTAssertEqual(status, 0)
+        XCTAssertEqual(output, "signed-in\n")
+    }
+
+    /// The shape measured on a fresh Mac account: `claude` in `~/.local/bin`
+    /// and no profile adding that folder. The check must read it as present,
+    /// or a retry installs Claude Code again.
+    func testTheCommandFindsAClaudeInLocalBinThatNoProfileAdds() throws {
+        let (home, run) = try homeWithClaude(in: ".local/bin", profile: nil)
+        defer { try? FileManager.default.removeItem(at: home) }
+        XCTAssertEqual(try run(#"exec "$SHELL" -lc 'claude -p ok'"#).0, 127,
+                       "control: the login shell alone does not find it")
         let (status, output) = try run(PreInstallCheck.claudeCommand)
         XCTAssertEqual(status, 0)
         XCTAssertEqual(output, "signed-in\n")

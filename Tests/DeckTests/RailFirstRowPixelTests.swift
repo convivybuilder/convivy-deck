@@ -187,9 +187,15 @@ final class RailFirstRowPixelTests: XCTestCase {
             guard let color = rep.colorAt(x: px, y: py) else { continue }
             if !matches(color, ground) { return Int((CGFloat(py) / scale).rounded()) }
         }
-        XCTFail("found no session pane below the title bar")
-        return 0
+        // Throws rather than returning 0. A caller builds the band
+        // `titleBarHeight...top`, and a 0 here inverted that range, which
+        // traps: the whole test process died in this test on 2026-11-15
+        // (post-merge of #430), and every later suite went unrun.
+        XCTFail("found no session pane below the title bar\n\(c.log)")
+        throw PaneTopNotFound()
     }
+
+    private struct PaneTopNotFound: Error {}
 
     /// The rows of the rail's label column, in points from the window's top,
     /// where a crew name's ink is drawn, merged into one band per name. Ink is

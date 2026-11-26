@@ -229,6 +229,23 @@ struct Crew: Identifiable, Equatable {
     /// never a guessed list of "the" documents a crew probably has.
     var documents: [String]
 
+    /// The crew's colour as the host's own spec names it — see
+    /// `ServedCrew.theme`. SERVER-OWNED AND NEVER PERSISTED: unlike
+    /// `project`/`bead`/`shape`, there is no Settings UI and no `theme.json`
+    /// key for this field, so `ThemeConfiguration.parseRail`/`parseCatalog`
+    /// never decode one and `railArray`/`save()` never write one.
+    /// `CrewMerge.applying`/`asCrew` fill it from a matched spec on every
+    /// merge, unconditionally — there is no local value for it to defer to —
+    /// and `CrewMerge.sparse` always clears it back to `nil`, so it can
+    /// never make a served-only row read as edited
+    /// (`CrewMerge.isUnedited`) or survive into what `SessionRoster.applied`
+    /// writes back to disk. `nil` for a purely local crew, and for any crew
+    /// before this field existed. Read through
+    /// `ThemeConfiguration.theme(forSession:fallbackParent:servedTheme:)`,
+    /// which ranks it behind an explicit pick and ahead of the hashed
+    /// default — see that function's doc.
+    var servedTheme: String?
+
     /// `repo` and `repos` are two ways to set the same storage — `repos`
     /// wins when non-empty, otherwise `repo` is wrapped as a one-element
     /// list, otherwise the crew names no repos. Keeping both lets every
@@ -238,7 +255,7 @@ struct Crew: Identifiable, Equatable {
          command: String? = nil, sessions: [PinnedSession] = [], parent: String? = nil,
          host: String? = nil, project: String? = nil, bead: String? = nil, repo: String? = nil,
          repos: [String] = [], sessionId: String? = nil, shape: String? = nil,
-         documents: [String] = []) {
+         documents: [String] = [], servedTheme: String? = nil) {
         self.id = id
         self.displayName = displayName
         self.workingDirectory = workingDirectory
@@ -252,6 +269,7 @@ struct Crew: Identifiable, Equatable {
         self.sessionId = sessionId
         self.shape = shape
         self.documents = documents
+        self.servedTheme = servedTheme
     }
 }
 

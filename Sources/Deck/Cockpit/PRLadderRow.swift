@@ -32,6 +32,25 @@ enum PRLadderRow {
         let severity: Severity
     }
 
+    /// The position a row actually draws, once a merge or close confirmed
+    /// from the cockpit is folded in (`issue_01M747MYS6TYG6ZHQ2WZ3R2RAN`):
+    /// `.reported` draws as `.closed(.merged)` and `.closed` draws as
+    /// `.closed(.closed)`, from the moment GitHub confirms rather than
+    /// waiting for the next `pr-state-capture` refresh to land. Every other
+    /// `MergePressState` leaves the captured `position` alone. Once a
+    /// capture does land reading `MERGED`/`CLOSED`, `position` already
+    /// agrees with the override, so this changes nothing visible then.
+    static func effectivePosition(_ position: PRLadder.Position, pressState: MergePressState) -> PRLadder.Position {
+        switch pressState {
+        case .reported:
+            return .closed(.merged)
+        case .closed:
+            return .closed(.closed)
+        default:
+            return position
+        }
+    }
+
     static func present(_ position: PRLadder.Position) -> Presentation {
         switch position {
         case .draft:
@@ -48,6 +67,10 @@ enum PRLadderRow {
             return Presentation(label: "CI failed", isTerminal: false, severity: .failure)
         case .readyToMerge:
             return Presentation(label: "Ready to merge", isTerminal: false, severity: .invitation)
+        case .readyToMergeWithoutCI:
+            return Presentation(label: "Ready to merge, no CI captured", isTerminal: false, severity: .invitation)
+        case .held:
+            return Presentation(label: "Held", isTerminal: false, severity: .caution)
         case .closed(.closed):
             return Presentation(label: "Closed", isTerminal: true, severity: .neutral)
         case .closed(.merged):
@@ -105,6 +128,7 @@ enum PRLadderRow {
         case inCI
         case inReview
         case draftOrUnknown
+        case held
     }
 
     static func dotColor(_ position: PRLadder.Position) -> DotColor {
@@ -117,8 +141,10 @@ enum PRLadderRow {
             return .inCI
         case .failedCI:
             return .failedCI
-        case .readyToMerge:
+        case .readyToMerge, .readyToMergeWithoutCI:
             return .ready
+        case .held:
+            return .held
         case .closed(.closed):
             return .closed
         case .closed(.merged):

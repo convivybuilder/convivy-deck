@@ -312,4 +312,56 @@ final class StewardCrewTests: XCTestCase {
     func testRoleFramingIsNonEmpty() {
         XCTAssertFalse(StewardCrew.roleFraming.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
+
+    // MARK: - After a setup succeeds (E22)
+
+    private let setupHosts = [
+        HostEntry(name: "home", user: TestHost.user, address: "203.0.113.10"),
+        HostEntry(name: "fresh", user: TestHost.secondaryUser, address: "203.0.113.20"),
+    ]
+
+    private func steward(on host: String?) -> Crew {
+        Crew(id: StewardCrew.id, displayName: StewardCrew.displayName, workingDirectory: "~/builder/steward", host: host)
+    }
+
+    /// The 2026-11-08 Linux check: a Deck already running a steward on one
+    /// host set up a second, and no steward was created there.
+    func testAfterSetupCreatesWhenOnlyAnotherHostHasASteward() {
+        XCTAssertTrue(StewardCrew.shouldCreateAfterSetup(
+            onHost: "fresh", crews: [steward(on: "home")], hosts: setupHosts, defaultHost: "home"))
+    }
+
+    func testAfterSetupDoesNotCreateWhenThatHostHasASteward() {
+        XCTAssertFalse(StewardCrew.shouldCreateAfterSetup(
+            onHost: "fresh", crews: [steward(on: "fresh")], hosts: setupHosts, defaultHost: "home"))
+    }
+
+    /// A crew with no host of its own lives on the default host.
+    func testAfterSetupReadsAHostlessStewardAsTheDefaultHosts() {
+        XCTAssertFalse(StewardCrew.shouldCreateAfterSetup(
+            onHost: "home", crews: [steward(on: nil)], hosts: setupHosts, defaultHost: "home"))
+        XCTAssertTrue(StewardCrew.shouldCreateAfterSetup(
+            onHost: "fresh", crews: [steward(on: nil)], hosts: setupHosts, defaultHost: "home"))
+    }
+
+    func testAfterSetupIgnoresOtherCrewsOnThatHost() {
+        let other = Crew(id: "ask", displayName: "Ask", workingDirectory: "~/ask", host: "fresh")
+        XCTAssertTrue(StewardCrew.shouldCreateAfterSetup(
+            onHost: "fresh", crews: [other, steward(on: "home")], hosts: setupHosts, defaultHost: "home"))
+    }
+
+    /// What `create` is handed: another host's steward must not reach its
+    /// already-exists guard.
+    func testCrewsOnHostLeavesOutAnotherHostsSteward() {
+        let crews = StewardCrew.crewsOnHost(
+            "fresh", crews: [steward(on: "home")], hosts: setupHosts, defaultHost: "home")
+        XCTAssertTrue(crews.isEmpty)
+        let target = SSHTarget(user: TestHost.secondaryUser, host: "203.0.113.20")
+        var created = false
+        let result = try? StewardCrew.create(
+            target: target, directory: "~/builder/steward", existingCrews: crews,
+            createCrew: { _, _ in created = true }, roleFileExists: { _, _ in true }, writeRoleFile: { _, _ in })
+        XCTAssertEqual(result, true)
+        XCTAssertTrue(created)
+    }
 }

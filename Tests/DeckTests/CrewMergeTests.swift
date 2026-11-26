@@ -215,6 +215,73 @@ final class CrewMergeTests: XCTestCase {
         XCTAssertEqual(merged[0].documents, ["backlog.md"])
     }
 
+    // MARK: - workingDirectory resolution precedence: the host's own spec > Settings > nil
+    //
+    // A working directory is a path on the host, so the host's served spec
+    // is the authority — the opposite precedence from project/bead/repo
+    // above. CQ·204: a client's `theme.json` kept a stale directory after
+    // the folder moved on its host, and the host's own, already-current spec
+    // must win over it.
+
+    func testWorkingDirectoryFollowsTheServedSpecEvenOverAStaleConfiguredOne() {
+        var configured = Crew(id: "signpost", displayName: "signpost")
+        configured.workingDirectory = "\(TestHost.homeRoot)/Convivy/old-area/signpost"
+        let spec = served(id: "signpost",
+                          workingDirectory: "\(TestHost.homeRoot)/Convivy/new-area/signpost")
+        let merged = merge(configured: [configured], served: [spec])
+        XCTAssertEqual(merged[0].workingDirectory, "\(TestHost.homeRoot)/Convivy/new-area/signpost",
+                       "the host's own served spec is the authority for a path on the host")
+    }
+
+    func testWorkingDirectoryFollowsSettingsWhenTheHostServesNone() {
+        var configured = Crew(id: "legacy", displayName: "legacy")
+        configured.workingDirectory = "\(TestHost.homeRoot)/Convivy/legacy"
+        let merged = merge(configured: [configured], served: [served(id: "legacy")])
+        XCTAssertEqual(merged[0].workingDirectory, "\(TestHost.homeRoot)/Convivy/legacy",
+                       "the configured value is the only fallback once the host serves none")
+    }
+
+    /// The catalog side follows the identical precedence `applying` gives a
+    /// rail row.
+    func testApplyingToCatalogWorkingDirectoryFollowsTheServedSpecOverAStaleConfiguredOne() {
+        let spec = served(id: "atlas", workingDirectory: "\(TestHost.homeRoot)/Convivy/new-area/atlas")
+        let entry = LaunchableSession(id: "atlas", displayName: "atlas",
+                                      workingDirectory: "\(TestHost.homeRoot)/Convivy/old-area/atlas")
+        let filled = CrewMerge.applyingToCatalog(spec, to: entry, hosts: miniHosts)
+        XCTAssertEqual(filled.workingDirectory, "\(TestHost.homeRoot)/Convivy/new-area/atlas")
+    }
+
+    func testApplyingToCatalogWorkingDirectoryFollowsConfiguredWhenTheHostServesNone() {
+        let spec = served(id: "atlas")
+        let entry = LaunchableSession(id: "atlas", displayName: "atlas",
+                                      workingDirectory: "\(TestHost.homeRoot)/Convivy/atlas")
+        let filled = CrewMerge.applyingToCatalog(spec, to: entry, hosts: miniHosts)
+        XCTAssertEqual(filled.workingDirectory, "\(TestHost.homeRoot)/Convivy/atlas")
+    }
+
+    /// `sparse` undoes the fill consistently with the flipped precedence: a
+    /// local workingDirectory strips back to unset whenever the host serves
+    /// one at all, not only when it happens to still agree with it — a
+    /// value `applying` would discard anyway must not persist as though it
+    /// still mattered.
+    func testSparseStripsAWorkingDirectoryWheneverTheHostServesOne() {
+        let spec = served(id: "signpost", workingDirectory: "\(TestHost.homeRoot)/Convivy/signpost")
+        var merged = merge(configured: [], served: [spec])[0]
+        merged.workingDirectory = "\(TestHost.homeRoot)/Convivy/stale-signpost"
+        let sparse = CrewMerge.sparse(merged, relativeTo: spec, hosts: miniHosts)
+        XCTAssertNil(sparse.workingDirectory, "the host wins, so a disagreeing local value cannot persist either")
+    }
+
+    /// The other direction: a local workingDirectory survives `sparse` when
+    /// the host serves none, since it is the only value in play.
+    func testSparseKeepsAWorkingDirectoryWhenTheHostServesNone() {
+        let spec = served(id: "legacy")
+        var merged = merge(configured: [], served: [spec])[0]
+        merged.workingDirectory = "\(TestHost.homeRoot)/Convivy/legacy"
+        let sparse = CrewMerge.sparse(merged, relativeTo: spec, hosts: miniHosts)
+        XCTAssertEqual(sparse.workingDirectory, "\(TestHost.homeRoot)/Convivy/legacy")
+    }
+
     // MARK: - children merge the same way, one level down
 
     func testAConfiguredChildAndASpecChildForTheSameSessionMergeIntoOneRow() {

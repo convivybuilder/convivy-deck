@@ -11,6 +11,44 @@ final class SessionAgentTests: XCTestCase {
 
     // MARK: - argv
 
+    private func decodedError(status: Int32, stderr: String) -> Error? {
+        let outcome = SSHProcessOutcome(stdout: Data(), stderr: stderr, terminationStatus: status, timedOut: false)
+        do {
+            _ = try SessionAgent.decoded(
+                outcome, classifyMissingCommand: true, throwOnNonZeroExit: true, timeout: 20)
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    func testSshsOwnNoSuchFileFailureIsNotAMissingServer() {
+        let stderr = "no such identity: /x/key: No such file or directory\nsomeone@kestrel: Permission denied (publickey)."
+        let error = decodedError(status: 255, stderr: stderr)
+        guard case SessionAgent.AgentError.failed(let message)? = error else {
+            return XCTFail("expected .failed, got \(String(describing: error))")
+        }
+        XCTAssertTrue(message.contains("no such identity"))
+        XCTAssertFalse(BuilderServerTracker.isNotInstalled(error!))
+    }
+
+    func testAVerbsOwnNoSuchFileRefusalIsNotAMissingServer() {
+        let stderr = "session-agent: launchctl could not run ([Errno 2] No such file or directory: 'launchctl')."
+        let error = decodedError(status: 1, stderr: stderr)
+        guard case SessionAgent.AgentError.failed(let message)? = error else {
+            return XCTFail("expected .failed, got \(String(describing: error))")
+        }
+        XCTAssertTrue(message.contains("launchctl"))
+    }
+
+    func testARemoteMissingCommandIsStillAMissingServer() {
+        for stderr in ["sh: session-agent: command not found", "sh: /x/session-agent: No such file or directory"] {
+            guard case SessionAgent.AgentError.notInstalled? = decodedError(status: 127, stderr: stderr) else {
+                return XCTFail("expected .notInstalled for \(stderr)")
+            }
+        }
+    }
+
     func testStateArgumentsCarryTheControlMasterAndTheSession() throws {
         let args = try SessionAgent.stateArguments(target: TestHost.target, session: "quarry")
         XCTAssertTrue(args.contains("ControlMaster=auto"))

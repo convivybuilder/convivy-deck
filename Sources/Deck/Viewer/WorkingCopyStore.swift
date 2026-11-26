@@ -507,11 +507,22 @@ enum WorkingCopyStore {
     /// permanently attributed to the wrong client. Confirmed against the
     /// running Library, 2026-09-22: `deck-library-token` answers `GET
     /// /whoami` as `{"actor":"deck",...}`, `library-client-token` as
-    /// `{"actor":"orient",...}`, both `"kind":"approved_client"`. Never
-    /// widen this constant's use beyond the approval write — every other
-    /// route keeps reading `libraryTokenFile`, unchanged by this file's
-    /// addition.
+    /// `{"actor":"orient",...}`, both `"kind":"approved_client"`. Use this
+    /// constant only for the operator-pressed, Touch ID-signed writes the
+    /// Library grants to actor `deck`: approve, decline and model choice.
+    /// Every other route keeps reading `libraryTokenFile`, except the two
+    /// theme writes, which read `libraryThemeTokenFile`.
     static let libraryApprovalTokenFile = "~/.orient-control/deck-library-token"
+
+    /// The bearer credential for Deck's two automatic theme writes, `PUT
+    /// /themes/palette` and `PUT /projects/{slug}/theme`. It resolves as
+    /// actor `deck-theme`, kind `agent`, holding `theme.write` and nothing
+    /// else (`GET /whoami`, 2026-11-16). The theme writes fire from
+    /// every rail refresh with nobody pressing anything, so they must not
+    /// present `libraryApprovalTokenFile`, whose actor also holds
+    /// `epic.approve`, `policy.write` and `ledger.grant`. The shared
+    /// `libraryTokenFile` holds no `theme.write` and is refused 403.
+    static let libraryThemeTokenFile = "~/.orient-control/deck-theme-token"
 
     /// The Library's own base-URL convention, resolved on the mini rather than
     /// hardcoded here: `LIBRARY_BASE_URL`, defaulting to the loopback port its

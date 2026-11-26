@@ -178,12 +178,34 @@ final class CockpitModel: ObservableObject {
     var fetchAllItems: @Sendable (SSHTarget, String) throws -> [LibraryClient.WorkItemRecord] = { target, product in
         try LibraryClient.fetchAllItems(target: target, product: product)
     }
-    var approveEpic: @Sendable (SSHTarget, String, String) throws -> Void = { target, itemId, actingHuman in
-        try LibraryClient.approveEpic(target: target, itemId: itemId, actingHuman: actingHuman)
+    /// Loads this Mac's stored key and matching certificate, the same
+    /// `.signingUnavailable` boundary `EditorPane.signAndSubmit` draws
+    /// against `KnowledgeBase.submit` — when either is missing, the write
+    /// below is never called at all, so no argv is even built. `actingHuman`
+    /// is threaded in as its own argument rather than read from
+    /// `DeckOperator.label()` here, so a test overriding this closure can
+    /// assert on exactly what `writeApprovalFromItemPane` (the one caller)
+    /// computed and passed — the running Library still requires it on every
+    /// write (`LibraryClient.validateActingHuman`'s doc), and the signature
+    /// covers it like any other byte of the body.
+    var approveEpic: @Sendable (
+        SSHTarget, String, LibraryClient.ItemActSnapshot, String
+    ) throws -> LibraryClient.SignedActOutcome = {
+        target, itemId, snapshot, actingHuman in
+        guard let credentials = SigningCredentials.loadMatching() else { return .signingUnavailable }
+        return try LibraryClient.approveEpic(
+            target: target, itemId: itemId, snapshot: snapshot, actingHuman: actingHuman,
+            signingKey: credentials.key, certificatePEM: credentials.certificatePEM)
     }
     /// The write Decline makes. A stored closure for the reason `approveEpic` is.
-    var declineEpic: @Sendable (SSHTarget, String, String, String?) throws -> Void = { target, itemId, actingHuman, reason in
-        try LibraryClient.declineEpic(target: target, itemId: itemId, actingHuman: actingHuman, reason: reason)
+    var declineEpic: @Sendable (
+        SSHTarget, String, String?, LibraryClient.ItemActSnapshot, String
+    ) throws -> LibraryClient.SignedActOutcome = {
+        target, itemId, reason, snapshot, actingHuman in
+        guard let credentials = SigningCredentials.loadMatching() else { return .signingUnavailable }
+        return try LibraryClient.declineEpic(
+            target: target, itemId: itemId, reason: reason, snapshot: snapshot, actingHuman: actingHuman,
+            signingKey: credentials.key, certificatePEM: credentials.certificatePEM)
     }
 
     /// The write a Course drop makes: `(target, courseId, version, entries)`.
@@ -281,6 +303,10 @@ final class CockpitModel: ObservableObject {
     /// Records the panel `CockpitView` last measured as topmost, so a
     /// rebuilt `CockpitView` can scroll back to it.
     func noteScrollAnchor(_ panelID: String) {
+        // The cockpit calls this on every scroll frame, and assigning a
+        // `@Published` property publishes even when the value is unchanged,
+        // which redrew the cockpit once per frame (CQ·213).
+        guard panelID != scrollAnchorPanelID else { return }
         scrollAnchorPanelID = panelID
     }
 
@@ -611,11 +637,22 @@ final class CockpitModel: ObservableObject {
     /// `approvalRefusal`/`declineRefusal` rather than returning an outcome,
     /// since the Proposals region reads those published properties, not a
     /// return value.
+    ///
+    /// Signs over `epic`'s own displayed specification, definition of done
+    /// and maturity (`LibraryClient.ItemActSnapshot(epic:)`) — the row this
+    /// press came from, never a fresh read. A `.needsFreshRead` outcome
+    /// (library-protocol `stale`/replayed) shows the same way `.refused`
+    /// does; `writeApprovalFromItemPane` has already re-fetched this
+    /// region's epics by the time this returns, so the row redraws with
+    /// what the Library now holds and a second press signs over that.
     func approve(_ epic: LibraryClient.Epic) async {
         guard let key = lastFetched else { return }
-        if case .refused(let message) = await writeApprovalFromItemPane(
-            .approve, epicID: epic.id, host: key.host) {
+        switch await writeApprovalFromItemPane(
+            .approve, epicID: epic.id, host: key.host, snapshot: LibraryClient.ItemActSnapshot(epic: epic)) {
+        case .refused(let message), .needsFreshRead(let message):
             approvalRefusal = ApprovalRefusal(epicID: epic.id, message: message)
+        case .wrote, .notAttempted, .cancelled:
+            break
         }
     }
 
@@ -627,12 +664,16 @@ final class CockpitModel: ObservableObject {
     /// (library/decisions/0005).
     ///
     /// Delegates to `writeApprovalFromItemPane`, for the reason `approve`'s
-    /// doc comment gives.
+    /// doc comment gives, over the same displayed snapshot.
     func decline(_ epic: LibraryClient.Epic, reason: String? = nil) async {
         guard let key = lastFetched else { return }
-        if case .refused(let message) = await writeApprovalFromItemPane(
-            .decline, epicID: epic.id, host: key.host, reason: reason) {
+        switch await writeApprovalFromItemPane(
+            .decline, epicID: epic.id, host: key.host, reason: reason,
+            snapshot: LibraryClient.ItemActSnapshot(epic: epic)) {
+        case .refused(let message), .needsFreshRead(let message):
             declineRefusal = DeclineRefusal(epicID: epic.id, message: message)
+        case .wrote, .notAttempted, .cancelled:
+            break
         }
     }
 
@@ -643,11 +684,28 @@ final class CockpitModel: ObservableObject {
     }
 
     /// What `writeApprovalFromItemPane` resolved to: the Library accepted
-    /// the write, refused it in its own words, or the write was never sent.
+    /// the write, refused it in its own words, the write was never sent, or
+    /// the Touch ID prompt was dismissed. `.cancelled` is its own case
+    /// rather than folded into `.notAttempted` because both of this
+    /// outcome's readers (`approve`/`decline`'s own switch, and
+    /// `ItemDetailPane.writeApproval`'s switch) must show nothing for a
+    /// cancelled press — a dismissed Touch ID sheet is not a failure to
+    /// report, and `.notAttempted` is shown as a message by the item pane.
+    ///
+    /// `.needsFreshRead` mirrors `LibraryClient.SignedActOutcome`'s own
+    /// case: the signed snapshot no longer matches what the Library holds
+    /// (409 `stale`), or this exact proof was already used (403
+    /// `proof-refused`/`replayed`). `writeApprovalFromItemPane` has already
+    /// re-read this region's epics by the time it returns this case; a
+    /// reader that holds its own separate copy of the item (`ItemDetailModel`)
+    /// must re-read its own copy too, which is why this stays its own case
+    /// rather than folding into `.refused`.
     enum ApprovalWriteOutcome: Equatable {
         case wrote
         case refused(String)
+        case needsFreshRead(String)
         case notAttempted(String)
+        case cancelled
     }
 
     /// The one entry point both the Proposals region (`approve`/`decline`,
@@ -665,14 +723,22 @@ final class CockpitModel: ObservableObject {
     /// consults `lastFetched` to decide whether or where to write, and never
     /// requires it to be set.
     ///
-    /// Writes through the same `approveEpic`/`declineEpic` seams and the
-    /// same `DeckOperator.label()` acting human as before, and shares the
-    /// Proposals region's one-write-at-a-time guard
+    /// Writes through the same `approveEpic`/`declineEpic` seams as before,
+    /// now a signed act (one Touch ID press through `LibraryClient.performSignedAct`,
+    /// `acting_human` still sent — see `approveEpic`'s own doc), and shares
+    /// the Proposals region's one-write-at-a-time guard
     /// (`approvingEpicID`/`decliningEpicID`), so a press from this pane and
     /// a press from the Proposals region cannot race each other into two
     /// writes. A press that arrives while the other is already in flight is
     /// never sent, and that is reported as `.notAttempted` rather than read
     /// back as success — the false-success gap this method exists to close.
+    ///
+    /// `LibraryClient.SignedActOutcome` maps onto this type's own outcome:
+    /// `.signingUnavailable` becomes `.refused` with the words
+    /// `LibraryClient.signedActNeedsCertificateMessage` gives, since that is
+    /// something the operator can act on; `.cancelled` becomes this type's
+    /// own `.cancelled`, so neither reader of this method's result shows
+    /// anything for a dismissed Touch ID sheet.
     ///
     /// After a successful write, re-fetches the Proposals region only when
     /// `lastFetched` is set at that point — there may be no selected
@@ -680,7 +746,8 @@ final class CockpitModel: ObservableObject {
     /// `proposedEpicsError`; it never turns `.wrote` into `.refused`, since
     /// the write itself already landed.
     func writeApprovalFromItemPane(
-        _ action: ApprovalAction, epicID: String, host: SSHTarget, reason: String? = nil
+        _ action: ApprovalAction, epicID: String, host: SSHTarget, reason: String? = nil,
+        snapshot: LibraryClient.ItemActSnapshot
     ) async -> ApprovalWriteOutcome {
         guard approvingEpicID == nil, decliningEpicID == nil else {
             return .notAttempted("Another approval or decline is already in flight.")
@@ -691,14 +758,15 @@ final class CockpitModel: ObservableObject {
         }
         clearRefusals(for: epicID)
         let actingHuman = DeckOperator.label()
+        let signedOutcome: LibraryClient.SignedActOutcome
         do {
             switch action {
             case .approve:
                 let write = approveEpic
-                try await Task.detached { try write(host, epicID, actingHuman) }.value
+                signedOutcome = try await Task.detached { try write(host, epicID, snapshot, actingHuman) }.value
             case .decline:
                 let write = declineEpic
-                try await Task.detached { try write(host, epicID, actingHuman, reason) }.value
+                signedOutcome = try await Task.detached { try write(host, epicID, reason, snapshot, actingHuman) }.value
             }
         } catch {
             let message = action == .approve
@@ -714,10 +782,28 @@ final class CockpitModel: ObservableObject {
         case .approve: approvingEpicID = nil
         case .decline: decliningEpicID = nil
         }
-        if let key = lastFetched {
-            await refetchProposedEpics(key: key)
+        switch signedOutcome {
+        case .wrote:
+            if let key = lastFetched {
+                await refetchProposedEpics(key: key)
+            }
+            return .wrote
+        case .signingUnavailable:
+            return .refused(LibraryClient.signedActNeedsCertificateMessage)
+        case .cancelled:
+            return .cancelled
+        case .refused(let message):
+            return .refused(message)
+        case .needsFreshRead(let message):
+            // The act was never applied, so there is nothing new on the
+            // live Course to refetch — only this region's own epics, which
+            // is what every reader of this outcome needs redrawn before a
+            // fresh press.
+            if let key = lastFetched {
+                await refetchProposedEpics(key: key)
+            }
+            return .needsFreshRead(message)
         }
-        return .wrote
     }
 
     /// Clears both refusals, but only the ones on `epicID`'s own row. A row

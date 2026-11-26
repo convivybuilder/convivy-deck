@@ -221,4 +221,53 @@ final class SigningKeyTests: XCTestCase {
             XCTAssertEqual(translated.code, error.code)
         }
     }
+
+    // MARK: - SigningCredentials: the key and its matching certificate together
+
+    private var certificateFile: URL { directory.appendingPathComponent("Deck/signing-certificate.pem") }
+
+    /// No stored key at all — the state a fresh Mac starts in.
+    func testLoadMatchingIsNilWithNoStoredKey() {
+        let keyStore = SigningKeyStore(fileURL: file, factory: SoftwareFactory())
+        let certificateStore = SigningCertificateStore(fileURL: certificateFile)
+        XCTAssertNil(SigningCredentials.loadMatching(keyStore: keyStore, certificateStore: certificateStore))
+    }
+
+    /// A stored key but no certificate imported yet.
+    func testLoadMatchingIsNilWithAKeyButNoCertificate() throws {
+        let factory = SoftwareFactory()
+        let keyStore = SigningKeyStore(fileURL: file, factory: factory)
+        _ = try keyStore.loadOrCreate()
+        let certificateStore = SigningCertificateStore(fileURL: certificateFile)
+        XCTAssertNil(SigningCredentials.loadMatching(keyStore: keyStore, certificateStore: certificateStore))
+    }
+
+    /// A stored certificate that certifies a different key than the one on
+    /// disk now — the state after the key was rotated.
+    func testLoadMatchingIsNilWhenTheCertificateCertifiesADifferentKey() throws {
+        let factory = SoftwareFactory()
+        let keyStore = SigningKeyStore(fileURL: file, factory: factory)
+        _ = try keyStore.loadOrCreate()
+        let certificateStore = SigningCertificateStore(fileURL: certificateFile)
+        let otherKey = P256.Signing.PrivateKey()
+        let fixture = CertificateFixture(subjectKey: otherKey)
+        try certificateStore.save(try SigningCertificate.parse(der: fixture.der()))
+        XCTAssertNil(SigningCredentials.loadMatching(keyStore: keyStore, certificateStore: certificateStore))
+    }
+
+    /// The key and a certificate that matches it: both come back together.
+    func testLoadMatchingReturnsTheKeyAndItsMatchingCertificate() throws {
+        let factory = SoftwareFactory()
+        let keyStore = SigningKeyStore(fileURL: file, factory: factory)
+        let key = try keyStore.loadOrCreate()
+        let certificateStore = SigningCertificateStore(fileURL: certificateFile)
+        guard let softwareKey = key as? SoftwareKey else { return XCTFail("expected a SoftwareKey") }
+        let fixture = CertificateFixture(subjectKey: softwareKey.key)
+        try certificateStore.save(try SigningCertificate.parse(der: fixture.der()))
+
+        let credentials = try XCTUnwrap(SigningCredentials.loadMatching(
+            keyStore: keyStore, certificateStore: certificateStore))
+        XCTAssertEqual(credentials.key.publicKeyX963, key.publicKeyX963)
+        XCTAssertFalse(credentials.certificatePEM.isEmpty)
+    }
 }

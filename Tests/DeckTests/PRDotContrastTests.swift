@@ -20,7 +20,7 @@ import XCTest
 final class PRDotContrastTests: XCTestCase {
 
     private let allColors: [PRLadderRow.DotColor] = [
-        .merged, .ready, .closed, .failedCI, .inCI, .inReview, .draftOrUnknown,
+        .merged, .ready, .closed, .failedCI, .inCI, .inReview, .draftOrUnknown, .held,
     ]
 
     private func surface(_ appearance: Appearance) -> RGB {
@@ -95,6 +95,7 @@ final class PRDotContrastTests: XCTestCase {
         let expected: [PRLadderRow.DotColor: String] = [
             .merged: "8250df", .closed: "1F2328", .failedCI: "cf222e",
             .inCI: "7d481f", .inReview: "b78a23", .draftOrUnknown: "59636e",
+            .held: "0969da",
         ]
         for (color, hex) in expected {
             XCTAssertEqual(ThemeRecipe.prDotInk(color, appearance: .light, on: surface(.light)),
